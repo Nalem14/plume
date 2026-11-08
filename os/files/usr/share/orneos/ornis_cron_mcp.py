@@ -44,6 +44,7 @@ TOOLS = [
                 "command": {"type": "string", "description": "Required when kind=script"},
                 "folder": {"type": "string", "description": "Project folder; defaults to ORNIS_CRON_FOLDER / cwd"},
                 "paused": {"type": "boolean"},
+                "bot": {"type": "string", "description": "Bot id: run inside that bot's durable chat (defaults to ORNIS_BOT_ID)"},
             },
             "additionalProperties": False,
         },
@@ -63,6 +64,7 @@ TOOLS = [
                 "command": {"type": "string"},
                 "paused": {"type": "boolean"},
                 "kind": {"type": "string", "enum": ["chat", "script"]},
+                "bot": {"type": "string"},
             },
             "additionalProperties": False,
         },
@@ -145,6 +147,7 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 })
             return _ok({"tasks": rows})
         if name == "cron_create":
+            bot = str(args.get("bot") or (ctx.get("bot", "") if ctx is not None else os.environ.get("ORNIS_BOT_ID", ""))).strip().lower()
             row = {
                 "id": args["id"], "title": args.get("title") or args["id"],
                 "description": args.get("description") or "",
@@ -157,14 +160,17 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 "lang": _lang(ctx),
                 "pending": "create",     # the app confirms it (ask mode) or clears it; never runs while pending
             }
+            if bot:
+                row["bot"] = bot
             created = ornis_cron.upsert(row, create=True)
             return _ok({"created": True, "task": {
                 "id": created["id"], "title": created["title"], "schedule": created["schedule"],
                 "scheduleLabel": created["scheduleLabel"], "kind": created["kind"],
                 "folder": created["folder"], "next_run": created["next_run"],
+                "bot": created.get("bot") or "",
             }, "hint": "Confirm to the user in one sentence: scheduleLabel, folder, where results will go."})
         if name == "cron_update":
-            fields = {k: args[k] for k in ("title", "description", "schedule", "prompt", "command", "paused", "kind")
+            fields = {k: args[k] for k in ("title", "description", "schedule", "prompt", "command", "paused", "kind", "bot")
                       if k in args and args[k] is not None}
             if "schedule" in fields:
                 fields["schedule"] = ornis_cron.validate_schedule(fields["schedule"])

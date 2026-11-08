@@ -205,6 +205,8 @@ class CodeChat(QObject):
         self._agent: ornis_code.Agent | None = None
         self._folder = ""
         self._session = ""
+        self._bot = ""             # durable Code bot id (ornis_bots); empty for ordinary project sessions
+        self._bot_brief = False    # next user message should carry the bot identity block
         self._title = ""
         self._state = "idle"       # idle | installing | starting | ready | error
         self._error = ""
@@ -309,7 +311,20 @@ class CodeChat(QObject):
         return self._folder
 
     @Property(str, notify=changed)
+    def bot(self):
+        """Durable bot id when this conversation is a Bot Chat; empty otherwise."""
+        return self._bot
+
+    @Property(str, notify=changed)
     def folderName(self):
+        if self._bot:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                profile = ornis_bots.get(self._bot)
+                if profile:
+                    return profile.get("title") or self._bot
+            except Exception:  # noqa: BLE001
+                return self._bot
         return self._display_name(self._folder) if self._folder else ""
 
     def _display_name(self, folder: str) -> str:
@@ -491,15 +506,18 @@ class CodeChat(QObject):
     def sessionsOf(self, folder):
         """The conversations of a project, most recent first: {id, title, when, updated}."""
         rows = sorted(self._index.get(str(folder), []), key=lambda s: (not s.get("pinned"), -float(s.get("updated") or 0)))
-        return [dict(s, when=_when(float(s.get("updated") or 0), self._app.lang)) for s in rows]
+        return [dict(s, when=_when(float(s.get("updated") or 0), self._app.lang)) for s in rows if not s.get("bot")]
 
     @Property("QVariantList", notify=changed)
     def recent(self):
         """Every Code conversation, most recent first (the sidebar's lists).
-        Cron-linked runs stay under the Cron section unless the user is searching."""
+        Cron-linked runs stay under the Cron section unless the user is searching.
+        Bot chats stay in the Bots tab only."""
         out = []
         for folder, rows in self._index.items():
             for s in rows:
+                if s.get("bot"):
+                    continue
                 out.append(dict(s, folder=folder, folderName=self._display_name(folder),
                                 when=_when(float(s.get("updated") or 0), self._app.lang),
                                 cron=str(s.get("cron") or "")))
@@ -519,8 +537,11 @@ class CodeChat(QObject):
         """The Code tab's folders: where Ornis has worked (and the one open), most recent first."""
         last = {}
         for folder, rows in self._index.items():
+            rows = [r for r in rows if not r.get("bot")]
+            if not rows:
+                continue
             last[folder] = max([float(r.get("updated") or 0) for r in rows] + [0])
-        if self._folder and self._folder not in last:
+        if self._folder and not self._bot and self._folder not in last:
             last[self._folder] = time.time()
         folded = self._app.pref("projects_folded") or []
         out = []
@@ -681,7 +702,7 @@ class CodeChat(QObject):
         """« / »: what can be done at once (ours first, then the agent's own commands), filtered by what follows the /."""
         t = self._app._t
         q = str(query or "").lower().lstrip("/")
-        ours = [("new", "/" + t.get("slash_new_cmd", "new"), t.get("slash_new_code_sub", ""), "compose"),
+        ours = [("new", "/" + t.get("slash_new_cmd", "new"), t.get("slash_compact_sub" if self._bot else "slash_new_code_sub", ""), "compose"),
                 ("compact", "/compact", t.get("slash_compact_sub", ""), "collapse"),
                 ("terminal", "/terminal", t.get("slash_terminal_sub", ""), "terminal"),
                 ("undo", "/" + t.get("code_undo_cmd", "undo"), t.get("code_undo_sub", ""), "restore")]
@@ -714,7 +735,11 @@ class CodeChat(QObject):
         if not self._folder:
             return
         ornis_code.prepare_project(self._folder, getattr(self._app, "_lang", "fr"))
-        root = ornis_code.ornis_dir(self._folder)
+        if self._bot:
+            import ornis_bots
+            root = ornis_bots.bot_dir(self._bot)
+        else:
+            root = ornis_code.ornis_dir(self._folder)
         if root.is_dir():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
 
@@ -749,7 +774,18 @@ class CodeChat(QObject):
     def _blocks(self, text: str, note: str, attachments: list, first: bool, folder: str) -> list[dict]:
         """The message for the agent: the text, then each file joined or named with @ (it reads them; an image is
         given as an image). Made off the window's thread: the folder's list and the images take time."""
-        head = ornis_code.project_context(folder) + self._tree(folder) if first else ""
+        head = ""
+        if first or self._bot_brief:
+            if first:
+                head += ornis_code.project_context(folder) + self._tree(folder)
+            if self._bot:
+                try:
+                    import ornis_bots  # noqa: PLC0415
+                    bots_cli = str((ornis_code.ROOT / "bin" / "ornis-bots").resolve())
+                    head += ornis_bots.identity_block(self._bot, bots_cli=bots_cli)
+                except Exception:  # noqa: BLE001
+                    pass
+            self._bot_brief = False
         blocks = [ornis_code.text_block(note + head + text)]
         seen = set()
         for a in attachments:
@@ -767,33 +803,99 @@ class CodeChat(QObject):
     @Slot(str)
     def newIn(self, folder):
         """A new conversation in a folder (the agent starts if it is not running there)."""
+        self._bot, self._bot_brief = "", False
         self._open(str(folder), "")
 
     @Slot(str, str)
     def open(self, folder, session_id):
+        import ornis_bots
+        # a new conversation ("" session) must never land in a bot that has not spoken yet
+        profile = next((b for b in ornis_bots.list_bots() if session_id and b.get("session") == session_id), None)
+        if profile:
+            self.openBot(profile["id"], ornis_bots.working_folder(profile["id"]), session_id)
+            return
+        self._bot, self._bot_brief = "", False
         self._open(str(folder), str(session_id))
 
-    def runScheduled(self, folder: str, title: str, prompt: str, task_id: str) -> bool:
-        """Run a local Code cron task in this view so the user can watch it live. False if Code is busy."""
+    @Slot(str, str, str)
+    def openBot(self, bot_id, folder, session_id):
+        """Open a bot's durable chat (one conversation forever; /new becomes /compact)."""
+        bot_id = str(bot_id or "").strip()
+        cron = getattr(self, "_bot_cron", None)
+        worker = getattr(self, "_bot_peer_worker", None)
+        if ((cron and cron._chat_busy and getattr(cron, "_running_bot", "") == bot_id
+             and not (cron._ui_run and cron._ui_run.get("bot") == bot_id))
+                or (worker and worker.bot == bot_id and (worker.busy or worker._cron_job))):
+            opening = self._opening
+            QTimer.singleShot(500, lambda: self.openBot(bot_id, folder, session_id)
+                              if self._opening == opening else None)
+            return
+        folder = str(folder or "").strip()
+        session_id = str(session_id or "").strip()
+        self._bot = bot_id
+        self._bot_brief = True
+        if not folder:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                folder = ornis_bots.working_folder(bot_id)
+            except Exception:  # noqa: BLE001
+                folder = ""
+        self._open(folder, session_id)
+        if bot_id:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                profile = ornis_bots.get(bot_id) or {}
+                if profile.get("title"):
+                    self._title = profile["title"]
+                    self.changed.emit()
+            except Exception:  # noqa: BLE001
+                pass
+
+    @Slot()
+    def clearBot(self):
+        self.shutdown()
+        self._starts = getattr(self, "_starts", 0) + 1
+        self._busy, self._queued, self._state = False, "", "idle"
+        self._bot, self._bot_brief = "", False
+        self._session, self._title, self._folder = "", "", ""
+        self._items.reset()
+        self.changed.emit()
+
+    def runScheduled(self, folder: str, title: str, prompt: str, task_id: str,
+                     bot: str = "", session_id: str = "") -> bool:
+        """Run a local Code cron task in this view so the user can watch it live. False if Code is busy.
+        With `bot`, resumes that bot's durable session instead of opening a fresh conversation."""
         folder = str(Path(folder).expanduser().resolve()) if folder else ""
         if not folder or not Path(folder).is_dir() or not str(prompt or "").strip():
             return False
         if self._busy or self._cron_job or self._host is not None:
             return False
         # The user has a window in front with a conversation open: never swap it under them (the cron then runs
-        # on its own agent, and opens from the list once done)
-        if self._session and QGuiApplication.focusWindow() is not None:
+        # on its own agent, and opens from the list once done) — unless it is already that bot's chat idle.
+        same_bot = bool(bot and self._bot == bot and self._session and (not session_id or self._session == session_id))
+        if self._session and QGuiApplication.focusWindow() is not None and not same_bot and not getattr(self, "_background", False):
             return False
         self._cron_job = {
             "task_id": str(task_id or ""),
             "title": str(title or "").strip() or str(task_id or "cron"),
             "prev_mode": self._mode,
+            "bot": str(bot or ""),
         }
         self._mode = "auto"
         self._plan_mode = False
-        self._open(folder, "")
+        if bot:
+            self.openBot(bot, folder, session_id or "")
+        else:
+            self._bot, self._bot_brief = "", False
+            self._open(folder, "")
+        if self._cron_job is None:  # synchronous start failure (offline or unsupported)
+            return False
         self._title = self._cron_job["title"]
         self._queued = str(prompt)
+        if self._state == "ready" and not self._busy:
+            QTimer.singleShot(0, self._attach)
+        if bot:
+            self._bot_brief = True
         self.changed.emit()
         return True
 
@@ -846,7 +948,8 @@ class CodeChat(QObject):
             self.attachmentsChanged.emit()
         if session_id:
             self._title = next((s.get("title", "") for s in self._index.get(folder, []) if s.get("id") == session_id), "")
-        same = self._agent is not None and self._agent.alive() and self._folder == folder
+        same = (self._agent is not None and self._agent.alive() and self._folder == folder
+                and getattr(self._agent, "bot", "") == self._bot)
         self._folder = folder
         self._later, self._retract, self._git, self._forced = [], False, {}, None
         self.laterChanged.emit()
@@ -907,7 +1010,7 @@ class CodeChat(QObject):
         self._state = "installing" if ornis_code.binary() is None else "starting"
         self._error, self._progress_pc = "", -1
         self.changed.emit()
-        folder = self._folder
+        folder, bot = self._folder, self._bot
         # one agent at a time: a start overtaken by another (two conversations opened quickly) is closed when ready;
         # two agents on the same conversation each wrote the answer, mixed in one bubble (« Je reprends… » twice, 05/11)
         self._starts = getattr(self, "_starts", 0) + 1
@@ -920,13 +1023,14 @@ class CodeChat(QObject):
                 creds = ornis_code.credentials(*account)
                 self._gateway = {"token": creds["token"], "url": creds["url"]}
                 ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))   # its skills/ for skill_paths
-                ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder, self._app.pref("code_reasoning") or "high")
+                ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder,
+                                      self._app.pref("code_reasoning") or "high", bot=bot)
                 agent = ornis_code.Agent(exe, Path(folder), creds["token"],
                                          on_update=lambda sid, u: self._update.emit(holder[0] if holder else None, sid, u),
                                          on_permission=lambda rid, sid, tool, opts: self._permission.emit(rid, sid, tool, opts),
                                          on_exit=lambda code, err: self._exited.emit(code, err),
                                          on_question=lambda rid, sid, qs: self._question.emit(rid, sid, qs),
-                                         gateway_url=str(creds.get("url") or ""))
+                                         gateway_url=str(creds.get("url") or ""), bot=bot)
                 holder.append(agent)
                 agent.start()
                 if start != self._starts:            # overtaken: the newer start keeps the conversation
@@ -949,7 +1053,7 @@ class CodeChat(QObject):
         if agent is None:
             self._fail(problem)
             return
-        if self._folder != str(agent.folder) or self._agent is not None:   # another folder, or another agent, meanwhile
+        if self._folder != str(agent.folder) or getattr(agent, "bot", "") != self._bot or self._agent is not None:   # another folder, or another agent, meanwhile
             if agent is not self._agent:
                 threading.Thread(target=agent.close, daemon=True).start()
             return
@@ -1034,6 +1138,10 @@ class CodeChat(QObject):
         t = self._app._t
         if word in ("remember", str(t.get("code_remember_cmd", "remember")).lower()):
             what = args.strip()
+            if self._bot:
+                import ornis_bots
+                return (f"Update your own memory under {ornis_bots.bot_dir(self._bot) / 'memory'}: "
+                        + (what or "save the useful lessons of this conversation, never secrets."))
             if not what:                          # alone: what this conversation taught, as Claude Code's memory
                 return str(t.get("code_remember_all_text", "Save in the project's memory (.ornis/memory) what matters from this conversation."))
             return str(t.get("code_remember_text", "Remember this in the project's memory (.ornis/memory): %1")).replace("%1", what)
@@ -1046,7 +1154,15 @@ class CodeChat(QObject):
         text = str(text or "").strip()
         if not text:
             return
+        if self._bot and not text.startswith(("[Bot message from", "[Scheduled Code task:")):
+            import ornis_bots
+            ornis_bots.update(self._bot, {"peer_depth": 0, "human_turn": time.time()})
         shown, text = text, self._expand(text)    # the bubble keeps what the user wrote
+        # A bot's durable chat: /new and /reset compact instead of forking
+        if self._bot:
+            word0 = shown[1:].split(None, 1)[0].lower() if shown.startswith("/") and len(shown) > 1 else ""
+            if word0 in ("new", "reset", "nouveau", "neu"):
+                shown, text = "/compact", "/compact"
         if self._busy and not shown.startswith("/") or self._busy and text != shown:
             self._later.append(shown)                # sent after this turn, as in Claude Code (shown above the box)
             self._remember_prompt(shown)
@@ -1084,6 +1200,9 @@ class CodeChat(QObject):
             self._invalidate_parts()
         else:
             self._parts_hold = False
+        if self._bot and shown.startswith("[Bot message from"):
+            self._items.rows[-1].update(kind="notice", key="bots_silent", content="")
+            self._items.touch(len(self._items.rows) - 1)
         self._busy = True
         self._failures, self._looped, self._repeats = {}, False, {}
         self._continued, self._turn_start = 0, len(self._items.rows) - 1
@@ -1148,9 +1267,15 @@ class CodeChat(QObject):
             self._write_text()
             self._items.quiet = False
             self._items.reset(list(self._items.rows))
+            self.syncBotExchanges()
             self._busy = False
             if result.get("error"):
                 self._add_error("code_lost")
+                self._queued = ""
+                if self._cron_job:
+                    self._finish_cron("error", self._app._t.get("code_lost", ""), self._session)
+            if self._cron_job and not result.get("error"):
+                self.cronSession.emit(str(self._cron_job.get("task_id") or ""), self._folder, session)
             self.changed.emit()
             if self._queued:
                 text, self._queued = self._queued, ""
@@ -1166,6 +1291,8 @@ class CodeChat(QObject):
         if self._compacting:
             self._invalidate_parts()
             self._compacting = False
+            if self._bot:
+                self._bot_brief = True           # next turn re-reads SOUL / memory after a compact
         self._write_text()
         self._busy = False
         for row in self._items.rows:         # what was still asked for is moot now
@@ -1483,6 +1610,8 @@ class CodeChat(QObject):
             self._usage = {"used": int(update.get("used") or 0), "size": int(update.get("size") or 0)}
             if self._compacting or int(self._usage["used"]) < previous * .7:
                 self._invalidate_parts()
+                if self._bot:
+                    self._bot_brief = True
             self.usageChanged.emit()
             if not self._replaying:                   # a replayed conversation: the gateway measured another request
                 self._measure.start()
@@ -1500,6 +1629,36 @@ class CodeChat(QObject):
         elif kind == "current_mode_update":
             pass                                      # our mode decides (decide()), whatever the agent shows
 
+    def syncBotExchanges(self):
+        if not self._bot or self._replaying:
+            return
+        import ornis_bots
+        profile = ornis_bots.get(self._bot) or {}
+        seen = profile.get("exchange_seen") or {}
+        messages = []
+        for path in ornis_bots.EXCHANGES.glob("*.jsonl"):
+            ids = path.stem.split("__")
+            if len(ids) == 2 and self._bot in ids:
+                messages += ornis_bots.read_exchange(*ids, limit=500)
+        messages.sort(key=lambda row: float(row.get("at") or 0))
+        groups = []
+        for row in messages:
+            peer = row["to"] if row["from"] == self._bot else row["from"]
+            if (groups and groups[-1]["peer"] == peer and row["at"] - groups[-1]["at"] < 300
+                    and groups[-1].get("burst", 0) == row.get("burst", 0)):
+                groups[-1].update(count=groups[-1]["count"] + 1, at=row["at"])
+            else:
+                groups.append({"kind": "peer", "id": "exchange-" + row["id"], "peer": peer,
+                               "count": 1, "at": row["at"], "burst": row.get("burst", 0), "content": ""})
+        for group in groups:
+            group["unread"] = group["at"] > float(seen.get(group["peer"]) or 0)
+            at = next((i for i, r in enumerate(self._items.rows) if r.get("id") == group["id"]), -1)
+            if at < 0:
+                self._items.append(group)
+            elif any(self._items.rows[at].get(k) != v for k, v in group.items()):
+                self._items.rows[at].update(group)
+                self._items.touch(at)
+
     def _write_text(self):
         for at, pieces in self._pending_text.items():
             text = "".join(pieces)
@@ -1514,10 +1673,26 @@ class CodeChat(QObject):
                 for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE):
                     if row.get("kind") == "user" and row["content"].startswith(hidden):
                         row["content"] = row["content"][len(hidden):]
-                if row.get("kind") == "user" and row["content"].startswith("[Project notebook"):
-                    cut = row["content"].find("\n]\n\n")    # the .ornis notebook joined to the first message: not shown
-                    if cut >= 0:
-                        row["content"] = row["content"][cut + 4:]
+                if row.get("kind") == "user":
+                    for _ in range(6):
+                        body = row["content"]
+                        if body.startswith(("[Project notebook", "[Bot identity for")):
+                            cut = body.find("\n]\n\n")
+                            if cut < 0:
+                                break
+                            row["content"] = body[cut + 4:]
+                        elif body.startswith(("[Files of the working folder", "[The working folder is empty.]")):
+                            cut = body.find("]\n\n")
+                            if cut < 0:
+                                break
+                            row["content"] = body[cut + 3:]
+                        else:
+                            break
+                    if row["content"].startswith("[Bot message from"):
+                        row.update(kind="notice", key="bots_silent", content="")
+                if self._bot and row.get("kind") == "agent" and row.get("content", "").strip() == "[SILENT]":
+                    # peer reply with nothing for the person: hide the bubble
+                    row.update(kind="notice", key="bots_silent", content="")
                 if row.get("kind") == "user" and row["content"].startswith("[Project command /"):
                     name = row["content"][len("[Project command "):].split(" ", 1)[0]
                     if "]\n\n" in row["content"]:
@@ -1614,7 +1789,7 @@ class CodeChat(QObject):
                 "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
                 "content": (tool or {}).get("content") or []}
         verdict = ornis_code.decide("plan" if self._plan_mode else self._mode, call, sandboxed=bool(ornis_code.sandbox_kind()),
-                                    folder=self._folder)
+                                    folder=self._folder, bot=self._bot)
         if at < 0 or sid != self._session or self._host is not None:
             verdict = "reject"
         if self._cron_job and verdict == "ask":   # scheduled run: nobody to answer — as the background runs, refuse
@@ -1880,6 +2055,7 @@ class CodeChat(QObject):
     def _remember(self, session, title):
         if not session or not self._folder:
             return
+        self.reloadIndex()
         rows = self._index.setdefault(self._folder, [])
         found = next((s for s in rows if s.get("id") == session), None)
         if found is None:
@@ -1888,6 +2064,13 @@ class CodeChat(QObject):
         if title and not found.get("renamed"):
             found["title"] = title
         found["updated"] = time.time()
+        if self._bot:
+            found["bot"] = self._bot
+            try:
+                import ornis_bots  # noqa: PLC0415
+                ornis_bots.update(self._bot, {"session": session, "preview": title or found.get("title") or ""})
+            except Exception:  # noqa: BLE001
+                pass
         self._save()
 
     def _save(self):

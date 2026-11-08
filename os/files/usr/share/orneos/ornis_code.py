@@ -163,7 +163,10 @@ def forget(server: str, user: str) -> None:
     system.secret_delete(_secret_entry(server, user))
 
 
-def home() -> Path:
+def home(bot: str = "") -> Path:
+    if bot:
+        import ornis_bots
+        return ROOT / "bot-homes" / ornis_bots._ok_id(bot)
     return ROOT / "home"
 
 
@@ -324,23 +327,44 @@ def hook_command() -> str:
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def write_home(url: str, language: str = "fr", folder: str = "", reasoning: str = "high") -> Path:
+def _skill_paths(folder: str = "", bot: str = "") -> list[str]:
+    """Folders Vibe may load skills from: the project's .ornis/skills, plus a bot's own and enabled ones."""
+    paths = []
+    if folder and (ornis_dir(folder) / "skills").is_dir():
+        paths.append(str(ornis_dir(folder).resolve() / "skills"))
+    if bot:
+        try:
+            import ornis_bots  # noqa: PLC0415
+            root = ornis_bots.bot_dir(bot)
+            for sub in ("skills", "enabled-skills"):
+                p = root / sub
+                if p.is_dir():
+                    paths.append(str(p.resolve()))
+        except (ValueError, OSError):
+            pass
+    return paths
+
+
+def write_home(url: str, language: str = "fr", folder: str = "", reasoning: str = "high",
+               bot: str = "") -> Path:
     """The agent's configuration: our gateway as its only provider, nothing sent to anyone else (telemetry,
     updates, Mistral's sign-in, connectors), our instructions."""
-    root = home()
+    root = home(bot)
     root.mkdir(parents=True, exist_ok=True)
     lang = {"fr": ("French", "use « vous »"), "de": ("German", "use « Sie »")}.get(language[:2], ("English", "polite"))
     # Vibe's runtime keeps its own system prompt and adds the user-level AGENTS.md of its home to it
-    ensure_cron_bins(folder, language[:2])
+    ensure_cron_bins(folder, language[:2], bot)
     cron_cli = str((ROOT / "bin" / "ornis-cron").resolve())
     search_cli = str((ROOT / "bin" / "ornis-search").resolve())
+    bots_cli = str((ROOT / "bin" / "ornis-bots").resolve())
     cwd = str(Path(folder).resolve()) if folder else str(Path.home())
     (root / "AGENTS.md").write_text(
         PROMPT.format(language=lang[0], formal=lang[1], home=str(root),
-                      cron_cli=cron_cli, search_cli=search_cli, cwd=cwd),
+                      cron_cli=cron_cli, search_cli=search_cli, bots_cli=bots_cli, cwd=cwd),
         encoding="utf-8")
     reasoning = "none" if reasoning == "off" else reasoning
     reasoning = reasoning if reasoning in ("none", "low", "medium", "high") else "high"
+    skills = _skill_paths(folder, bot)
     config = f"""# Written by Ornis (ornis_code.py): changes are replaced at the next start.
 active_model = "orneos-code"
 default_agent = "ask"
@@ -361,8 +385,12 @@ disabled_tools = ["cron", "unified_harness_scratchpad", "wait", "web_search", "t
 # Vibe's own skills (05/11: « skill-creator » made Ornis write its skills in .vibe/skills, which nobody reads here;
 # « vibe:* » does not catch them all): ours go to .ornis/skills
 disabled_skills = ["vibe", "vibe:*", "skill-creator", "create-plugin", "worktree", "*:skill-creator", "*:create-plugin", "*:worktree"]
-# the project's own skills (.ornis/skills): Vibe reads .vibe/skills only in a trusted folder, and we trust none
-skill_paths = {json.dumps([str(ornis_dir(folder).resolve() / "skills")] if folder and (ornis_dir(folder) / "skills").is_dir() else [])}
+# the project's own skills (.ornis/skills) and, for a bot, its profile skills: Vibe reads .vibe/skills only in a
+# trusted folder, and we trust none
+skill_paths = {json.dumps(skills)}
+
+[session_logging]
+save_dir = {json.dumps(str(home() / "logs" / "session"))}
 
 # What one tool call may put in the context (Vibe: 64 KB a read, 64 KB a grep, 16 KB a command, about 16 k
 # tokens for one read, sent again at every step): smaller, the agent reads the next part when it needs it
@@ -404,7 +432,11 @@ max_context_length = 256000
             (root / name).unlink()
         except OSError:
             pass
-    link_skills(root)
+    if bot:
+        import ornis_bots
+        ornis_bots.set_enabled_skills(bot, (ornis_bots.get(bot) or {}).get("enabled_skills") or [])
+    else:
+        link_skills(root)
     return root
 
 
@@ -673,17 +705,30 @@ def expand_command(folder, name: str, args: str) -> str | None:
     return f"[Project command /{name} (.ornis/commands/{name}.md)]\n\n{text}"
 
 
-def in_notebook(folder, raw: dict) -> bool:
-    """A file call whose every path is in Ornis's notebook (.ornis/memory, plans or tmp) of this project."""
-    if not folder or not isinstance(raw, dict):
+def in_notebook(folder, raw: dict, bot: str = "") -> bool:
+    """A file call whose every path is in Ornis's notebook (.ornis/memory, plans or tmp) of this project,
+    or in a bot's profile memory/skills/tmp when `bot` is set."""
+    if not isinstance(raw, dict):
         return False
     paths = [raw.get(k) for k in ("path", "file_path", "filePath", "target_file") if isinstance(raw.get(k), str) and raw.get(k)]
     if not paths:
         return False
-    base = ornis_dir(folder).resolve()
-    allowed = [base / sub for sub in NOTEBOOK]
+    allowed = []
+    if folder:
+        base = ornis_dir(folder).resolve()
+        allowed = [base / sub for sub in NOTEBOOK]
+    if bot:
+        try:
+            import ornis_bots  # noqa: PLC0415
+            root = ornis_bots.bot_dir(bot).resolve()
+            allowed += [root / sub for sub in ("memory", "skills", "tmp")]
+            allowed.append(root / "SOUL.md")
+        except (ValueError, OSError):
+            pass
+    if not allowed:
+        return False
     for p in paths:
-        path = Path(p) if os.path.isabs(p) else Path(folder) / p
+        path = Path(p) if os.path.isabs(p) else Path(folder or ".") / p
         try:
             path = path.resolve()
         except OSError:
@@ -726,7 +771,7 @@ def global_soul_file() -> Path | None:
         return None
 
 
-def wrap(argv: list[str], folder: Path) -> list[str]:
+def wrap(argv: list[str], folder: Path, bot: str = "") -> list[str]:
     """The agent in the system's sandbox: it writes only in the project, its home, the developer caches and /tmp."""
     kind = sandbox_kind()
     user_home = Path.home().resolve()
@@ -735,6 +780,14 @@ def wrap(argv: list[str], folder: Path) -> list[str]:
     soul = global_soul_file()
     if soul:
         writable.append(soul)
+    if bot:
+        try:
+            import ornis_bots  # noqa: PLC0415
+            root = ornis_bots.bot_dir(bot)
+            writable += [(root / sub).resolve() for sub in ("memory", "skills", "tmp")]
+            writable.append((root / "SOUL.md").resolve())
+        except Exception:  # noqa: BLE001
+            pass
     writable += [user_home / c for c in CACHE_DIRS if (user_home / c).is_dir()]
     if kind == "bwrap":
         cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", "/tmp", "/tmp"]
@@ -833,7 +886,7 @@ def always_ask(tool: dict, folder: str = "", reusable: bool = True) -> bool:
     return False
 
 
-def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "") -> str:
+def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "", bot: str = "") -> str:
     """What to do with a permission the agent asks: 'allow', 'ask' (the user chooses) or 'reject'.
     tool: the tool call as the agent described it (kind, rawInput, title). In the default mode (« edits »), an
     ordinary command (tests, a build) runs without asking when the agent is in the sandbox: it can only write in
@@ -849,7 +902,7 @@ def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "") -> 
             return "reject"
     if always_ask(tool, folder, reusable=False):
         return "reject" if mode == "plan" and kind not in ("read", "search", "think", "fetch") else "ask"
-    if kind in ("edit", "delete") and in_notebook(folder, raw):
+    if kind in ("edit", "delete") and in_notebook(folder, raw, bot):
         return "allow"                               # its own notebook (memory, plans, tmp): in every mode, Plan too
     if mode == "plan":                               # Plan: Ornis looks, never changes anything
         if kind in ("read", "search", "think", "fetch"):
@@ -889,12 +942,14 @@ class Agent:
     on_exit(code, stderr_tail)."""
 
     def __init__(self, exe: Path, folder: Path, token: str, on_update=None, on_permission=None, on_exit=None,
-                 sandbox: bool = True, on_question=None, gateway_url: str = ""):
+                 sandbox: bool = True, on_question=None, gateway_url: str = "", bot: str = ""):
         self.folder = Path(folder).resolve()
+        self.bot = str(bot or "").strip()
         self.on_update, self.on_permission, self.on_exit = on_update, on_permission, on_exit
         self.on_question = on_question               # (request_id, session_id, questions): Vibe's ask_user_question
-        env = dict(os.environ, VIBE_HOME=str(home()), ORNEOS_CODE_TOKEN=token, NO_COLOR="1", CI="1",
+        env = dict(os.environ, VIBE_HOME=str(home(self.bot)), ORNEOS_CODE_TOKEN=token, NO_COLOR="1", CI="1",
                    PYTHONUNBUFFERED="1", ORNIS_CRON_FOLDER=str(self.folder))
+        env["ORNIS_BOT_ID"] = self.bot
         if gateway_url:
             env["ORNEOS_CODE_URL"] = str(gateway_url).rstrip("/")
             # URL only (no token) so the search MCP can find the gateway if env was trimmed
@@ -906,7 +961,7 @@ class Agent:
                 pass
         for key in ("MISTRAL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             env.pop(key, None)                       # only our gateway
-        argv = wrap([str(exe)], self.folder) if sandbox else [str(exe)]
+        argv = wrap([str(exe)], self.folder, self.bot) if sandbox else [str(exe)]
         flags = subprocess.CREATE_NO_WINDOW if system.WINDOWS else 0
         self._lock = threading.Lock()
         self._next = 0
@@ -1023,12 +1078,13 @@ class Agent:
         return self.info
 
     def new_session(self) -> dict:
-        return self.call("session/new", {"cwd": str(self.folder), "mcpServers": mcp_servers(str(self.folder))}, timeout=60)
+        return self.call("session/new", {"cwd": str(self.folder),
+                                         "mcpServers": mcp_servers(str(self.folder), self.bot)}, timeout=60)
 
     def load_session(self, session_id: str) -> dict:
         """Opens a conversation of this folder again: the agent replays it as updates first."""
         return self.call("session/load", {"sessionId": session_id, "cwd": str(self.folder),
-                                          "mcpServers": mcp_servers(str(self.folder))}, timeout=120)
+                                          "mcpServers": mcp_servers(str(self.folder), self.bot)}, timeout=120)
 
     def list_sessions(self) -> list[dict]:
         try:
@@ -1184,6 +1240,15 @@ def search_cli_command() -> list[str]:
             str(Path(__file__).resolve().with_name("ornis_search_cli.py"))]
 
 
+def bots_cli_command() -> list[str]:
+    """Argv to run the bots CLI (same tools as MCP, for the shell fallback)."""
+    import sys  # noqa: PLC0415
+    if system.FROZEN:
+        return [str(Path(sys.executable).resolve()), "--ornis-helper=bots-cli"]
+    return [str(Path(sys.executable).resolve()), "-I",
+            str(Path(__file__).resolve().with_name("ornis_bots_cli.py"))]
+
+
 def _script(name: str) -> Path:
     """Source or bundled path of a share/orneos script."""
     import sys  # noqa: PLC0415
@@ -1195,7 +1260,7 @@ def _script(name: str) -> Path:
     return path
 
 
-def ensure_cron_bins(folder: str = "", lang: str = "fr") -> Path:
+def ensure_cron_bins(folder: str = "", lang: str = "fr", bot: str = "") -> Path:
     """Shell launchers under DATA/ornis-code/bin: stdio MCP wrappers + CLIs for the agent.
 
     Preferred path for Vibe is HTTP MCP (see mcp_servers / ornis_mcp_http): stdio children
@@ -1209,8 +1274,9 @@ def ensure_cron_bins(folder: str = "", lang: str = "fr") -> Path:
     bin_dir.mkdir(parents=True, exist_ok=True)
     folder = str(folder or "").strip()
     lang = (lang or "fr")[:2]
+    bot = str(bot or os.environ.get("ORNIS_BOT_ID") or "").strip()
     (ROOT / "cron-mcp-context.json").write_text(
-        json.dumps({"folder": folder, "lang": lang}, ensure_ascii=False), encoding="utf-8")
+        json.dumps({"folder": folder, "lang": lang, "bot": bot}, ensure_ascii=False), encoding="utf-8")
 
     exe = str(Path(sys.executable).resolve())
     py = _usable_python()
@@ -1228,12 +1294,16 @@ def ensure_cron_bins(folder: str = "", lang: str = "fr") -> Path:
 
     py_path = share + ((os.pathsep + os.environ["PYTHONPATH"]) if os.environ.get("PYTHONPATH") else "")
     exports = [
-        f'export ORNIS_CRON_FOLDER={shlex.quote(folder)}',
+        f'ornis_default_folder={shlex.quote(folder)}',
+        'export ORNIS_CRON_FOLDER="${ORNIS_CRON_FOLDER-$ornis_default_folder}"',
         f'export ORNIS_CRON_LANG={shlex.quote(lang)}',
+        f'export ORNIS_BOT_LANG={shlex.quote(lang)}',
         f'export PYTHONPATH={shlex.quote(py_path)}',
         'export TMPDIR="${TMPDIR:-/tmp}"',
         'export HOME="${HOME:-$(cd ~ && pwd)}"',
     ]
+    if bot:
+        exports.append(f'export ORNIS_BOT_ID="${{ORNIS_BOT_ID-{bot}}}"')
     if system.MACOS and system.FROZEN:
         frameworks = Path(exe).parent.parent / "Frameworks"
         if frameworks.is_dir():
@@ -1285,6 +1355,26 @@ def ensure_cron_bins(folder: str = "", lang: str = "fr") -> Path:
         + "\n".join(search_exports) + "\n" + scli_exec + ' "$@"\n',
         encoding="utf-8")
     scli_sh.chmod(0o755)
+
+    # --- Bots MCP + CLI
+    bots_sh = bin_dir / "ornis-bots-mcp"
+    bots_sh.write_text(
+        "#!/bin/sh\n# Written by Ornis. Code-mode bots MCP (profiles, SOUL, peer messages).\n"
+        + "\n".join(exports) + "\n" + _mcp_exec("bots-mcp", "ornis_bots_mcp.py") + "\n",
+        encoding="utf-8")
+    bots_sh.chmod(0o755)
+
+    script_bcli = _script("ornis_bots_cli.py")
+    if py and script_bcli.is_file():
+        bcli_exec = f"exec {shlex.quote(py)} -I {shlex.quote(str(script_bcli))}"
+    else:
+        bcli_exec = "exec " + " ".join(shlex.quote(a) for a in bots_cli_command())
+    bcli_sh = bin_dir / "ornis-bots"
+    bcli_sh.write_text(
+        "#!/bin/sh\n# Written by Ornis. Fallback when ornis-bots MCP is not connected.\n"
+        + "\n".join(exports) + "\n" + bcli_exec + ' "$@"\n',
+        encoding="utf-8")
+    bcli_sh.chmod(0o755)
     return bin_dir
 
 
@@ -1299,7 +1389,12 @@ def search_mcp_command() -> list[str]:
     return ["/bin/sh", str((ROOT / "bin" / "ornis-search-mcp").resolve())]
 
 
-def _mcp_base_env(folder: str) -> list[dict]:
+def bots_mcp_command() -> list[str]:
+    ensure_cron_bins()
+    return ["/bin/sh", str((ROOT / "bin" / "ornis-bots-mcp").resolve())]
+
+
+def _mcp_base_env(folder: str, bot: str = "") -> list[dict]:
     """Env for Vibe's stdio MCP spawn (merged over a short default list — include TMPDIR)."""
     keys = (
         "HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER", "TMPDIR", "LANG", "LC_ALL",
@@ -1311,7 +1406,8 @@ def _mcp_base_env(folder: str) -> list[dict]:
     env = [{"name": k, "value": os.environ[k]} for k in keys if os.environ.get(k)]
     folder = str(folder or os.environ.get("ORNIS_CRON_FOLDER") or "").strip()
     lang = (os.environ.get("ORNIS_CRON_LANG") or "fr")[:2]
-    ensure_cron_bins(folder, lang)
+    bot = str(bot or os.environ.get("ORNIS_BOT_ID") or "").strip()
+    ensure_cron_bins(folder, lang, bot)
     share = str(Path(__file__).resolve().parent)
     if system.FROZEN:
         import sys  # noqa: PLC0415
@@ -1323,24 +1419,32 @@ def _mcp_base_env(folder: str) -> list[dict]:
                 "value": share + (os.pathsep + existing_pp if existing_pp else "")})
     env.append({"name": "ORNIS_CRON_FOLDER", "value": folder})
     env.append({"name": "ORNIS_CRON_LANG", "value": lang})
+    env.append({"name": "ORNIS_BOT_LANG", "value": lang})
+    if bot:
+        env.append({"name": "ORNIS_BOT_ID", "value": bot})
     return env
 
 
-def _cron_mcp_env(folder: str) -> list[dict]:
-    return _mcp_base_env(folder)
+def _cron_mcp_env(folder: str, bot: str = "") -> list[dict]:
+    return _mcp_base_env(folder, bot)
 
 
-def _search_mcp_env(folder: str) -> list[dict]:
-    return _mcp_base_env(folder)
+def _search_mcp_env(folder: str, bot: str = "") -> list[dict]:
+    return _mcp_base_env(folder, bot)
 
 
-def mcp_servers(folder: str = "") -> list[dict]:
-    """Built-in Code MCPs (cron + Orneos Search) plus the servers from Ornis settings.
+def _bots_mcp_env(folder: str, bot: str = "") -> list[dict]:
+    return _mcp_base_env(folder, bot)
+
+
+def mcp_servers(folder: str = "", bot: str = "") -> list[dict]:
+    """Built-in Code MCPs (cron + Orneos Search + bots) plus the servers from Ornis settings.
 
     Prefer the in-process HTTP bridge (ornis_mcp_http) so Vibe's seatbelt never has to
     re-spawn Plume. Fall back to stdio wrappers when the bridge cannot start.
     Secrets stay where they are: an env entry names a variable of this computer, its value is read here."""
-    ensure_cron_bins(folder)
+    bot = str(bot or os.environ.get("ORNIS_BOT_ID") or "").strip()
+    ensure_cron_bins(folder, bot=bot)
     try:
         import ornis_mcp_http  # noqa: PLC0415
         bridge = ornis_mcp_http.ensure()
@@ -1348,17 +1452,20 @@ def mcp_servers(folder: str = "") -> list[dict]:
         bridge = None
     if bridge:
         auth = [{"name": "Authorization", "value": "Bearer " + bridge["token"]}]
-        key = ornis_mcp_http.context_key(folder, (os.environ.get("ORNIS_CRON_LANG") or "fr"))
+        key = ornis_mcp_http.context_key(folder, (os.environ.get("ORNIS_CRON_LANG") or "fr"), bot)
         out = [
             {"type": "http", "name": "ornis-cron", "url": f"{bridge['cron_url']}/{key}", "headers": auth},
             {"type": "http", "name": "ornis-search", "url": bridge["search_url"], "headers": auth},
+            {"type": "http", "name": "ornis-bots", "url": f"{bridge['bots_url']}/{key}", "headers": auth},
         ]
     else:
         cron_cmd = cron_mcp_command()
         search_cmd = search_mcp_command()
+        bots_cmd = bots_mcp_command()
         out = [
-            {"name": "ornis-cron", "command": cron_cmd[0], "args": cron_cmd[1:], "env": _cron_mcp_env(folder)},
-            {"name": "ornis-search", "command": search_cmd[0], "args": search_cmd[1:], "env": _search_mcp_env(folder)},
+            {"name": "ornis-cron", "command": cron_cmd[0], "args": cron_cmd[1:], "env": _cron_mcp_env(folder, bot)},
+            {"name": "ornis-search", "command": search_cmd[0], "args": search_cmd[1:], "env": _search_mcp_env(folder, bot)},
+            {"name": "ornis-bots", "command": bots_cmd[0], "args": bots_cmd[1:], "env": _bots_mcp_env(folder, bot)},
         ]
     try:
         import ornis_extensions  # noqa: PLC0415
@@ -1366,7 +1473,7 @@ def mcp_servers(folder: str = "") -> list[dict]:
     except Exception:  # noqa: BLE001
         return out
     for name, item in servers.items():
-        if item.get("disabled") or name in ("ornis-cron", "ornis-search"):
+        if item.get("disabled") or name in ("ornis-cron", "ornis-search", "ornis-bots"):
             continue
         if item.get("url"):
             headers = [{"name": h, "value": os.environ.get(v, "")} for h, v in (item.get("headersEnv") or {}).items() if os.environ.get(v)]

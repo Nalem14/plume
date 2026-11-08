@@ -182,6 +182,13 @@ def dispatch_helper():
         import ornis_search_cli
         raise SystemExit(ornis_search_cli.main(
             [a for a in sys.argv[1:] if not a.startswith('--ornis-helper=')]))
+    if name == 'bots-mcp':                   # built-in MCP for local Code bots
+        import ornis_bots_mcp
+        raise SystemExit(ornis_bots_mcp.main())
+    if name == 'bots-cli':                   # same tools over argv/JSON when MCP cannot connect
+        import ornis_bots_cli
+        raise SystemExit(ornis_bots_cli.main(
+            [a for a in sys.argv[1:] if not a.startswith('--ornis-helper=')]))
     if name not in ('consent', 'computer'):
         raise SystemExit(2)
     import runpy

@@ -5,7 +5,7 @@ macOS, bwrap on Linux). On a Mac without a real python3, those children re-enter
 Plume via `--ornis-helper=*mcp` and fail (mcp_transport_failed), while the bash
 CLI can retry outside the sandbox.
 
-Hosting cron + search here — in the already-running Ornis/Plume process — and
+Hosting cron + search + bots here — in the already-running Ornis/Plume process — and
 advertising `type: http` URLs keeps MCP outside that sandbox. Vibe talks to
 127.0.0.1 only; a bearer token in Authorization is required.
 """
@@ -22,16 +22,16 @@ _lock = threading.Lock()
 _server: ThreadingHTTPServer | None = None
 _token = ""
 _base = ""
-_contexts: dict[str, dict] = {}     # key in /mcp/cron/<key> → {folder, lang}: one shared server, one folder per session
+_contexts: dict[str, dict] = {}     # key in /mcp/cron/<key> → {folder, lang, bot}: one shared server per session
 
 
-def context_key(folder: str, lang: str = "fr") -> str:
+def context_key(folder: str, lang: str = "fr", bot: str = "") -> str:
     """A stable key for a Code session's folder (the cron MCP files new tasks there, not in the last folder opened)."""
     import hashlib  # noqa: PLC0415
-    folder, lang = str(folder or "").strip(), (lang or "fr")[:2]
-    key = hashlib.sha256(f"{folder}\0{lang}".encode("utf-8")).hexdigest()[:16]
+    folder, lang, bot = str(folder or "").strip(), (lang or "fr")[:2], str(bot or "").strip()
+    key = hashlib.sha256(f"{folder}\0{lang}\0{bot}".encode("utf-8")).hexdigest()[:16]
     with _lock:
-        _contexts[key] = {"folder": folder, "lang": lang}
+        _contexts[key] = {"folder": folder, "lang": lang, "bot": bot}
     return key
 
 
@@ -44,6 +44,9 @@ def _dispatch(kind: str, msg: dict, key: str = "") -> dict | None:
         # search module uses _handle; expose the same shape as cron
         handle = getattr(ornis_search_mcp, "handle", None) or ornis_search_mcp._handle
         return handle(msg)
+    if kind == "bots":
+        import ornis_bots_mcp  # noqa: PLC0415
+        return ornis_bots_mcp.handle(msg, _contexts.get(key))
     return {"jsonrpc": "2.0", "id": msg.get("id"),
             "error": {"code": -32601, "message": f"unknown MCP: {kind}"}}
 
@@ -67,9 +70,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _parts(self) -> tuple[str | None, str]:
         path = urlparse(self.path).path.rstrip("/")
-        # /mcp/cron, /mcp/cron/<context key> or /mcp/search
+        # /mcp/cron, /mcp/cron/<context key>, /mcp/search or /mcp/bots[/<key>]
         parts = [p for p in path.split("/") if p]
-        if len(parts) in (2, 3) and parts[0] == "mcp" and parts[1] in ("cron", "search"):
+        if len(parts) in (2, 3) and parts[0] == "mcp" and parts[1] in ("cron", "search", "bots"):
             return parts[1], (parts[2] if len(parts) == 3 else "")
         return None, ""
 
@@ -150,13 +153,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def ensure() -> dict | None:
-    """Start the bridge once. Returns {base, token, cron_url, search_url} or None."""
+    """Start the bridge once. Returns {base, token, cron_url, search_url, bots_url} or None."""
     global _server, _token, _base
     with _lock:
         if _server is not None and _base and _token:
             return {
                 "base": _base, "token": _token,
                 "cron_url": f"{_base}/cron", "search_url": f"{_base}/search",
+                "bots_url": f"{_base}/bots",
             }
         try:
             # Bind loopback only; port chosen by the OS
@@ -181,6 +185,7 @@ def ensure() -> dict | None:
         return {
             "base": _base, "token": _token,
             "cron_url": f"{_base}/cron", "search_url": f"{_base}/search",
+            "bots_url": f"{_base}/bots",
         }
 
 

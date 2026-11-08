@@ -7,6 +7,7 @@ import "components"
 ODialog {
     id: sheet
     property string taskId: ""
+    property string botId: ""
     property bool advanced: false
     property string plainKind: "daily"
     property int hour: 8
@@ -15,7 +16,7 @@ ODialog {
     property int everyMin: 15
     property string scheduleError: ""
     readonly property bool isNew: taskId === ""
-    title: isNew ? app.t.cron_new : app.t.cron_manage
+    title: botId ? (isNew ? app.t.bots_routine_add : app.t.bots_routines) : (isNew ? app.t.cron_new : app.t.cron_manage)
     tint: theme.c.famCommunicate
 
     function openFor(id) {
@@ -23,6 +24,7 @@ ODialog {
         advanced = false
         scheduleError = ""
         const t = taskId ? cron.get(taskId) : {}
+        botId = taskId ? (t.bot || "") : (code.bot || "")
         titleField.text = t.title || ""
         descField.text = t.description || ""
         idField.text = t.id || ""
@@ -134,7 +136,7 @@ ODialog {
             Item { Layout.fillWidth: true }
             OButton {
                 kind: "quiet"; height_: 26
-                text: sheet.advanced ? app.t.cron_schedule_simple : app.t.cron_schedule_advanced
+                text: sheet.advanced ? app.t.cron_schedule_simple : (sheet.botId ? app.t.bots_schedule_advanced : app.t.cron_schedule_advanced)
                 onClicked: {
                     if (!sheet.advanced) applyScheduleField()
                     sheet.advanced = !sheet.advanced
@@ -303,7 +305,9 @@ ODialog {
                     command: commandField.text,
                     schedule: scheduleField.text.trim(),
                     paused: pausedSwitch.checked,
-                    folder: existing.folder || code.folder
+                    folder: existing.folder || code.folder,
+                    // open bot chat: new routines attach to that bot (Sessions crons stay folder-only)
+                    bot: sheet.botId
                 })
                 if (err) { sheet.scheduleError = err; return }
                 sheet.close()

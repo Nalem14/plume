@@ -46,6 +46,7 @@ class Cron(QObject):
         super().__init__()
         self._app = app
         self._code = code
+        code._bot_cron = self
         self._tasks: list[dict] = []
         self._mtime = 0.0
         self._chat_busy = False
@@ -77,7 +78,13 @@ class Cron(QObject):
 
     @Property("QVariantList", notify=changed)
     def tasks(self):
-        return [self._view(t) for t in self._tasks]
+        """Project Code cron tasks for the Sessions column (bot routines stay under Bots › Routines)."""
+        return [self._view(t) for t in self._tasks if not t.get("bot")]
+
+    @Slot(str, result="QVariantList")
+    def botRoutines(self, bot_id):
+        bot_id = str(bot_id or "").strip()
+        return [self._view(t) for t in self._tasks if t.get("bot") == bot_id]
 
     @Property("QVariantMap", notify=consentChanged)
     def consent(self):
@@ -455,6 +462,7 @@ class Cron(QObject):
             "schedule": t.get("schedule") or "",
             "scheduleLabel": ornis_cron.schedule_label(t.get("schedule") or "", self._lang()),
             "paused": bool(t.get("paused")),
+            "bot": t.get("bot") or "",
             "nextRun": _when(float(t["next_run"]), self._lang()) if t.get("next_run") else "",
             "nextRunAt": float(t.get("next_run") or 0),
             "running": running,
@@ -586,10 +594,23 @@ class Cron(QObject):
         task = ornis_cron.get(tid) or task
         if any(r.get("status") == "running" for r in task.get("runs") or []):
             return False
+        bot = str(task.get("bot") or "")
+        if bot:
+            import ornis_bots
+            if not ornis_bots.get(bot):
+                return False
+            task = dict(task, folder=ornis_bots.working_folder(bot))
+            peer_worker = getattr(self._code, "_bot_peer_worker", None)
+            if ((self._code.bot == bot and (self._code.busy or self._code._queued))
+                    or (peer_worker is not None and peer_worker.bot == bot
+                        and (peer_worker.busy or peer_worker._cron_job))):
+                if manual:
+                    ornis_cron.patch(tid, {"force_run": True}, self._lang())
+                return False
         folder = str(task.get("folder") or "")
         # Only defer when Code is mid-turn on that folder. An idle agent left open used to
         # block every auto tick (manual lightning still worked) — seen 08/11 on Mac.
-        if ornis_cron.defer_for_open_code(
+        if not bot and ornis_cron.defer_for_open_code(
                 kind=str(task.get("kind") or ""), folder=folder,
                 code_folder=str(self._code.folder or ""),
                 agent_alive=bool(self._code._agent is not None and self._code._agent.alive()),
@@ -640,6 +661,7 @@ class Cron(QObject):
 
     def _run_chat(self, task: dict):
         self._chat_busy = True
+        self._running_bot = str(task.get("bot") or "")
         run_id = str(uuid.uuid4())
         started = time.time()
         ornis_cron.add_run(task["id"], {
@@ -647,17 +669,31 @@ class Cron(QObject):
             "summary": self._t("cron_starting", "Démarrage…"),
         })
         self._reload()
+        bot = str(task.get("bot") or "").strip()
         folder = Path(task["folder"])
+        session_id = ""
+        if bot:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                profile = ornis_bots.get(bot) or {}
+                folder = Path(ornis_bots.working_folder(bot))
+                session_id = str(profile.get("session") or "")
+            except Exception:  # noqa: BLE001
+                pass
         day = datetime.now().strftime("%d %b").lstrip("0")
         title = f"{task.get('title') or task['id']} · {day}"
         prompt = CRON_NOTE + str(task.get("prompt") or "")
         # Prefer the Code view: the user sees the turn live and can open it from the list
-        self._ui_run = {"task": task["id"], "run": run_id, "folder": str(folder), "title": title, "started": started}
+        self._ui_run = {"task": task["id"], "run": run_id, "folder": str(folder), "title": title,
+                        "started": started, "bot": bot}
 
         def start_ui():
-            if self._code.runScheduled(str(folder), title, prompt, task["id"]):
+            if self._code.runScheduled(str(folder), title, prompt, task["id"], bot=bot, session_id=session_id):
                 if self._unwatched():
                     self.showCode.emit()
+                return
+            if bot and self._code.bot == bot and self._code.busy:
+                QTimer.singleShot(400, start_ui)
                 return
             self._ui_run = None
             self._run_chat_background(task, run_id, title, prompt, started)
@@ -677,7 +713,7 @@ class Cron(QObject):
             pass
         self._register_session(folder, session, ui.get("title") or task_id, task_id)
         self._reload()
-        if self._unwatched():
+        if self._unwatched() and not ui.get("bot"):
             self.openSession.emit(str(folder), str(session))
 
     def _on_code_cron_done(self, task_id, status, summary, session):
@@ -698,7 +734,17 @@ class Cron(QObject):
 
     def _run_chat_background(self, task, run_id, title, prompt, started):
         """Fallback when Code is already busy: own agent (not openable until done)."""
+        bot = str(task.get("bot") or "").strip()
         folder = Path(task["folder"])
+        resume = ""
+        if bot:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                profile = ornis_bots.get(bot) or {}
+                folder = Path(ornis_bots.working_folder(bot))
+                resume = str(profile.get("session") or "")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             ornis_cron.update_run(task["id"], run_id, {
                 "summary": self._t("cron_background", "En cours en arrière-plan…"),
@@ -721,13 +767,13 @@ class Cron(QObject):
                 creds = ornis_code.credentials(*account)
                 ornis_code.prepare_project(str(folder), self._lang())
                 ornis_code.write_home(creds["url"], self._lang(), str(folder),
-                                      self._app.pref("code_reasoning") or "high")
+                                      self._app.pref("code_reasoning") or "high", bot=bot)
 
                 def on_permission(rid, sid, tool, opts):
                     kind = str((tool or {}).get("kind") or "")
                     raw = (tool or {}).get("rawInput") if isinstance((tool or {}).get("rawInput"), dict) else {}
                     verdict = ornis_code.decide("auto", {"kind": kind, "rawInput": raw or {}},
-                                                sandboxed=bool(ornis_code.sandbox_kind()), folder=str(folder))
+                                                sandboxed=bool(ornis_code.sandbox_kind()), folder=str(folder), bot=bot)
                     if verdict == "ask":
                         verdict = "reject"
                     want = "allow_once" if verdict == "allow" else "reject_once"
@@ -766,17 +812,35 @@ class Cron(QObject):
                 agent = ornis_code.Agent(exe, folder, creds["token"],
                                          on_permission=on_permission, on_question=on_question,
                                          on_update=on_update, sandbox=True,
-                                         gateway_url=str(creds.get("url") or ""))
+                                         gateway_url=str(creds.get("url") or ""), bot=bot)
                 agent.start()
-                created = agent.new_session()
-                session = created.get("sessionId") or ""
-                self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent}
+                if resume:
+                    agent.load_session(resume)
+                    session = resume
+                else:
+                    created = agent.new_session()
+                    session = created.get("sessionId") or ""
+                self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent, "bot": bot}
                 agent.set_mode(session, "auto")
                 self._register.emit(str(folder), session, title, task["id"])
+                if bot and session:
+                    try:
+                        import ornis_bots  # noqa: PLC0415
+                        ornis_bots.update(bot, {"session": session})
+                    except Exception:  # noqa: BLE001
+                        pass
                 ornis_cron.update_run(task["id"], run_id, {
                     "session": session, "summary": self._t("cron_working", "En cours…"),
                 })
-                result = agent.prompt(session, [{"type": "text", "text": prompt}])
+                body = prompt
+                if bot:
+                    try:
+                        import ornis_bots  # noqa: PLC0415
+                        bots_cli = str((ornis_code.ROOT / "bin" / "ornis-bots").resolve())
+                        body = ornis_bots.identity_block(bot, bots_cli=bots_cli) + prompt
+                    except Exception:  # noqa: BLE001
+                        pass
+                result = agent.prompt(session, [{"type": "text", "text": body}])
                 stop = str((result or {}).get("stopReason") or "")
                 status = "ok" if stop in ("end_turn", "max_tokens", "") else "error"
                 summary = self._t("cron_done", "Terminé") if status == "ok" else (stop or summary)
@@ -839,6 +903,9 @@ class Cron(QObject):
             found["renamed"] = True
             found["cron"] = cron_id
             found["updated"] = time.time()
+            bot = str((ornis_cron.get(cron_id) or {}).get("bot") or "")
+            if bot:
+                found["bot"] = bot
             system.private_write(idx, json.dumps(data, ensure_ascii=False))
             # refresh CodeChat index if it has one
             if hasattr(self._code, "reloadIndex"):

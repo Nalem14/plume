@@ -103,7 +103,7 @@ Item {
     // « / »: an action at once (ours), or the agent's own command written for the message
     property string popupKind: "mention"
     function applySlash(row) {
-        if (row.kind === "new") { code.newIn(code.folder); return }
+        if (row.kind === "new") { if (code.bot) code.compact(); else code.newIn(code.folder); return }
         if (row.kind === "compact") { code.compact(); return }
         if (row.kind === "terminal") { code.openTerminal(); return }
         if (row.kind === "undo") { code.undoLast(); return }
@@ -147,6 +147,9 @@ Item {
         function onDataChanged() { if (view.stick) view.toEnd() }
     }
 
+    // Routines float over the conversation (chip / retractable sheet); they never shrink the column
+    onBenchTabChanged: if (benchTab !== "") routinesPanel.close()
+
     ColumnLayout {
         anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
         anchors.right: view.benchTab !== "" && !view.benchOver ? benchPanel.left : parent.right
@@ -164,7 +167,14 @@ Item {
                 anchors.leftMargin: win.sidebarShown ? 16 : 8; anchors.rightMargin: 12
                 spacing: 10
                 OButton { visible: !win.sidebarShown; kind: "quiet"; iconName: "sidebar"; height_: 30; tip: app.t.show_sidebar + "  (Ctrl+B)"; onClicked: win.toggleSidebar() }
+                BotFace {
+                    visible: code.bot !== ""
+                    face: (bots.current && bots.current.face) || {}
+                    size: 30
+                    busy: code.busy
+                }
                 Rectangle {
+                    visible: code.bot === ""
                     implicitWidth: 30; implicitHeight: 30; radius: 8
                     color: view.c.tint
                     Icon { anchors.centerIn: parent; name: "code"; size: 16; color: view.c.tintText }
@@ -174,19 +184,32 @@ Item {
                     spacing: 0
                     Text {
                         Layout.fillWidth: true
-                        text: code.title || code.folderName || app.t.mode_code
+                        text: code.bot ? ((bots.current && bots.current.title) || code.folderName) : (code.title || code.folderName || app.t.mode_code)
                         elide: Text.ElideRight
                         font.family: "Schibsted Grotesk"; font.pixelSize: 15; font.weight: Font.DemiBold
                         color: view.c.text
                     }
-                    RowLayout {              // the folder (its full path on hover), then its Git branch
+                    RowLayout {              // bot role, or the folder (its full path on hover) + Git branch
                         Layout.fillWidth: true
                         spacing: 5
-                        Icon { name: "folder"; size: 12; color: view.c.muted }
+                        Text {
+                            visible: code.bot !== "" && !!(bots.current && bots.current.description)
+                            Layout.maximumWidth: 320
+                            text: (bots.current && bots.current.description) || ""
+                            elide: Text.ElideRight
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Medium
+                            color: view.c.muted
+                        }
+                        Icon {
+                            visible: code.bot === "" || !!(bots.current && bots.current.folder)
+                            name: "folder"; size: 12; color: view.c.muted
+                        }
                         Text {
                             id: headFolder
+                            // bot with a role: only the description; otherwise the folder name
+                            visible: code.bot === "" || !!(bots.current && bots.current.folder)
                             Layout.maximumWidth: 280
-                            text: code.folderName
+                            text: code.bot ? String(code.folder).replace(/\\/g, "/").split("/").pop() : code.folderName
                             elide: Text.ElideRight
                             font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Medium
                             color: view.c.muted
@@ -205,6 +228,35 @@ Item {
                             color: view.c.faint
                         }
                         Item { Layout.fillWidth: !code.git.branch }
+                    }
+                }
+                // bot: open/close the floating Routines sheet (before Fichiers / Diff / …)
+                AbstractButton {
+                    id: routinesHead
+                    visible: code.bot !== ""
+                    width: Math.max(34, routinesHeadRow.implicitWidth + 16); height: 32
+                    hoverEnabled: true
+                    onClicked: routinesPanel.toggle()
+                    Accessible.name: view.routinesOpen ? app.t.bots_routines_close : app.t.bots_routines_open
+                    ToolTip.visible: hovered; ToolTip.delay: 450; ToolTip.text: Accessible.name
+                    background: Rectangle {
+                        radius: 9
+                        color: view.routinesOpen ? view.c.tint : routinesHead.hovered ? view.c.hover : "transparent"
+                    }
+                    contentItem: Row {
+                        id: routinesHeadRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Icon { name: "clock"; size: 15
+                               color: view.routinesOpen ? view.c.tintText : view.c.muted
+                               anchors.verticalCenter: parent.verticalCenter }
+                        Text {
+                            visible: routinesPanel.count > 0
+                            text: String(routinesPanel.count)
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
+                            color: view.routinesOpen ? view.c.tintText : view.c.muted
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
                     }
                 }
                 // the panel's tabs, as Cursor's and Claude's: Fichiers, Modifications, Plan, Terminal
@@ -471,7 +523,10 @@ Item {
                     } }
                     DelegateChoice { roleValue: "notice"; delegate: Item {    // the turn went on by itself
                         id: d7; required property var item
-                        width: list.width; height: c7.implicitHeight
+                        width: list.width
+                        // [SILENT] peer replies leave an empty notice: take no space
+                        height: d7.item.key === "bots_silent" ? 0 : c7.implicitHeight
+                        visible: d7.item.key !== "bots_silent"
                         RowLayout {
                             id: c7
                             x: (list.width - view.column) / 2; width: view.column
@@ -483,6 +538,63 @@ Item {
                                 wrapMode: width > 80 ? Text.Wrap : Text.NoWrap
                                 font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.italic: true
                                 color: view.c.muted
+                            }
+                        }
+                    } }
+                    DelegateChoice { roleValue: "peer"; delegate: Item {
+                        id: dPeer; required property var item
+                        width: list.width
+                        height: (dPeer.item.count || 0) > 0 ? peerPill.implicitHeight + 8 : 0
+                        visible: (dPeer.item.count || 0) > 0
+                        AbstractButton {
+                            id: peerPill
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            implicitHeight: 28
+                            implicitWidth: peerRow.implicitWidth + 20
+                            hoverEnabled: true
+                            onClicked: {
+                                peerPopup.openFor(dPeer.item.peer || "", dPeer.item.content || "")
+                                dPeer.item.unread = false
+                            }
+                            background: Rectangle {
+                                radius: 14
+                                color: peerPill.hovered ? view.c.hover : view.c.field
+                                border.width: 1; border.color: view.c.line
+                            }
+                            contentItem: Row {
+                                id: peerRow
+                                anchors.centerIn: parent
+                                spacing: 6
+                                BotFace {
+                                    face: {
+                                        const id = dPeer.item.peer || ""
+                                        const all = bots.list.concat(bots.hidden)
+                                        const hit = all.find(b => b.id === id)
+                                        return (hit && hit.face) || {}
+                                    }
+                                    size: 16
+                                }
+                                Text {
+                                    text: {
+                                        const id = dPeer.item.peer || ""
+                                        const all = bots.list.concat(bots.hidden)
+                                        const hit = all.find(b => b.id === id)
+                                        const name = (hit && hit.title) || id
+                                        return (dPeer.item.count || 1) <= 1
+                                            ? app.t.bots_peer_1.replace("%1", name)
+                                            : app.t.bots_peer_n.replace("%1", String(dPeer.item.count || 1))
+                                                               .replace("%2", name)
+                                    }
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                                    color: view.c.muted
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Rectangle {
+                                    visible: !!dPeer.item.unread
+                                    width: 6; height: 6; radius: 3
+                                    color: view.c.saffron
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
                             }
                         }
                     } }
@@ -920,6 +1032,73 @@ Item {
             }
         }
     }
+    property alias routinesOpen: routinesPanel.open
+    function openRoutines() { routinesPanel.open = true }
+    function closeRoutines() { routinesPanel.close() }
+    RoutinesPanel {
+        id: routinesPanel
+        z: 8
+        botId: code.bot !== "" && view.benchTab === "" ? code.bot : ""
+        anchors.fill: parent
+    }
+
+    Popup {
+        id: peerPopup
+        objectName: "peerPopup"
+        property string peerId: ""
+        property var rows: []
+        modal: true
+        padding: 16
+        width: Math.min(420, view.width - 48)
+        height: Math.min(360, view.height - 80)
+        anchors.centerIn: Overlay.overlay
+        background: Rectangle { radius: 14; color: view.c.card; border.color: view.c.line }
+        function openFor(peer, preview) {
+            peerId = peer
+            rows = bots.exchange(code.bot, peer)
+            bots.markSeen(code.bot, peer)
+            open()
+        }
+        readonly property string peerTitle: {
+            const all = bots.list.concat(bots.hidden)
+            const hit = all.find(b => b.id === peerPopup.peerId)
+            return (hit && hit.title) || peerPopup.peerId
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+            Text {
+                text: app.t.bots_peer_title.replace("%1", peerPopup.peerTitle)
+                font.family: "Schibsted Grotesk"; font.pixelSize: 14; font.weight: Font.DemiBold
+                color: view.c.text
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: peerPopup.rows
+                spacing: 8
+                delegate: Column {
+                    required property var modelData
+                    width: ListView.view.width
+                    spacing: 2
+                    Text {
+                        text: (modelData.from === code.bot ? app.t.you : modelData.from) + " · "
+                              + Qt.formatTime(new Date(modelData.at * 1000), "hh:mm")
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: view.c.muted
+                    }
+                    Text {
+                        width: parent.width
+                        text: modelData.text
+                        wrapMode: Text.Wrap
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; color: view.c.text
+                    }
+                }
+            }
+            OButton { kind: "quiet"; text: app.t.close; Layout.alignment: Qt.AlignRight; onClicked: peerPopup.close() }
+        }
+    }
+
     // ---- the panel on the right (Fichiers, Modifications, Plan, Terminal) -----------------------------------------------
     Rectangle {                              // under the panel when it covers the conversation
         anchors.fill: parent

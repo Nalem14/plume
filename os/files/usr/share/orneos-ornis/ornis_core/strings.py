@@ -2763,6 +2763,78 @@ for _lang, _t in {
     TEXT[_lang].update(_t)
 
 
+# Code-mode bots (Sessions | Bots): durable chats with SOUL, routines, peer pills
+for _lang, _t in {
+    "fr": dict(
+        bots_tab_sessions="Sessions", bots_tab_bots="Bots",
+        bots_new="Nouveau bot", bots_new_sub="Un profil durable, une seule conversation sur cet ordinateur.",
+        bots_edit="Modifier", bots_edit_sub="Profil de %1",
+        bots_create="Créer", bots_search="Rechercher un bot",
+        bots_empty="Aucun bot pour l’instant. Créez-en un pour un fil durable, avec sa mémoire et ses routines.",
+        bots_hidden="Masqués (%1)", bots_hide="Masquer", bots_unhide="Afficher",
+        bots_face="Apparence", bots_face_random="Apparence au hasard",
+        bots_title_ph="Nom du bot", bots_id_ph="identifiant (lettres, chiffres, tirets)",
+        bots_desc_ph="Rôle en une phrase", bots_folder_ph="Dossier de travail (facultatif)",
+        bots_folder_pick="Choisir un dossier", bots_folder_clear="Retirer le dossier",
+        bots_advanced="SOUL, skills et mémoire", bots_skills="Skills Ornis",
+        bots_skill_owned="à lui", bots_open_memory="Ouvrir la mémoire",
+        bots_open_folder="Ouvrir le profil", bots_missing="Ce bot n’existe plus",
+        bots_delete_title="Supprimer %1 ?",
+        bots_delete_text="Son profil, sa mémoire, ses routines et ses échanges avec les autres bots seront effacés.",
+        bots_routines="Routines", bots_routines_empty="Aucune routine. Le bot peut en créer, ou ajoutez-en une ici.",
+        bots_routines_open="Afficher les routines", bots_routines_close="Masquer les routines",
+        bots_schedule_advanced="Rythme personnalisé", bots_routine_add="Ajouter une routine", bots_routine_run="Lancer",
+        bots_peer_1="Message avec %1", bots_peer_n="%1 messages avec %2",
+        bots_peer_title="Échange avec %1",
+    ),
+    "en": dict(
+        bots_tab_sessions="Sessions", bots_tab_bots="Bots",
+        bots_new="New bot", bots_new_sub="A durable profile, one conversation on this computer.",
+        bots_edit="Edit", bots_edit_sub="Profile of %1",
+        bots_create="Create", bots_search="Search bots",
+        bots_empty="No bots yet. Create one for a lasting thread, with its memory and routines.",
+        bots_hidden="Hidden (%1)", bots_hide="Hide", bots_unhide="Show",
+        bots_face="Look", bots_face_random="Random look",
+        bots_title_ph="Bot name", bots_id_ph="id (letters, digits, dashes)",
+        bots_desc_ph="Role in one line", bots_folder_ph="Working folder (optional)",
+        bots_folder_pick="Choose a folder", bots_folder_clear="Clear folder",
+        bots_advanced="SOUL, skills and memory", bots_skills="Ornis skills",
+        bots_skill_owned="its own", bots_open_memory="Open memory",
+        bots_open_folder="Open profile", bots_missing="This bot no longer exists",
+        bots_delete_title="Delete %1?",
+        bots_delete_text="Its profile, memory, routines and exchanges with other bots will be erased.",
+        bots_routines="Routines", bots_routines_empty="No routines. The bot can create some, or add one here.",
+        bots_routines_open="Show routines", bots_routines_close="Hide routines",
+        bots_schedule_advanced="Custom schedule", bots_routine_add="Add a routine", bots_routine_run="Run",
+        bots_peer_1="Message with %1", bots_peer_n="%1 messages with %2",
+        bots_peer_title="Exchange with %1",
+    ),
+    "de": dict(
+        bots_tab_sessions="Sitzungen", bots_tab_bots="Bots",
+        bots_new="Neuer Bot", bots_new_sub="Ein dauerhaftes Profil, ein Gespräch auf diesem Computer.",
+        bots_edit="Bearbeiten", bots_edit_sub="Profil von %1",
+        bots_create="Erstellen", bots_search="Bots suchen",
+        bots_empty="Noch keine Bots. Legen Sie einen an für einen dauerhaften Thread mit Gedächtnis und Routinen.",
+        bots_hidden="Ausgeblendet (%1)", bots_hide="Ausblenden", bots_unhide="Einblenden",
+        bots_face="Aussehen", bots_face_random="Zufälliges Aussehen",
+        bots_title_ph="Bot-Name", bots_id_ph="ID (Buchstaben, Ziffern, Bindestriche)",
+        bots_desc_ph="Rolle in einem Satz", bots_folder_ph="Arbeitsordner (optional)",
+        bots_folder_pick="Ordner wählen", bots_folder_clear="Ordner entfernen",
+        bots_advanced="SOUL, Skills und Gedächtnis", bots_skills="Ornis-Skills",
+        bots_skill_owned="eigene", bots_open_memory="Gedächtnis öffnen",
+        bots_open_folder="Profil öffnen", bots_missing="Dieser Bot existiert nicht mehr",
+        bots_delete_title="%1 löschen?",
+        bots_delete_text="Profil, Gedächtnis, Routinen und der Austausch mit anderen Bots werden gelöscht.",
+        bots_routines="Routinen", bots_routines_empty="Keine Routinen. Der Bot kann welche anlegen, oder fügen Sie hier eine hinzu.",
+        bots_routines_open="Routinen anzeigen", bots_routines_close="Routinen ausblenden",
+        bots_schedule_advanced="Eigener Zeitplan", bots_routine_add="Routine hinzufügen", bots_routine_run="Starten",
+        bots_peer_1="Nachricht mit %1", bots_peer_n="%1 Nachrichten mit %2",
+        bots_peer_title="Austausch mit %1",
+    ),
+}.items():
+    TEXT[_lang].update(_t)
+
+
 def language():
     lang = QLocale().name()[:2]
     return lang if lang in TEXT else "fr"

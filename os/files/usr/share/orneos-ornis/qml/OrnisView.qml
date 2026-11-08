@@ -292,6 +292,10 @@ Item {
             onCodeChosen: (folder, session) => win.openCode(folder, session)
             onCodeMenuRequested: (session, item, x, y) => codeMenu.openFor(session, item, x, y)
             onProjectPickRequested: codeFolderDialog.open()          // the Code tab: a folder to work in
+            onBotChosen: id => { if (codeLocked()) return; mode = "projects"; view = "code"; peek = false; sidebar.codeTab = "bots"; bots.open(id) }
+            onBotCreateRequested: { if (codeLocked()) return; mode = "projects"; view = "code"; sidebar.codeTab = "bots"; botDialog.openNew() }
+            onBotEditRequested: id => botDialog.openEdit(id)
+            onBotMenuRequested: (bot, item, x, y) => botMenu.openFor(bot, item, x, y)
             onModeChosen: m => m === "tasks" ? win.showTasks() : m === "projects" ? win.showCode() : win.showChats()
             onTaskChosen: id => win.openTask(id)
             onJobChosen: session => win.openJob(session)
@@ -496,6 +500,43 @@ Item {
         id: codeFolderDialog
         title: app.t.code_choose_folder
         onAccepted: win.newCode(app.localPath(selectedFolder))
+    }
+    BotDialog { id: botDialog }
+    OMenu {
+        id: botMenu
+        property var bot: ({})
+        parent: Overlay.overlay
+        function openFor(b, item, px, py) {
+            bot = b
+            const p = item.mapToItem(Overlay.overlay, px, py)
+            x = Math.min(p.x, Overlay.overlay.width - implicitWidth - 8)
+            y = Math.min(p.y, Overlay.overlay.height - implicitHeight - 8)
+            open()
+        }
+        OMenuItem {
+            text: app.t.bots_edit; iconName: "edit"
+            onTriggered: botDialog.openEdit(botMenu.bot.id)
+        }
+        OMenuItem {
+            text: botMenu.bot.hidden ? app.t.bots_unhide : app.t.bots_hide; iconName: "eye"
+            onTriggered: bots.setHidden(botMenu.bot.id, !botMenu.bot.hidden)
+        }
+        OMenuItem {
+            text: app.t.bots_open_folder; iconName: "folder"
+            onTriggered: {
+                const path = bots.profilePath(botMenu.bot.id)
+                if (path) app.openFolder(path)
+            }
+        }
+        Rectangle { width: parent ? parent.width : 0; height: 1; color: win.c.hairline }
+        OMenuItem {
+            text: app.t.delete; iconName: "trash"
+            onTriggered: workDialog.ask(
+                app.t.bots_delete_title.replace("%1", botMenu.bot.title || botMenu.bot.id),
+                app.t.bots_delete_text,
+                [{ id: "cancel", text: app.t.cancel }, { id: "yes", text: app.t.delete, kind: "danger" }],
+                () => bots.remove(botMenu.bot.id))
+        }
     }
     ProfileDialog { id: profileDialog }
     CommandsDialog { id: commandsDialog }

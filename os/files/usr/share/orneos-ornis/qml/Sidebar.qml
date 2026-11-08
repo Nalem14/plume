@@ -13,6 +13,7 @@ Rectangle {
     property string view
     property string mode: "chats"        // chats | projects | tasks (Activité: a view over the last list)
     property string listMode: "chats"    // the list shown: chats | projects (Chat | Code)
+    property string codeTab: "sessions"  // sessions | bots (only when listMode is projects)
     property bool searchOpen: false
     property string taskId               // the task shown on the right
     property string query
@@ -25,6 +26,10 @@ Rectangle {
     signal codeMenuRequested(var session, Item item, real x, real y)
     signal projectPickRequested()
     signal modeChosen(string mode)
+    signal botChosen(string id)
+    signal botCreateRequested()
+    signal botEditRequested(string id)
+    signal botMenuRequested(var bot, Item item, real x, real y)
     signal taskChosen(string id)
     signal jobChosen(string session)
     signal menuRequested(var session, Item item, real x, real y)
@@ -115,8 +120,14 @@ Rectangle {
             Layout.fillWidth: true
             visible: side.searchOpen
             iconName: "search"
-            placeholderText: side.listMode === "projects" ? app.t.code_search : app.t.search
-            onTextChanged: { side.query = text; chat.setQuery(text) }
+            placeholderText: side.listMode === "projects"
+                ? (side.codeTab === "bots" ? app.t.bots_search : app.t.code_search)
+                : app.t.search
+            onTextChanged: {
+                side.query = text
+                chat.setQuery(text)
+                if (side.listMode === "projects" && side.codeTab === "bots") bots.setQuery(text)
+            }
             Keys.onDownPressed: { side.shownList.currentIndex = 0; side.shownList.forceActiveFocus() }
             Keys.onEscapePressed: side.closeSearch()
         }
@@ -229,11 +240,49 @@ Rectangle {
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 1
-            AbstractButton {                 // « Nouvelle discussion » or « Nouvelle session »: follows Chat | Code
+            // Code only: Sessions | Bots under the Chat|Code switch
+            Row {
+                visible: side.listMode === "projects"
+                Layout.fillWidth: true
+                Layout.topMargin: 2
+                spacing: 16
+                Repeater {
+                    model: [
+                        { key: "sessions", label: app.t.bots_tab_sessions },
+                        { key: "bots", label: app.t.bots_tab_bots }
+                    ]
+                    AbstractButton {
+                        id: codeTabBtn
+                        required property var modelData
+                        readonly property bool on: side.codeTab === modelData.key
+                        implicitHeight: 28
+                        hoverEnabled: true
+                        onClicked: side.codeTab = modelData.key
+                        contentItem: Column {
+                            spacing: 4
+                            Text {
+                                text: codeTabBtn.modelData.label
+                                font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                                font.weight: codeTabBtn.on ? Font.DemiBold : Font.Medium
+                                font.capitalization: Font.AllUppercase
+                                font.letterSpacing: 0.6
+                                color: codeTabBtn.on ? side.c.text : side.c.muted
+                            }
+                            Rectangle {
+                                width: parent.children[0].width; height: 2; radius: 1
+                                color: codeTabBtn.on ? side.c.saffron : "transparent"
+                            }
+                        }
+                    }
+                }
+            }
+
+            AbstractButton {                 // « Nouvelle discussion » or « Nouvelle session » / « Nouveau bot »
                 id: newRow
                 Layout.fillWidth: true
                 implicitHeight: 36
                 hoverEnabled: true
+                visible: !(side.listMode === "projects" && side.codeTab === "bots")
                 onClicked: side.newChat()
                 readonly property string label: side.listMode === "projects" ? app.t.new_session : app.t.new_discussion
                 Accessible.name: label
@@ -577,9 +626,157 @@ Rectangle {
             }
         }
 
+        // Code › Bots
+        ColumnLayout {
+            visible: side.listMode === "projects" && side.codeTab === "bots"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 4
+
+            RowLayout {
+                Layout.fillWidth: true
+                Text {
+                    Layout.fillWidth: true
+                    text: app.t.bots_tab_bots
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
+                    font.capitalization: Font.AllUppercase; font.letterSpacing: 0.5
+                    color: side.c.muted
+                }
+                OButton {
+                    kind: "quiet"; iconName: "plus"; iconSize: 15; height_: 26
+                    tip: app.t.bots_new
+                    onClicked: side.botCreateRequested()
+                }
+            }
+
+            ListView {
+                id: botList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 2
+                boundsBehavior: Flickable.StopAtBounds
+                model: bots.list
+                delegate: AbstractButton {
+                    id: bRow
+                    required property var modelData
+                    width: ListView.view.width
+                    implicitHeight: 52
+                    hoverEnabled: true
+                    onClicked: side.botChosen(modelData.id)
+                    background: Rectangle {
+                        radius: 8
+                        color: bRow.modelData.current ? side.c.card : bRow.hovered ? side.c.hover : "transparent"
+                    }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: event => side.botMenuRequested(bRow.modelData, bRow, event.position.x, event.position.y)
+                    }
+                    contentItem: RowLayout {
+                        spacing: 10
+                        Item { implicitWidth: 2 }
+                        BotFace { face: bRow.modelData.face; size: 30; busy: bRow.modelData.busy }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: bRow.modelData.title
+                                    elide: Text.ElideRight
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                                    font.weight: bRow.modelData.current ? Font.DemiBold : Font.Medium
+                                    color: side.c.text
+                                }
+                                Rectangle {
+                                    visible: bRow.modelData.busy
+                                    implicitWidth: 7; implicitHeight: 7; radius: 3.5
+                                    color: side.c.saffron
+                                }
+                                Text {
+                                    text: bRow.modelData.when
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 11
+                                    color: side.c.faint
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: bRow.modelData.preview || bRow.modelData.description
+                                elide: Text.ElideRight
+                                font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                                color: side.c.muted
+                            }
+                        }
+                        Item { implicitWidth: 2 }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                visible: bots.hidden.length > 0
+                Layout.fillWidth: true
+                spacing: 2
+                AbstractButton {
+                    id: hiddenToggle
+                    property bool open: false
+                    Layout.fillWidth: true
+                    implicitHeight: 28
+                    onClicked: open = !open
+                    contentItem: Text {
+                        text: (hiddenToggle.open ? "▾ " : "▸ ") + app.t.bots_hidden.replace("%1", bots.hidden.length)
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: side.c.faint
+                        leftPadding: 8; verticalAlignment: Text.AlignVCenter
+                    }
+                }
+                Repeater {
+                    model: hiddenToggle.open ? bots.hidden : []
+                    AbstractButton {
+                        id: hRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 44
+                        hoverEnabled: true
+                        onClicked: side.botChosen(modelData.id)
+                        background: Rectangle {
+                            radius: 8
+                            color: hRow.modelData.current ? side.c.card : hRow.hovered ? side.c.hover : "transparent"
+                        }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: event => side.botMenuRequested(hRow.modelData, hRow, event.position.x, event.position.y)
+                        }
+                        contentItem: RowLayout {
+                            spacing: 10
+                            Item { implicitWidth: 2 }
+                            BotFace { face: hRow.modelData.face; size: 24 }
+                            Text {
+                                Layout.fillWidth: true
+                                text: hRow.modelData.title
+                                elide: Text.ElideRight
+                                font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                                color: side.c.muted
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                visible: botList.count === 0
+                Layout.fillWidth: true
+                Layout.topMargin: 24
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: app.t.bots_empty
+                font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                color: side.c.muted
+            }
+        }
+
         // Code: folders scroll above; local cron tasks stick below with their own scroll (Hermès-style)
         ColumnLayout {
-            visible: side.listMode === "projects"
+            visible: side.listMode === "projects" && side.codeTab === "sessions"
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
@@ -862,17 +1059,20 @@ Rectangle {
             }
         }
 
-        // sticky Cron block: own scroll, under the folders
+        // sticky Cron block: own scroll, under the folders (clip so expand never covers quota / AccountBar)
         Rectangle {
+            id: cronPanel
             Layout.fillWidth: true
-            Layout.preferredHeight: cronBox.height
-            Layout.maximumHeight: Math.max(120, parent.height * 0.38)
+            readonly property int cap: Math.max(120, parent.height * 0.38)
+            Layout.preferredHeight: Math.min(1 + cronHeader.height + Math.max(cronList.contentHeight, cronList.count ? 8 : 40), cap)
+            Layout.maximumHeight: cap
+            clip: true
             color: "transparent"
             Column {
-                id: cronBox
                 width: parent.width
                 Rectangle { width: parent.width; height: 1; color: side.c.hairline }
                 RowLayout {
+                    id: cronHeader
                     width: parent.width
                     height: 30
                     spacing: 6
@@ -895,7 +1095,8 @@ Rectangle {
                 ListView {
                     id: cronList
                     width: parent.width
-                    height: Math.min(contentHeight, Math.max(72, side.height * 0.32))
+                    // Follow the panel's laid-out height (already capped), so expand scrolls instead of overflowing
+                    height: Math.max(0, cronPanel.height - cronHeader.height - 1)
                     clip: true
                     spacing: 1
                     boundsBehavior: Flickable.StopAtBounds

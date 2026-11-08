@@ -457,6 +457,13 @@ def upsert(task: dict, *, create: bool = False) -> dict:
                 row["force_run"] = True
             else:
                 row.pop("force_run", None)
+        # Bot routines: same store, run inside that bot's canonical chat (ornis_bots)
+        if "bot" in task:
+            bot = str(task.get("bot") or "").strip().lower()
+            if bot:
+                row["bot"] = bot
+            else:
+                row.pop("bot", None)
         data["tasks"] = [row if t.get("id") == tid else t for t in data["tasks"]]
         if not existing:
             data["tasks"].append(row)

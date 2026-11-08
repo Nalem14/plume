@@ -3,6 +3,7 @@ from pathlib import Path
 
 from module import Bundle
 from ornis_core.app import App
+from ornis_core.bots import Bots
 from ornis_core.chat import Chat
 from ornis_core.code import CodeChat
 from ornis_core.cron import Cron
@@ -40,21 +41,24 @@ def build(qt):
     chat = Chat(app)
     code = CodeChat(app)                    # the « Code » mode: Ornis works in a folder of the computer
     cron = Cron(app, code)                  # local Code cron tasks (not cloud scheduled Chat tasks)
+    bots = Bots(app, code)                  # durable Code bots (SOUL, routines, peer messages)
     projects = Projects(app, chat)          # the Work mode's projects (instructions, folder, conversations)
     chat.projects = projects
     app.project_folder = lambda sid: projects.local_folder(sid)
     projects.toast.connect(app.toast)
     cron.toast.connect(app.toast)
+    bots.toast.connect(app.toast)
     theme.setMode(app.pref("theme"))
     app.prefsChanged.connect(lambda: theme.setMode(app.pref("theme")))
     qt.aboutToQuit.connect(chat.flush)      # deletions still waiting for their undo
     qt.aboutToQuit.connect(code.shutdown)   # the coding agent stops with the window
     qt.aboutToQuit.connect(cron.shutdown)
+    qt.aboutToQuit.connect(bots._worker.shutdown)
     chat.badgeChanged.connect(dock_count())
 
     def on_active():
         chat.refresh(False)
 
-    context = {"app": app, "theme": theme, "chat": chat, "code": code, "cron": cron, "projects": projects}
+    context = {"app": app, "theme": theme, "chat": chat, "code": code, "cron": cron, "bots": bots, "projects": projects}
     # chat in keep: its badgeChanged gives Plume's rail the conversations with answers not read yet
-    return Bundle("ornis", app, context, QML / "OrnisView.qml", QML / "Main.qml", on_active, keep=[chat, code, cron, projects])
+    return Bundle("ornis", app, context, QML / "OrnisView.qml", QML / "Main.qml", on_active, keep=[chat, code, cron, bots, projects])
