@@ -1,0 +1,350 @@
+# Orneos OS: Fedora Kinoite (KDE Plasma, atomic, bootc) + the Orneos layer. No fork: everything we add is
+# files (os/files/), generated art (stage "art") and a few packages. See os/README.md.
+# Build from the repository root: sh os/build.sh
+
+ARG FEDORA=44
+ARG FONTS_COMMIT=94301472b4d809299b4775bc6502592b83dd6934
+
+# ---- Generated art: wallpapers, start-menu apps, previews, boot logo --------------------------------
+# The art is the same for every architecture: always built natively
+FROM --platform=$BUILDPLATFORM registry.fedoraproject.org/fedora:${FEDORA} AS art
+ARG FONTS_COMMIT
+RUN dnf -y install --setopt=install_weak_deps=False librsvg2-tools python3 ImageMagick && dnf clean all
+ADD --checksum=sha256:6ceeadf6be8e1fd7687011c7fa38ed0edd1abe967a0b73d97caec183552e823d \
+    https://raw.githubusercontent.com/google/fonts/${FONTS_COMMIT}/ofl/schibstedgrotesk/SchibstedGrotesk%5Bwght%5D.ttf /src/fonts/SchibstedGrotesk-wght.ttf
+ADD --checksum=sha256:b49fedb6f3a2ff9b43e13351888641505dc8e5f300941e597eecbc3f52ba357b \
+    https://raw.githubusercontent.com/google/fonts/${FONTS_COMMIT}/ofl/schibstedgrotesk/SchibstedGrotesk-Italic%5Bwght%5D.ttf /src/fonts/SchibstedGrotesk-Italic-wght.ttf
+ADD --checksum=sha256:3b4f3063b6ac7c1e403e2c4a5e8ef3a58190ff83ed7b15af66511858699139ce \
+    https://raw.githubusercontent.com/google/fonts/${FONTS_COMMIT}/ofl/schibstedgrotesk/OFL.txt /out/root/usr/share/licenses/orneos-fonts/OFL-SchibstedGrotesk.txt
+COPY os/tools/ /src/tools/
+COPY public_html/assets/img/icons.svg /src/icons.svg
+COPY os/installer/ /src/installer/
+COPY os/files/usr/share/orneos/mascot/ /src/files/usr/share/orneos/mascot/
+# apps.py checks that the launcher sorts every Orneos app into its family
+COPY os/files/usr/share/plasma/plasmoids/eu.orneos.launcher/contents/code/families.js /src/files/usr/share/plasma/plasmoids/eu.orneos.launcher/contents/code/families.js
+COPY os/files/etc/xdg/kdeglobals /src/kdeglobals
+COPY os/files/usr/share/color-schemes/OrneosLight.colors /src/OrneosLight.colors
+COPY os/files/usr/share/color-schemes/OrneosDark.colors /src/OrneosDark.colors
+COPY os/files/usr/share/orneos-connect/mark-inv.svg /src/mark-inv.svg
+RUN set -eu; cd /src; \
+    install -Dm644 -t /out/root/usr/share/fonts/orneos fonts/*.ttf; \
+    python3 tools/wallpaper.py svg; \
+    wp=/out/root/usr/share/wallpapers/Orneos; \
+    for theme in light dark; do \
+        dir=$wp/contents/images; [ $theme = dark ] && dir=$wp/contents/images_dark; mkdir -p $dir; \
+        for f in svg/$theme/*.svg; do rsvg-convert "$f" -o "$dir/$(basename "$f" .svg).png"; done; \
+    done; \
+    printf '%s\n' '{' '    "KPlugin": {' '        "Authors": [{ "Name": "Orneos" }],' '        "Id": "Orneos",' \
+        '        "License": "CC-BY-SA-4.0",' '        "Name": "Orneos"' '    }' '}' > $wp/metadata.json; \
+    lnf=/out/root/usr/share/plasma/look-and-feel; \
+    for p in eu.orneos.desktop eu.orneos.desktop.dark; do \
+        t=light; [ $p = eu.orneos.desktop.dark ] && t=dark; mkdir -p $lnf/$p/contents/previews; \
+        rsvg-convert -w 1920 svg/$t/3840x2160.svg | magick png:- -quality 90 $lnf/$p/contents/previews/fullscreenpreview.jpg; \
+        rsvg-convert -w 480 svg/$t/3840x2160.svg -o $lnf/$p/contents/previews/preview.png; \
+    done; \
+    python3 tools/icons.py /out/root; \
+    python3 tools/apps.py icons.svg /out/root; \
+    # Widget catalogue: a preview per desktop widget (Plasma shows contents/screenshot.png instead of the icon)
+    mkdir -p ~/.fonts; cp fonts/*.ttf ~/.fonts/; \
+    python3 tools/widget_previews.py svg/widgets /out/root; \
+    for f in svg/widgets/*.svg; do \
+        id=$(basename "$f" .svg); mkdir -p /out/root/usr/share/plasma/plasmoids/$id/contents; \
+        rsvg-convert -w 256 -h 256 "$f" -o /out/root/usr/share/plasma/plasmoids/$id/contents/screenshot.png; \
+    done; \
+    # Plasma Setup: its welcome screen's background, and the Orneos tile instead of Konqi on its last page
+    # (tools/setup_branding.py puts them in place)
+    mkdir -p /out/root/usr/share/orneos/setup/welcome; \
+    for f in svg/welcome/*.svg; do rsvg-convert "$f" -o "/out/root/usr/share/orneos/setup/welcome/$(basename "$f" .svg).png"; done; \
+    rsvg-convert -w 640 -h 640 /out/root/usr/share/icons/hicolor/scalable/apps/orneos.svg \
+        -o /out/root/usr/share/orneos/setup/finished.png; \
+    # Plume (the suite) is its own package (orneos-plume, rpm), which brings its icon: no file conflict
+    rm /out/root/usr/share/icons/hicolor/scalable/apps/eu.orneos.plume.svg; \
+    python3 tools/kdeglobals.py kdeglobals OrneosLight.colors /out/root/etc/xdg/kdeglobals; \
+    sed -e 's/^LookAndFeelPackage=.*/LookAndFeelPackage=eu.orneos.desktop.dark/' \
+        -e 's/^ColorScheme=.*/ColorScheme=OrneosDark/' kdeglobals > kdeglobals.greeter; \
+    python3 tools/kdeglobals.py kdeglobals.greeter OrneosDark.colors \
+        /out/root/usr/share/orneos/plasmalogin/kdeglobals; \
+    python3 tools/plasma_style.py /out/root/usr/share/plasma/desktoptheme/orneos; \
+    python3 tools/konsole.py /out/root/usr/share/konsole; \
+    python3 tools/sounds.py /out/root/usr/share/sounds; \
+    python3 tools/firefox_theme.py /out/root/usr/lib64/firefox/browser/extensions; \
+    mkdir -p /out/root/usr/share/plasma/look-and-feel/eu.orneos.desktop/contents/splash/images; \
+    rsvg-convert -w 3840 svg/splash.svg -o /out/root/usr/share/plasma/look-and-feel/eu.orneos.desktop/contents/splash/images/background.png; \
+    mkdir -p /out/plymouth; rsvg-convert -w 112 mark-inv.svg -o /out/plymouth/watermark.png; \
+    # Installer branding (os/iso.sh puts it in the ISO's product.img): the portrait wallpaper, its arches
+    # centred on the visible part of the sidebar (~230 px), our stylesheet, and the logo in our font
+    inst=/out/root/usr/share/orneos/installer; mkdir -p $inst ~/.fonts; cp fonts/*.ttf ~/.fonts/; \
+    rsvg-convert -w 760 svg/dark/2160x3840.svg | magick png:- -crop 400x1000+265+351 +repage $inst/sidebar-bg.png; \
+    rsvg-convert -w 400 -h 96 installer/sidebar-logo.svg -o $inst/sidebar-logo.png; \
+    magick $inst/sidebar-logo.png -resize 200x48 $inst/sidebar-logo.png; \
+    cp installer/anaconda.css $inst/anaconda.css
+
+# ---- Klassy: app style and window decoration (Breeze's code, with configurable shapes) ----------------
+# Its tags follow Plasma's. Built on plain Fedora (a few layers, unlike Kinoite's hundreds), whose
+# repositories Kinoite is composed from: same Plasma and Qt. Only the style, the decoration and their
+# settings modules are kept.
+FROM registry.fedoraproject.org/fedora:${FEDORA} AS klassy
+ARG KLASSY=6.7.3
+ADD --checksum=sha256:a3e9b96723cda1b3c46d6f456d495e5e34d051940e6f71aa9a345e8fb850e1fb \
+    https://github.com/paulmcauley/klassy/archive/refs/tags/v${KLASSY}.tar.gz /src/klassy.tar.gz
+RUN set -eu; \
+    dnf -y install --setopt=install_weak_deps=False gcc-c++ cmake extra-cmake-modules gettext \
+        'cmake(KDecoration3)' 'cmake(KF6ColorScheme)' 'cmake(KF6Config)' 'cmake(KF6CoreAddons)' \
+        'cmake(KF6FrameworkIntegration)' 'cmake(KF6GuiAddons)' 'cmake(KF6I18n)' 'cmake(KF6KCMUtils)' \
+        'cmake(KF6WindowSystem)' 'cmake(KF6IconThemes)' 'cmake(KF6Package)' 'cmake(KF6Service)' \
+        'cmake(KF6KirigamiPlatform)' 'cmake(Qt6Core)' 'cmake(Qt6DBus)' 'cmake(Qt6Quick)' 'cmake(Qt6Svg)' \
+        'cmake(Qt6Widgets)' 'cmake(Qt6Xml)'; \
+    tar xzf /src/klassy.tar.gz -C /src; cd /src/klassy-$KLASSY; \
+    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DBUILD_QT5=OFF -DBUILD_TESTING=OFF \
+        -DKDE_INSTALL_USE_QT_SYS_PATHS=ON; \
+    cmake --build build -j"$(nproc)"; \
+    DESTDIR=/out cmake --install build; \
+    cd /out/usr; \
+    rm -rf lib64/cmake share/plasma share/color-schemes share/icons/klassy* share/applications/klassy-settings.desktop; \
+    install -Dm644 /src/klassy-$KLASSY/LICENSES/GPL-2.0-or-later.txt share/licenses/klassy/GPL-2.0-or-later.txt
+
+# ---- Darkly: the app style (Breeze's code too) that makes toolbars, menus, tabs and Dolphin's side panel
+# translucent on KWin's blur (Klassy only does menus). Only the style and its settings module are kept: the window
+# decoration stays Klassy's, the colours and the Plasma style stay ours (/etc/xdg/darklyrc).
+ARG DARKLY=0.5.41
+ADD --checksum=sha256:25b0ca9fa6b5badf1c70bc5098fddb7c2a30e00a5a43613d6872a96fc407ac93 \
+    https://github.com/Bali10050/Darkly/archive/refs/tags/v${DARKLY}.tar.gz /src/darkly.tar.gz
+RUN set -eu; \
+    tar xzf /src/darkly.tar.gz -C /src; cd /src/Darkly-$DARKLY; \
+    cmake -B build -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DBUILD_QT5=OFF -DBUILD_TESTING=OFF \
+        -DWITH_DECORATIONS=OFF -DKDE_INSTALL_USE_QT_SYS_PATHS=ON; \
+    cmake --build build -j"$(nproc)"; \
+    DESTDIR=/out cmake --install build; \
+    cd /out/usr; \
+    rm -rf lib64/cmake/Darkly share/plasma/desktoptheme/darkly share/color-schemes share/icons/hicolor/scalable/apps/darkly-settings.svgz \
+        share/applications/darklystyleconfig.desktop share/locale/*/LC_MESSAGES/darkly_kwin_deco.mo; \
+    test -f lib64/qt6/plugins/styles/darkly6.so; \
+    install -Dm644 /src/Darkly-$DARKLY/COPYING share/licenses/darkly/COPYING
+
+# ---- Piper: natural voices on the device for reading aloud (Ornis, Plume, Firefox, the screen reader), through
+# speech-dispatcher (etc/speech-dispatcher/modules/piper-generic.conf). Kinoite only has eSpeak NG, robotic.
+# The upstream build (onnxruntime, its own eSpeak NG data) in /usr/libexec: under /usr/lib, SELinux labels it
+# lib_t and it could not run. Voices only under a licence that allows shipping them: Siwis (CC BY 4.0),
+# Cori (public domain), Thorsten (CC0). ~50 MB of binary + ~63 MB a voice.
+FROM --platform=$BUILDPLATFORM registry.fedoraproject.org/fedora:${FEDORA} AS voices
+ARG TARGETARCH
+ARG PIPER=2023.11.14-2
+ARG VOICES=https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0
+ADD --checksum=sha256:a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992 \
+    https://github.com/rhasspy/piper/releases/download/${PIPER}/piper_linux_x86_64.tar.gz /src/piper-amd64.tar.gz
+ADD --checksum=sha256:fea0fd2d87c54dbc7078d0f878289f404bd4d6eea6e7444a77835d1537ab88eb \
+    https://github.com/rhasspy/piper/releases/download/${PIPER}/piper_linux_aarch64.tar.gz /src/piper-arm64.tar.gz
+ADD --checksum=sha256:641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99 \
+    ${VOICES}/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx /out/usr/share/orneos/voices/
+ADD --checksum=sha256:39479916c2db192b5ac9764daddd0c744d83e023ad890c6976c0633ae4df8959 \
+    ${VOICES}/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx.json /out/usr/share/orneos/voices/
+ADD --checksum=sha256:1899f98e5fb8310154f3c2973f4b8a929ba7245e722b3d3a85680b833d95f10d \
+    ${VOICES}/en/en_GB/cori/medium/en_GB-cori-medium.onnx /out/usr/share/orneos/voices/
+ADD --checksum=sha256:e262c16d7f192f69d4edd6b4ef8a5915379e67495fcc402f1ab15eeb33da3d36 \
+    ${VOICES}/en/en_GB/cori/medium/en_GB-cori-medium.onnx.json /out/usr/share/orneos/voices/
+ADD --checksum=sha256:7e64762d8e5118bb578f2eea6207e1a35a8e0c30595010b666f983fc87bb7819 \
+    ${VOICES}/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx /out/usr/share/orneos/voices/
+ADD --checksum=sha256:974adee790533adb273a1ac88f49027d2a1b8f0f2cf4905954a4791e79264e85 \
+    ${VOICES}/de/de_DE/thorsten/medium/de_DE-thorsten-medium.onnx.json /out/usr/share/orneos/voices/
+RUN set -eu; \
+    mkdir -p /out/usr/libexec; \
+    tar xzf /src/piper-$TARGETARCH.tar.gz -C /out/usr/libexec; \
+    mv /out/usr/libexec/piper /out/usr/libexec/orneos-piper; \
+    cd /out/usr/libexec/orneos-piper; \
+    rm -rf pkgconfig piper_phonemize espeak-ng; \
+    chmod -R a+rX . /out/usr/share/orneos/voices; \
+    l=/out/usr/share/licenses/orneos-voices; mkdir -p $l; \
+    printf '%s\n' \
+        'Piper (MIT, https://github.com/rhasspy/piper), with ONNX Runtime (MIT), piper-phonemize (MIT)' \
+        'and eSpeak NG (GPL-3.0-or-later, https://github.com/espeak-ng/espeak-ng).' '' \
+        'Voices (https://huggingface.co/rhasspy/piper-voices):' \
+        '- fr_FR-siwis-medium: SIWIS French Speech Synthesis Database, CC BY 4.0,' \
+        '  https://datashare.is.ed.ac.uk/handle/10283/2353' \
+        '- en_GB-cori-medium: LibriVox recordings, public domain' \
+        '- de_DE-thorsten-medium: Thorsten-Voice by Thorsten Mueller, CC0, https://github.com/thorstenMueller/Thorsten-Voice' \
+        > $l/README
+
+# ---- The system --------------------------------------------------------------------------------------
+FROM quay.io/fedora-ostree-desktops/kinoite:${FEDORA}
+
+COPY os/files/ /
+COPY --from=art /out/root/ /
+COPY --from=klassy /out/ /
+COPY --from=voices /out/ /
+# Piper speaks French, English and German (and is what QtTextToSpeech and Firefox find first for them); every
+# other language keeps eSpeak NG. The build stops if Piper cannot say a sentence.
+RUN set -eu; c=/etc/speech-dispatcher/speechd.conf; \
+    grep -q '"piper-generic.conf"' $c || sed -i '/^AddModule "espeak-ng"/a AddModule "piper" "sd_generic" "piper-generic.conf"' $c; \
+    for l in fr en de; do grep -q "^LanguageDefaultModule \"$l\"" $c || echo "LanguageDefaultModule \"$l\" \"piper\"" >> $c; done; \
+    grep -q '^AddModule "piper"' $c; \
+    for v in /usr/share/orneos/voices/*.onnx; do \
+        echo "Bonjour, je suis Ornis." | /usr/libexec/orneos-piper/piper --quiet --model "$v" --output_raw > /tmp/v.raw; \
+        [ "$(stat -c %s /tmp/v.raw)" -gt 20000 ]; \
+    done; rm -f /tmp/v.raw
+# Orneos Dark brings the same desktop layout (KPackage ignores links that leave the package)
+RUN cp -r /usr/share/plasma/look-and-feel/eu.orneos.desktop/contents/layouts /usr/share/plasma/look-and-feel/eu.orneos.desktop.dark/contents/
+
+RUN --mount=type=bind,source=vendor,target=/vendor set -eu; \
+    # Files client: the Orneos desktop client (AppImage from clients/, extracted: no FUSE needed) when
+    # build.sh provides one, else Fedora's Nextcloud client. Then Firefox as a system package (it reads our
+    # policies), Python Qt for Orneos Connect and our mono font.
+    # libaccounts-glib = Accounts GI for orneos-accounts; signon = signond D-Bus; kaccounts-* = Nextcloud services.
+    # gwenview: native image viewer. Kinoite only ships it as a Flatpak, which this image does not
+    # install, so Plasma's default (org.kde.gwenview) is missing and opening a JPEG asks which app to use.
+    # The two format packages are Recommends: without them, weak deps off, WebP / HEIF / AVIF / JPEG XL stay blank.
+    # okular: same story for PDF (Flatpak only on Kinoite), so a PDF asked which app to use.
+    # haruna (video, on mpv) and elisa-player (music): Kinoite has no player outside Flatpak either, so a
+    # video or an MP3 asked which app to use. They decode with the full ffmpeg swapped in below.
+    pkgs="firefox gwenview okular haruna elisa-player qt6-qtimageformats qt6-qtmultimedia qt6-qtlocation qt6-qtpositioning kf6-kimageformats python3-pyside6 qt6-qtwebengine qt6-qtwebchannel qt6-qtwebsockets python3-dbus python3-gobject python3-pillow python3-cryptography python3-qrcode zbar python3-icalendar python3-dateutil ImageMagick libaccounts-glib signon kaccounts-providers kaccounts-integration-qt6 jetbrains-mono-fonts-all plasma-discover-flatpak plasma5support xcb-util-cursor fuse fuse-libs squashfs-tools"; \
+    if [ -f /vendor/orneos-client.AppImage ]; then \
+        cd /usr/lib && cp /vendor/orneos-client.AppImage /tmp/c.AppImage && chmod +x /tmp/c.AppImage; \
+        /tmp/c.AppImage --appimage-extract >/dev/null && mv squashfs-root orneos-client && rm /tmp/c.AppImage; \
+        # The real binary stays next to its libraries, and a copy in /usr/bin is what
+        # actually runs: on Fedora a program under /usr/lib is labeled lib_t and execve
+        # returns EACCES (the launcher then reports exit code 126).
+        cp -a orneos-client/usr/bin/orneos /usr/bin/orneos-files; \
+        chmod 755 /usr/bin/orneos-files; \
+        chmod -R a+rX orneos-client; \
+        printf '%s\n' '#!/bin/sh' \
+            'root=/usr/lib/orneos-client' \
+            'export LD_LIBRARY_PATH="$root/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+            'export QT_PLUGIN_PATH="$root/usr/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"' \
+            'export QML2_IMPORT_PATH="$root/usr/qml${QML2_IMPORT_PATH:+:$QML2_IMPORT_PATH}"' \
+            'exec /usr/bin/orneos-files "$@"' > /usr/bin/orneos; \
+        chmod 755 /usr/bin/orneos; \
+        # no system autostart: the client adds its own once Orneos Connect has given it the account.
+        # Icon[fr]=Orneos (and every other locale) wins over Icon= and does not match the theme
+        # icon "orneos", so the launcher shows a blank tile. Drop the localized icon lines.
+        sed -e 's|^Exec=.*|Exec=orneos %u|' \
+            -e '/^Icon\[/d' \
+            -e 's|^Icon=.*|Icon=orneos|' \
+            -e 's|^Name\[fr\]=.*|Name[fr]=Orneos Fichiers|' \
+            -e 's|^Name\[de\]=.*|Name[de]=Orneos Dateien|' \
+            -e 's|^Name=.*|Name=Orneos Fichiers|' \
+            -e 's|^GenericName\[fr\]=.*|GenericName[fr]=Fichiers|' \
+            -e 's|^GenericName\[de\]=.*|GenericName[de]=Dateien|' \
+            -e 's|^GenericName=.*|GenericName=Files|' \
+            -e 's|^Categories=\(.*\)|Categories=\1X-Orneos;X-Orneos-docs;|' \
+            orneos-client/*.desktop > /usr/share/applications/eu.orneos.desktopclient.orneos.desktop; \
+    else \
+        pkgs="$pkgs nextcloud-client nextcloud-client-dolphin"; \
+    fi; \
+    dnf -y install --setopt=install_weak_deps=False $pkgs; \
+    # Plasma Welcome (and its Fedora pages) would greet the user: Orneos Connect does
+    dnf -y remove plasma-welcome plasma-welcome-fedora; \
+    # Remix marks: Fedora logos out, and its global themes, so the first-run light/dark choice is Orneos
+    dnf -y swap fedora-logos generic-logos --setopt=install_weak_deps=False || true; \
+    rm -rf /usr/share/plasma/look-and-feel/org.fedoraproject.*; \
+    # After the package: its own directory would hide a policies.json copied earlier.
+    # The extension is the signed listing on AMO (same id); a local unsigned xpi never loads.
+    if [ -f /usr/share/orneos/firefox/policies.json ]; then \
+        install -Dm644 /usr/share/orneos/firefox/policies.json \
+            /etc/firefox/policies/policies.json; \
+        install -Dm644 /usr/share/orneos/firefox/policies.json \
+            /usr/lib64/firefox/distribution/policies.json; \
+    fi; \
+    # The KDE online account stays the Nextcloud plugin; only the name shown is Orneos.
+    if [ -f /usr/share/orneos/accounts/nextcloud.provider ]; then \
+        install -Dm644 /usr/share/orneos/accounts/nextcloud.provider \
+            /usr/share/accounts/providers/kde/nextcloud.provider; \
+    fi; \
+    # libaccounts-glib loads only accounts/{providers,services}/* — not the kde/ subdirs
+    # Fedora ships. Without flat links, list_services() is empty and Connect cannot enable
+    # nextcloud-storage / contacts (KDE then shows the account as not connected).
+    for d in providers services; do \
+        for f in /usr/share/accounts/$d/kde/*; do \
+            [ -e "$f" ] || continue; \
+            ln -sfn "$f" "/usr/share/accounts/$d/$(basename "$f")"; \
+        done; \
+    done; \
+    chmod 755 /usr/libexec/orneos-* /usr/bin/orneos-rpm /usr/bin/orneos-updates /usr/bin/orneos-mail /usr/bin/orneos-calendar /usr/bin/orneos-contacts /usr/bin/orneos-passwords \
+        /usr/bin/orneos-notes /usr/bin/orneos-tasks /usr/bin/orneos-photos /usr/bin/orneos-meet /usr/bin/ornis \
+        /usr/share/orneos-ornis/ornis.py /usr/share/orneos-rpm/rpm.py /usr/share/orneos-updates/updates.py /usr/share/orneos-plume/plume.py \
+        /usr/share/orneos-passwords/passwords.py /usr/share/orneos-notes/notes.py /usr/share/orneos-tasks/tasks.py \
+        /usr/share/orneos-photos/photos.py /usr/share/orneos-meet/meet.py; \
+    dnf clean all; rm -rf /var/cache/* /var/log/* /var/lib/dnf /run/dnf
+
+# Multimedia: Fedora ships ffmpeg without H.264 / HEVC / AAC and an empty openh264 stub, so Firefox can't
+# play Twitch and most web video. Full ffmpeg from RPM Fusion, Cisco's openh264 (WebRTC calls in Firefox),
+# and AMD hardware decoding (mesa freeworld: it follows Fedora's mesa version and can lag a few days
+# behind, so best effort; the software decoders still work). Intel keeps Fedora's media driver: it
+# already decodes H.264 / HEVC in hardware, RPM Fusion's nonfree build only adds encoding and is older.
+RUN set -eu; \
+    fedora=$(. /usr/lib/os-release; echo $VERSION_ID); \
+    dnf -y install --setopt=install_weak_deps=False \
+        "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$fedora.noarch.rpm" \
+        "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$fedora.noarch.rpm"; \
+    dnf -y swap ffmpeg-free ffmpeg --allowerasing --setopt=install_weak_deps=False; \
+    dnf -y swap noopenh264 openh264 --setopt=install_weak_deps=False; \
+    dnf -y install --setopt=install_weak_deps=False mozilla-openh264; \
+    dnf -y install --setopt=install_weak_deps=False mesa-va-drivers-freeworld \
+        || echo "warning: mesa-va-drivers-freeworld not installed (AMD hardware decoding)" >&2; \
+    ffmpeg -hide_banner -decoders | grep -q ' h264 ' || { echo "ffmpeg has no H.264 decoder" >&2; exit 1; }; \
+    # --allowerasing must not have taken the players (mimeapps.list opens video and audio with them)
+    rpm -q haruna elisa-player >/dev/null || { echo "the ffmpeg swap removed haruna or elisa-player" >&2; exit 1; }; \
+    # The repositories only served the build: updates come with the image, never from the machine.
+    dnf -y remove rpmfusion-free-release rpmfusion-nonfree-release; \
+    dnf clean all; rm -rf /var/cache/* /var/log/* /var/lib/dnf /run/dnf
+
+# Icons: the side panels keep Breeze's line icons for places at 16, 22 and 24 px
+RUN --mount=type=bind,source=os/tools,target=/tools python3 /tools/icons.py --small /usr/share/icons
+
+# Plasma Setup (first-run assistant) in Orneos colours: its wallpaper, texts and light/dark themes, looked up first in
+# /usr/share/orneos/setup/share by its own session only (etc/xdg/plasma-workspace/env/orneos-setup.sh)
+RUN --mount=type=bind,source=os/tools,target=/tools python3 /tools/setup_branding.py / /usr/share/orneos/setup
+
+# Lock screen (Ornis clock) and logout screen (night blue) on the image's own Plasma files, checked against them
+RUN --mount=type=bind,source=os/tools,target=/tools python3 /tools/lockscreen.py /
+
+# Boot: Fedora's spinner theme on a Klein field, with our mark and a saffron progress line
+COPY --from=art /out/plymouth/watermark.png /usr/share/plymouth/themes/orneos/watermark.png
+RUN set -eu; t=/usr/share/plymouth/themes; \
+    for f in $t/spinner/*.png; do n=$(basename "$f"); [ "$n" = watermark.png ] || cp "$f" $t/orneos/; done; \
+    { cat $t/orneos/orneos.plymouth.in; echo; \
+      sed -n '/^\[two-step\]/,$p' $t/spinner/spinner.plymouth \
+        | sed -e "s|^ImageDir=.*|ImageDir=$t/orneos|" \
+              -e 's/^Font=.*/Font=Schibsted Grotesk 12/' -e 's/^TitleFont=.*/TitleFont=Schibsted Grotesk 28/' \
+              -e '/^\(BackgroundStartColor\|BackgroundEndColor\|Watermark[A-Za-z]*Alignment\|ProgressBar[A-Za-z]*\)=/d' \
+        | sed -e '/^\[two-step\]/a BackgroundStartColor=0x002FA7\nBackgroundEndColor=0x002FA7\nWatermarkHorizontalAlignment=.5\nWatermarkVerticalAlignment=.46\nProgressBarBackgroundColor=0x2A50B4\nProgressBarForegroundColor=0xF0A202\nProgressBarWidth=280\nProgressBarHeight=3\nProgressBarHorizontalAlignment=.5\nProgressBarVerticalAlignment=.62'; \
+    } > $t/orneos/orneos.plymouth; \
+    rm $t/orneos/orneos.plymouth.in; \
+    plymouth-set-default-theme orneos; \
+    kver=$(ls /usr/lib/modules | head -n1); img=/usr/lib/modules/$kver/initramfs.img; \
+    # Fedora composes its initramfs with --add ostree: without it, nothing mounts the deployment at boot
+    dracut --no-hostonly --kver "$kver" --reproducible --zstd --add ostree -f "$img"; \
+    chmod 644 "$img"; \
+    lsinitrd -m "$img" | grep -qx ostree
+
+# Identity, updates staged in the background (applied at the next restart, with rollback in the boot menu).
+# ORNEOS_BUILD (YYYYMMDD.HHMM from build.sh) is what users see in “Vérifier les mises à jour”; the Fedora
+# OSTREE_VERSION alone only moves when Kinoite itself is rebuilt.
+ARG ORNEOS_BUILD=dev
+RUN set -eu; \
+    . /usr/lib/os-release; \
+    build="${ORNEOS_BUILD}"; \
+    sed -i -e 's/^NAME=.*/NAME="Orneos OS"/' \
+           -e 's/^VERSION=.*/VERSION="'"$VERSION_ID.$build"'"/' \
+           -e 's/^PRETTY_NAME=.*/PRETTY_NAME="Orneos OS '"$VERSION_ID.$build"' (KDE Plasma)"/' \
+           -e 's/^LOGO=.*/LOGO=orneos/' \
+           -e 's|^HOME_URL=.*|HOME_URL="https://orneos.eu"|' \
+           -e 's|^SUPPORT_URL=.*|SUPPORT_URL="https://orneos.eu/fr/aide"|' \
+           -e 's|^BUG_REPORT_URL=.*|BUG_REPORT_URL="https://orneos.eu/fr/aide"|' \
+           -e 's/^DEFAULT_HOSTNAME=.*/DEFAULT_HOSTNAME="orneos"/' \
+           /usr/lib/os-release; \
+    grep -q '^LOGO=' /usr/lib/os-release || echo 'LOGO=orneos' >> /usr/lib/os-release; \
+    if grep -q '^ORNEOS_BUILD=' /usr/lib/os-release; then \
+        sed -i "s/^ORNEOS_BUILD=.*/ORNEOS_BUILD=$build/" /usr/lib/os-release; \
+    else \
+        echo "ORNEOS_BUILD=$build" >> /usr/lib/os-release; \
+    fi; \
+    sed -i 's/^#\?AutomaticUpdatePolicy=.*/AutomaticUpdatePolicy=stage/' /etc/rpm-ostreed.conf; \
+    echo orneos > /etc/hostname; \
+    systemctl enable rpm-ostreed-automatic.timer orneos-image-ref.service orneos-hostname.service orneos-kargs.service; \
+    update-mime-database /usr/share/mime; \
+    fc-cache -f >/dev/null; \
+    gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+
+# Skipped for arm64 built under emulation (qemu-user lacks a syscall it needs): the amd64 build of the
+# same content runs it
+ARG LINT=1
+RUN [ "$LINT" = 0 ] || bootc container lint

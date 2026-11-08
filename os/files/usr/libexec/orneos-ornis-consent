@@ -1,0 +1,282 @@
+#!/usr/bin/python3
+"""Asks the user whether Ornis may do something on this computer (ornis_consent.ask).
+
+Reads the request as JSON on stdin ({action, level, summary, reason, command, cwd, sensitive, can_always, rule,
+source, mode, seconds}), shows it, and prints the answer as one JSON line: {"answer": "allow" | "always" | "deny",
+"command": the command as the user left it, "timeout": true when nobody answered}. Closing the window is a no.
+
+A command can be changed before it runs. What touches the whole system or a secret is said plainly, and « Refuser »
+has the focus then: Entrée never runs it by accident.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QFontDatabase, QIcon, QKeySequence, QShortcut, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QHBoxLayout, QPlainTextEdit, QVBoxLayout, QWidget
+
+from pathlib import Path
+shared = Path(__file__).resolve().parent.parent / "share" / "orneos"
+if not shared.is_dir():
+    shared = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(shared))
+from orneosui import Banner, Card, Header, button, fit, hairline, label, page, setup, tokens  # noqa: E402
+
+TEXT = {
+    "fr": {
+        "title_command": "Ornis veut exécuter une commande", "title_install": "Ornis veut installer une application",
+        "title_remove": "Ornis veut désinstaller une application", "title_files": "Ornis veut modifier vos fichiers",
+        "title": "Ornis veut agir sur cet ordinateur",
+        "info": "Lecture seule : rien ne sera modifié.", "light": "Sans conséquence, et facile à défaire.",
+        "change": "Modifie vos fichiers, vos applications ou vos réglages.",
+        "admin": "Touche au système entier : il peut vous demander votre mot de passe.",
+        "why": "Pourquoi : {reason}", "command": "Commande", "in": "Dans {cwd}",
+        "editable": "Vous pouvez la modifier avant de l'exécuter.",
+        "sensitive": "Cette demande touche à vos secrets (clés, mots de passe, profils de navigateur). Elle vous sera toujours demandée.",
+        "remote": "Cette commande télécharge un script et l'exécute : ne l'autorisez que si vous connaissez sa source.",
+        "rpm": "Le paquet est ajouté au système : il sera prêt après le prochain redémarrage.",
+        "power": "Les documents non enregistrés des applications ouvertes peuvent être perdus.",
+        "always": "Toujours autoriser « {rule} »", "always_action": "Toujours autoriser cette action",
+        "allow": "Autoriser", "run": "Exécuter", "install": "Installer", "deny": "Refuser",
+        "countdown": "Sans réponse, refus dans {s} s", "mode_ask": "Ornis vous demande avant chaque action.",
+        "mode_auto": "Mode automatique : seules les actions qui modifient vous sont demandées.",
+        "mode_full": "Mode autonome : seules les actions sensibles vous sont demandées.",
+        "settings": "Autorisations…",
+    },
+    "en": {
+        "title_command": "Ornis wants to run a command", "title_install": "Ornis wants to install an app",
+        "title_remove": "Ornis wants to uninstall an app", "title_files": "Ornis wants to change your files",
+        "title": "Ornis wants to act on this computer",
+        "info": "Read only: nothing will change.", "light": "Harmless, and easy to undo.",
+        "change": "Changes your files, apps or settings.",
+        "admin": "Touches the whole system: it may ask for your password.",
+        "why": "Why: {reason}", "command": "Command", "in": "In {cwd}",
+        "editable": "You can edit it before it runs.",
+        "sensitive": "This touches your secrets (keys, passwords, browser profiles). It will always be asked.",
+        "remote": "This command downloads a script and runs it: only allow it if you trust its source.",
+        "rpm": "The package is added to the system: it will be ready after the next restart.",
+        "power": "Unsaved documents in open apps may be lost.",
+        "always": "Always allow “{rule}”", "always_action": "Always allow this action",
+        "allow": "Allow", "run": "Run", "install": "Install", "deny": "Deny",
+        "countdown": "No answer: denied in {s} s", "mode_ask": "Ornis asks you before each action.",
+        "mode_auto": "Automatic mode: only actions that change something are asked.",
+        "mode_full": "Autonomous mode: only sensitive actions are asked.",
+        "settings": "Permissions…",
+    },
+    "de": {
+        "title_command": "Ornis möchte einen Befehl ausführen", "title_install": "Ornis möchte eine App installieren",
+        "title_remove": "Ornis möchte eine App deinstallieren", "title_files": "Ornis möchte Ihre Dateien ändern",
+        "title": "Ornis möchte auf diesem Computer handeln",
+        "info": "Nur lesen: nichts wird geändert.", "light": "Harmlos und leicht rückgängig zu machen.",
+        "change": "Ändert Ihre Dateien, Apps oder Einstellungen.",
+        "admin": "Betrifft das ganze System: es kann nach Ihrem Passwort fragen.",
+        "why": "Warum: {reason}", "command": "Befehl", "in": "In {cwd}",
+        "editable": "Sie können ihn vor dem Ausführen ändern.",
+        "sensitive": "Das betrifft Ihre Geheimnisse (Schlüssel, Passwörter, Browserprofile). Es wird immer gefragt.",
+        "remote": "Dieser Befehl lädt ein Skript herunter und führt es aus: nur erlauben, wenn Sie der Quelle vertrauen.",
+        "rpm": "Das Paket wird dem System hinzugefügt: nach dem nächsten Neustart verfügbar.",
+        "power": "Nicht gespeicherte Dokumente offener Apps können verloren gehen.",
+        "always": "„{rule}“ immer erlauben", "always_action": "Diese Aktion immer erlauben",
+        "allow": "Erlauben", "run": "Ausführen", "install": "Installieren", "deny": "Ablehnen",
+        "countdown": "Ohne Antwort: Ablehnung in {s} s", "mode_ask": "Ornis fragt Sie vor jeder Aktion.",
+        "mode_auto": "Automatischer Modus: nur ändernde Aktionen werden gefragt.",
+        "mode_full": "Autonomer Modus: nur sensible Aktionen werden gefragt.",
+        "settings": "Berechtigungen…",
+    },
+}
+FILES = {"move_files", "write_file", "edit_file", "trash_files", "create_folder"}
+
+
+class _DiffHighlighter(QSyntaxHighlighter):
+    def __init__(self, doc, tk: dict):
+        super().__init__(doc)
+        self.add_fmt = QTextCharFormat()
+        self.add_fmt.setForeground(QColor(tk.get("ok") or "#15803d"))
+        self.add_fmt.setBackground(QColor(22, 163, 74, 28))
+        self.del_fmt = QTextCharFormat()
+        self.del_fmt.setForeground(QColor(tk.get("danger") or "#b91c1c"))
+        self.del_fmt.setBackground(QColor(220, 38, 38, 28))
+        self.hunk_fmt = QTextCharFormat()
+        self.hunk_fmt.setForeground(QColor(tk.get("accent") or "#2563eb"))
+        self.meta_fmt = QTextCharFormat()
+        self.meta_fmt.setForeground(QColor(tk.get("muted") or "#64748b"))
+
+    def highlightBlock(self, text: str):
+        if text.startswith("+++") or text.startswith("---"):
+            self.setFormat(0, len(text), self.meta_fmt)
+        elif text.startswith("@@"):
+            self.setFormat(0, len(text), self.hunk_fmt)
+        elif text.startswith("+"):
+            self.setFormat(0, len(text), self.add_fmt)
+        elif text.startswith("-"):
+            self.setFormat(0, len(text), self.del_fmt)
+
+
+class Consent(QDialog):
+    def __init__(self, req: dict, t: dict):
+        super().__init__()
+        self.req, self.t = req, t
+        self.answer = {"answer": "deny"}
+        self.left = max(10, int(req.get("seconds") or 90))
+        action = req.get("action") or ""
+        command = req.get("command")
+        level = req.get("level") if req.get("level") in ("info", "light", "change", "admin") else "change"
+        careful = level == "admin" or bool(req.get("sensitive"))
+        self.setWindowTitle("Ornis")
+        self.setWindowIcon(QIcon.fromTheme("eu.orneos.ornis", QIcon.fromTheme("orneos")))
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+
+        title = (t["title_command"] if command is not None else t["title_install"] if action == "install_app"
+                 else t["title_remove"] if action == "remove_app" else t["title_files"] if action in FILES else t["title"])
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(Header(title, t[level]))
+        area, col = page()
+        outer.addWidget(area)
+
+        card = Card()
+        # a command: the header already says it, the card says why; anything else: what, then why
+        if command is None:
+            card.body.addWidget(label(str(req.get("summary") or ""), "title"))
+        if req.get("reason"):
+            card.body.addWidget(label(req["reason"] if command is not None else t["why"].format(reason=req["reason"]),
+                                      "title" if command is not None else "muted"))
+        self.editor = None
+        if command is not None:
+            if req.get("reason"):
+                card.body.addWidget(hairline())
+            card.body.addWidget(label(t["command"].upper(), "section"))
+            self.editor = QPlainTextEdit(command)
+            mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            mono.setFamily("JetBrains Mono")
+            mono.setPointSizeF(10)
+            self.editor.setFont(mono)
+            self.editor.setStyleSheet(f"color: {tokens()['text']}; padding: 6px;")
+            lines = min(8, max(2, command.count("\n") + 1 + len(command) // 70))
+            self.editor.setFixedHeight(22 + lines * 18)
+            card.body.addWidget(self.editor)
+            card.body.addWidget(label(t["in"].format(cwd=req.get("cwd") or "~") + " · " + t["editable"], "muted"))
+        if req.get("preview"):
+            preview = QPlainTextEdit(str(req["preview"]))
+            preview.setReadOnly(True)
+            mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+            mono.setFamily("JetBrains Mono")
+            mono.setPointSizeF(9.5)
+            preview.setFont(mono)
+            self._diff_hl = _DiffHighlighter(preview.document(), tokens())
+            preview.setMinimumHeight(180)
+            card.body.addWidget(preview)
+        col.addWidget(card)
+
+        for tone, key, show in (("danger", "sensitive", req.get("sensitive")),
+                                ("danger", "remote", command is not None and _remote(command)),
+                                ("info", "rpm", action == "install_app" and req.get("source") == "rpm"),
+                                ("warn", "power", action == "power")):
+            if show:
+                banner = Banner()
+                banner.show_message(tone, t[key])
+                col.addWidget(banner)
+
+        self.always = None
+        if req.get("can_always"):
+            text = t["always"].format(rule=req.get("rule")) if command is not None else t["always_action"]
+            self.always = QCheckBox(text)
+            col.addWidget(self.always)
+
+        mode = label(t.get("mode_" + str(req.get("mode") or "ask"), t["mode_ask"]), "muted")
+        col.addWidget(mode)
+        col.addStretch(1)
+
+        footer = QWidget()
+        bar = QHBoxLayout(footer)
+        bar.setContentsMargins(20, 12, 20, 16)
+        settings = button(t["settings"], "quiet")
+        settings.clicked.connect(self._settings)
+        bar.addWidget(settings)
+        self.countdown = label("", "muted", wrap=False)
+        bar.addWidget(self.countdown)
+        bar.addStretch(1)
+        deny = button(t["deny"])
+        deny.clicked.connect(self.reject)
+        verb = t["run"] if command is not None else t["install"] if action == "install_app" else t["allow"]
+        allow = button(verb, "danger" if careful else "primary")
+        allow.clicked.connect(self._allow)
+        bar.addWidget(deny)
+        bar.addWidget(allow)
+        outer.addWidget(footer)
+        (deny if careful else allow).setDefault(True)
+        (deny if careful else allow).setFocus()
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._allow)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(1000)
+        self._tick()
+        fit(self)
+
+    def _tick(self):
+        self.left -= 1
+        if self.left <= 0:
+            self.answer = {"answer": "deny", "timeout": True}
+            self.done(0)
+            return
+        if self.left <= 30:
+            self.countdown.setText(self.t["countdown"].format(s=self.left))
+
+    def _settings(self):
+        import ornis_consent
+        ornis_consent.open_settings()
+
+    def _allow(self):
+        self.answer = {"answer": "always" if self.always is not None and self.always.isChecked() else "allow"}
+        if self.editor is not None:
+            self.answer["command"] = self.editor.toPlainText().strip()
+            if not self.answer["command"]:
+                self.answer = {"answer": "deny"}
+        self.done(1)
+
+    def reject(self):
+        self.answer = {"answer": "deny"}
+        self.done(0)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.raise_()
+        self.activateWindow()
+
+
+def _remote(command: str) -> bool:
+    import re  # noqa: PLC0415
+    return bool(
+        re.search(r"\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b", command)
+        or re.search(r"(?i)\b(iwr|irm|invoke-webrequest|invoke-restmethod)\b[^|;&]*\|\s*(iex|invoke-expression)\b", command)
+    )
+
+
+def main() -> int:
+    try:
+        req = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        req = {}
+    if not isinstance(req, dict) or not req:
+        print(json.dumps({"answer": "deny"}))
+        return 1
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("Ornis")
+    app.setDesktopFileName("eu.orneos.assistant")
+    setup(app)
+    lang = str(req.get("lang") or os.environ.get("LANG") or "fr")[:2]
+    dialog = Consent(req, TEXT.get(lang, TEXT["en"]))
+    if os.environ.get("ORNIS_CONSENT_SHOT"):           # tests: a picture, then « no »
+        QTimer.singleShot(600, lambda: (dialog.grab().save(os.environ["ORNIS_CONSENT_SHOT"]), dialog.done(0)))
+    dialog.exec()
+    print(json.dumps(dialog.answer, ensure_ascii=False), flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

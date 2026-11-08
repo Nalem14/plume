@@ -1,0 +1,1887 @@
+"""The « Code » mode of the Ornis window (and of its module in Plume): Ornis works in a folder of the computer.
+The engine is ornis_code (Mistral Vibe over ACP, through the cloud's gateway, in the sandbox); here, what the view
+shows: the conversations of each project (kept on this computer only), the items of the open one (messages, tool
+cards with their diffs and output, the plan, the permissions to give), the mode and what the context weighs.
+"""
+import difflib
+import hashlib
+import json
+import os
+import re
+import subprocess
+import threading
+import time
+from pathlib import Path
+
+from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtCore import QAbstractListModel, QByteArray, QModelIndex, QObject, Property, Qt, QTimer, QUrl, Signal, Slot
+
+import ornis_code
+import system
+from ornis_core.chat import _when
+
+INDEX = ornis_code.ROOT / "sessions.json"
+HISTORY = ornis_code.ROOT / "history.json"     # the messages sent, per folder (↑ in the box brings them back)
+PASTED = ornis_code.ROOT / "pasted"            # images pasted in the box, until they are sent
+# put before the message that replaces one taken back to be edited (hidden when replayed)
+RETRACT_NOTE = ("[The user took back their previous message (its file changes, if any, were undone) and replaces it with this one: "
+                "follow this one instead.]\n\n")
+# put before the next message after « Annuler ces modifications »: the agent's idea of the files is old (hidden when replayed)
+# Vibe's own commands that make no sense in Ornis (they need a Mistral account, show Mistral's policy, change the
+# engine's setup or install unrelated agents): hidden from « / » and refused when typed. Skills stay (unknown names).
+HIDDEN_COMMANDS = {"teleport", "data-retention", "leanstall", "unleanstall", "proxy-setup", "reload", "log", "mcp", "help",
+                   "model", "config", "status", "clear", "exit", "quit", "login", "logout", "theme", "terminal-setup", "usage",
+                   "feedback", "bug", "upgrade", "update", "vim", "init-config", "setup"}
+# put before each message in Plan mode (hidden when replayed): Ornis looks, then proposes; decide("plan") refuses the rest
+PLAN_NOTE = ("[Plan mode: read only. Explore the project (read, search, read-only commands), change nothing, then answer with "
+             "a numbered plan: the changes you would make, file by file, and how you would check them; write it also to "
+             ".ornis/plans/ (allowed in Plan mode). The user runs it afterwards.]\n\n")
+UNDONE_NOTE = "[The user undid your last changes: the files are back as they were before that turn. Read them again before editing.]\n\n"
+# The model stops half way (Codestral, 02/11: after each file, or with a tool call written as text): the turn goes
+# on by itself, a few times per message, with a line that says so. The agent reads why, the user only the line.
+CONTINUE_NOTE = "[Ornis: continue] "
+CONTINUE_TEXT = {
+    "plan": "Continue now with the next items of your plan, in this turn, until everything is done and verified. "
+            "Stop only to ask a real question.",
+    "tool": "You wrote a tool call as text instead of calling the tool: nothing was run. Call the tool now, then go on "
+            "with your plan.",
+}
+MAX_CONTINUE = 3
+TOOL_KEYS = {"command", "path", "file_path", "content", "old_string", "new_string", "todos", "pattern", "query", "url"}
+MAX_DIFF = 400                     # lines of a diff shown on a card
+MAX_DIFF_INPUT = 4000              # lines of a file past which the card shows counts only (difflib would block the window)
+MAX_OUTPUT = 12000                 # characters of a command's output kept on its card
+SKIP_DIRS = ornis_code.HEAVY_DIRS | {".vscode", "coverage"}     # generated folders (also Unity's Library, Temp…)
+MAX_FILES = 20000                  # files listed for @ in a folder
+MAX_ATTACH = 10
+KINDS = {"read": "eye", "edit": "edit", "delete": "trash", "move": "move", "search": "search", "execute": "terminal",
+         "think": "ornis", "fetch": "globe", "switch_mode": "list", "other": "sparkle"}
+
+
+
+MENTION = re.compile(r'(?:^|\s)@(?:"([^"\n]+)"|([^\s@"]+))')
+
+
+def mentioned(text: str) -> list[str]:
+    """The paths named with @ in a message: @src/app.py, or @"A LIRE.txt" when the name has a space (as Claude Code)."""
+    return [quoted or bare.rstrip(",;:!?)") for quoted, bare in MENTION.findall(text or "")]
+
+class Items(QAbstractListModel):
+    """The items of the open conversation, changed one row at a time (a whole new list would rebuild every card)."""
+    KIND, ITEM = Qt.ItemDataRole.UserRole + 1, Qt.ItemDataRole.UserRole + 2
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows: list[dict] = []
+        # while a conversation is replayed (thousands of pieces): rows change silently, the view is told once at the end
+        self.quiet = False
+
+    def roleNames(self):
+        return {self.KIND: QByteArray(b"kind"), self.ITEM: QByteArray(b"item")}
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.rows)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not 0 <= index.row() < len(self.rows):
+            return None
+        row = self.rows[index.row()]
+        return row.get("kind") if role == self.KIND else dict(row) if role == self.ITEM else None
+
+    def reset(self, rows=()):
+        self.beginResetModel()
+        self.rows = list(rows)
+        self.endResetModel()
+
+    def append(self, row: dict) -> int:
+        if self.quiet:
+            self.rows.append(row)
+            return len(self.rows) - 1
+        self.beginInsertRows(QModelIndex(), len(self.rows), len(self.rows))
+        self.rows.append(row)
+        self.endInsertRows()
+        return len(self.rows) - 1
+
+    def touch(self, at: int) -> None:
+        if not self.quiet and 0 <= at < len(self.rows):
+            index = self.index(at)
+            self.dataChanged.emit(index, index, [self.ITEM])
+
+    def find(self, key: str, value) -> int:
+        for at in range(len(self.rows) - 1, -1, -1):
+            if self.rows[at].get(key) == value:
+                return at
+        return -1
+
+
+def _text(content) -> str:
+    """The text of an ACP content block (or a list of them)."""
+    if isinstance(content, list):
+        return "".join(_text(c) for c in content)
+    if isinstance(content, dict):
+        if content.get("type") == "text":
+            return str(content.get("text") or "")
+        if "content" in content:
+            return _text(content["content"])
+    return ""
+
+
+def tool_as_text(text: str) -> bool:
+    """True when a reply is only a tool call written out ({"command": "…"}, maybe in a ```json block)."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else ""
+        t = t.rsplit("```", 1)[0].strip()
+    if not t.startswith("{") or len(t) > 8000:
+        return False
+    try:
+        data = json.loads(t)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and bool(TOOL_KEYS & set(data))
+
+
+def repeating(text: str) -> bool:
+    """True when the end of a reply is the same passage again and again (a model stuck in a loop: seen 02/11, a
+    plugin.json written thousands of times). Looked at once per 2 000 characters, past 8 000: the last 200 characters
+    found 8 times or more in the last 12 000. Real code repeats lines, rarely 200 characters in a row so often."""
+    n = len(text)
+    if n < 8000:
+        return False
+    tail = text[-200:]
+    return len(tail.strip()) >= 40 and text.count(tail, max(0, n - 12000)) >= 8
+
+
+def diff_lines(path: str, old: str | None, new: str) -> list[dict]:
+    """A unified diff as lines for the card: {t: '+'|'-'|' '|'@', s: text}."""
+    old_lines = (old or "").splitlines()
+    new_lines = (new or "").splitlines()
+    if len(old_lines) + len(new_lines) > MAX_DIFF_INPUT:        # a whole big file: its first lines, never a slow diff
+        if not old_lines:
+            return [{"t": "+", "s": s} for s in new_lines[:MAX_DIFF]] + [{"t": "@", "s": "…"}]
+        return [{"t": "@", "s": f"{len(old_lines)} → {len(new_lines)}"}]
+    out = []
+    for line in difflib.unified_diff(old_lines, new_lines, lineterm="", n=2):
+        if line.startswith(("---", "+++")):
+            continue
+        out.append({"t": "@" if line.startswith("@@") else line[:1] or " ", "s": line[1:] if not line.startswith("@@") else line})
+        if len(out) >= MAX_DIFF:
+            out.append({"t": "@", "s": "…"})
+            break
+    return out
+
+
+class CodeChat(QObject):
+    changed = Signal()             # folder, conversation, state, mode, sessions
+    usageChanged = Signal()
+    planChanged = Signal()
+    problem = Signal(str)          # a message for the toast
+    laterChanged = Signal()        # the messages written while Ornis works (waiting above the box)
+    laterReturned = Signal(str)    # « Modifier », or a stopped turn: back into the box
+    finished = Signal(str)         # an answer is complete (title): the window may notify
+    cronDone = Signal(str, str, str, str)  # task_id, status, summary, session — local Code cron finished here
+    cronSession = Signal(str, str, str)    # task_id, folder, session — session id known (sidebar can open it live)
+    _update = Signal(object, str, object)   # the agent that sent it, session, update
+    _permission = Signal(object, str, object, object)
+    _question = Signal(object, str, object)   # request id, session, questions (Vibe's ask_user_question)
+    _exited = Signal(int, str)
+    _ready = Signal(object, str)   # agent or None, problem
+    _progress = Signal(int)
+    _done = Signal(str, object)    # session, result or error text
+    _checked = Signal(str, str)    # session, the checkpoint taken before the turn
+    _changes = Signal(int, str, object)  # opening, checkpoint, what the turn changed in the folder
+    _restored = Signal(str, int, str)    # checkpoint, files moved back, problem
+    _git_seen = Signal(str, object)      # folder, {branch, dirty}
+    _file_restored = Signal(str, str, bool)   # checkpoint, file, whether it moved
+    _committed = Signal(str)             # "" or git's problem
+    _host_done = Signal(object, object)
+    _measured = Signal(str, object)      # session, the parts of its last request as the gateway measured them
+    attachmentsChanged = Signal()  # the files joined to the message being written
+
+    def __init__(self, app):
+        super().__init__()
+        self._app = app
+        self._items = Items(self)
+        self._agent: ornis_code.Agent | None = None
+        self._folder = ""
+        self._session = ""
+        self._title = ""
+        self._state = "idle"       # idle | installing | starting | ready | error
+        self._error = ""
+        self._progress_pc = -1
+        self._busy = False
+        self._usage = {}
+        self._parts_epoch = 0
+        self._parts_hold = False
+        self._compacting = False
+        self._dismissed_tips = set()
+        self._parts = {}           # what the last request carried, part by part (the gateway's measure)
+        self._host = None
+        self._retry_ids = set()
+        self._gateway = None       # {token, url} of the gateway, once the agent started
+        self._plan = []
+        self._mode = app.pref("code_mode") if app.pref("code_mode") in ornis_code.MODES else "ask"
+        self._replaying = False
+        self._queued = ""          # a message written while the agent was starting
+        self._tools: dict[str, int] = {}
+        self._failures: dict = {}
+        self._commands: list[dict] = []          # the agent's own « / » commands (available_commands_update)
+        self._looped = False
+        self._repeats: dict = {}                 # the same call that succeeded, again and again (a loop too)
+        self._asked = None                       # Vibe's questions waiting for the user: {id, questions}
+        self._attachments: list[dict] = []
+        self._file_list: list[str] = []
+        self._file_list_for = ""
+        self._pending_text: dict[int, list[str]] = {}   # pieces not yet on their card, joined once (not text + piece)
+        self._turn_rev = ""                      # the checkpoint taken before the turn running (ornis_code.Checkpoints)
+        self._tell_undone = False                # changes undone: the agent hears it with the next message
+        self._plan_mode = False                  # Plan: read only, then « Exécuter le plan » (as in Claude Code)
+        self._opening = 0                        # +1 at each opening: late work of a previous one is dropped
+        self._continued = 0                      # turns gone on by themselves since my last message
+        self._turn_start = 0                     # the row where the turn running began
+        self._later: list[str] = []              # messages written while Ornis works: sent one by one after the turn
+        self._forced = None                      # « Envoyer maintenant »: sent once the stopped turn is over
+        self._retract = False                    # the last message was taken back to be edited: the agent hears it
+        self._git = {}
+        self._cron_job = None            # {task_id, title, prev_mode} while a scheduled Code task runs here
+        try:
+            self._history = json.loads(HISTORY.read_text())
+        except (OSError, ValueError):
+            self._history = {}
+        try:
+            self._index = json.loads(INDEX.read_text())
+        except (OSError, ValueError):
+            self._index = {}
+        if not isinstance(self._index, dict):
+            self._index = {}
+        self._flush = QTimer(self)       # streamed text is written to its card ~20 times a second, not per piece
+        self._flush.setInterval(50)
+        self._flush.setSingleShot(True)
+        self._flush.timeout.connect(self._write_text)
+        self._measure = QTimer(self)     # the parts are asked once a step is over, not at each usage update
+        self._measure.setInterval(1000)
+        self._measure.setSingleShot(True)
+        self._measure.timeout.connect(self._fetch_parts)
+        for signal, slot in ((self._update, self._on_update), (self._permission, self._on_permission), (self._question, self._on_question), (self._exited, self._on_exit),
+                             (self._ready, self._on_ready), (self._progress, self._on_progress), (self._done, self._on_done),
+                             (self._checked, self._on_checked), (self._changes, self._on_changes), (self._restored, self._on_restored),
+                             (self._host_done, self._on_host_done), (self._git_seen, self._on_git), (self._measured, self._on_measured),
+                             (self._file_restored, self._on_file_restored), (self._committed, self._on_committed)):
+            signal.connect(slot, Qt.ConnectionType.QueuedConnection)
+        self._account_key = tuple((app.account() or ())[:2])
+        app.accountChanged.connect(self._account_changed)
+        # the panel on the right of a session: files, changes, plan, terminals (bench.py, terminal.py)
+        from ornis_core.bench import Bench  # noqa: PLC0415
+        from ornis_core.terminal import Terminals  # noqa: PLC0415
+        self._bench = Bench(self)
+        self._terminals = Terminals(self)
+        self.finished.connect(lambda *_: self._bench.refresh())
+
+    # ---- what the view reads ---------------------------------------------------------------------------------------
+    @Property(QObject, constant=True)
+    def items(self):
+        return self._items
+
+    @Property(bool, constant=True)
+    def supported(self):
+        return ornis_code.supported()
+
+    @Property(QObject, constant=True)
+    def bench(self):
+        return self._bench
+
+    @Property(QObject, constant=True)
+    def terminals(self):
+        return self._terminals
+
+    @Property(str, constant=True)
+    def homeFolder(self):
+        """A session without a chosen folder works in the personal folder (as Claude Code's « Cet ordinateur »)."""
+        return str(Path.home())
+
+    @Property(bool, notify=changed)
+    def planReady(self):
+        """A plan proposed in Plan mode and not run yet: « Exécuter le plan » (the card, the panel's Plan tab)."""
+        return any(r.get("kind") == "planready" and not r.get("done") for r in self._items.rows)
+
+    @Property(str, notify=changed)
+    def folder(self):
+        return self._folder
+
+    @Property(str, notify=changed)
+    def folderName(self):
+        return self._display_name(self._folder) if self._folder else ""
+
+    def _display_name(self, folder: str) -> str:
+        """The folder's name; the personal folder is « Dossier personnel »."""
+        try:
+            if Path(folder).resolve() == Path.home().resolve():
+                return self._app._t.get("code_home", "Home")
+        except OSError:
+            pass
+        return Path(folder).name or folder
+
+    @Property(str, notify=changed)
+    def session(self):
+        return self._session
+
+    @Property(str, notify=changed)
+    def title(self):
+        return self._title
+
+    @Property(str, notify=changed)
+    def state(self):
+        return self._state
+
+    @Property(str, notify=changed)
+    def error(self):
+        return self._error
+
+    @Property(int, notify=changed)
+    def progress(self):
+        return self._progress_pc
+
+    @Property(bool, notify=changed)
+    def busy(self):
+        return self._busy
+
+    @Property(str, notify=changed)
+    def mode(self):
+        return self._mode
+
+    @Property(str, constant=True)
+    def sandbox(self):
+        return ornis_code.sandbox_kind()
+
+    @Property("QVariantMap", notify=usageChanged)
+    def usage(self):
+        return self._usage
+
+    @Property("QVariantMap", notify=usageChanged)
+    def context(self):
+        """The same shape as chat.context, for the shared gauge (ContextGauge.qml): measured against the size past which
+        the agent summarises its start by itself."""
+        used = int(self._parts.get("tokens") or self._usage.get("used") or 0)
+        limit = ornis_code.COMPACT_AT
+        measured = {k: int(v or 0) for k, v in (self._parts.get("parts") or {}).items()}
+        total = sum(measured.values())
+        if not total:                                 # not measured yet (or an older cloud): one part
+            measured, total = {"conversation": used}, used
+        rows = []
+        for key in ("conversation", "tool_results", "tools", "instructions"):
+            tokens = round(measured.get(key, 0) * used / total) if total else 0
+            if tokens > 0:
+                rows.append({"key": key, "label": self._app._t.get("context_" + key, key), "tokens": tokens,
+                             "percent": 100.0 * tokens / max(limit, used)})
+        import ornis_context
+        files = ornis_context.inventory(self._folder) if self._folder else []
+        tips = ornis_context.tips(files, measured, getattr(self._app, "_lang", "fr"), self._dismissed_tips)
+        return {"files": files, "tips": tips, "tokens": used, "limit": limit, "percent": min(100, round(used * 100 / limit)) if limit else 0,
+                "parts": rows if used else []}
+
+    def _fetch_parts(self):
+        """The gateway measured the last request of this computer (system, tools, results, conversation: numbers only);
+        Vibe itself only gives a total."""
+        gateway, session = self._gateway, self._session
+        epoch = self._parts_epoch
+        if not gateway or not session or self._parts_hold:
+            return
+
+        def work():
+            import urllib.request
+            try:
+                request = urllib.request.Request(gateway["url"].rstrip("/") + "/context",
+                                                 headers={"Authorization": "Bearer " + gateway["token"]})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    data = json.loads(response.read().decode() or "{}")
+                if isinstance(data, dict) and isinstance(data.get("parts"), dict):
+                    data["epoch"] = epoch
+                    self._measured.emit(session, data)
+            except Exception:  # noqa: BLE001 -- the gauge keeps its single part
+                pass
+        threading.Thread(target=work, daemon=True, name="ornis-code-context").start()
+
+    def _on_measured(self, session, data):
+        if session == self._session and not self._parts_hold and data.get("epoch") == self._parts_epoch:
+            self._parts = data
+            self.usageChanged.emit()
+
+    @Slot(str)
+    def dismissTip(self, key):
+        self._dismissed_tips.add(key)
+        self.usageChanged.emit()
+
+    def _invalidate_parts(self):
+        self._parts_epoch += 1
+        self._parts_hold = True
+        self._measure.stop()
+        old = self._parts.get("parts") or {}
+        used = int(self._usage.get("used") or 0)
+        fixed = {k: min(used, int(old.get(k) or 0)) for k in ("tools", "instructions")}
+        scale = min(1, used / max(1, sum(fixed.values())))
+        fixed = {k: round(v * scale) for k, v in fixed.items()}
+        self._parts = {"parts": dict(fixed, tool_results=0, conversation=max(0, used - sum(fixed.values())))}
+        self.usageChanged.emit()
+
+    @Slot()
+    def compact(self):
+        """« /compact »: the agent summarises the start of the conversation now (Vibe's own command)."""
+        if self._session and not self._busy:
+            self.send("/compact")
+
+    @Property("QVariantList", notify=planChanged)
+    def plan(self):
+        return self._plan
+
+    @Property(bool, notify=changed)
+    def waiting(self):
+        """A permission waits for the user (the composer says so)."""
+        return any(r.get("permission") for r in self._items.rows)
+
+    @Property("QVariantMap", notify=changed)
+    def asking(self):
+        """The permission waiting for the user, shown above the message box as in the Discussion mode ({} when none):
+        {row, tool, icon, title, command, path, diff, options: [{id, kind, label}]}."""
+        at = next((i for i, r in enumerate(self._items.rows) if r.get("permission")), -1)
+        if at < 0:
+            return {}
+        r = self._items.rows[at]
+        return {"row": at, "tool": r.get("tool") or "", "icon": r.get("icon") or "sparkle", "title": r.get("title") or "",
+                "command": r.get("command") or "", "path": r.get("path") or "", "diff": (r.get("diff") or [])[:400],
+                "options": r["permission"].get("options") or [], "approvalTitle": r["permission"].get("title", "")}
+
+    @Property("QVariantList", notify=changed)
+    def questions(self):
+        """Ornis's questions waiting above the message box (QuestionsDock, as in the Discussion mode), [] when none."""
+        return list(self._asked["questions"]) if self._asked else []
+
+    def _on_question(self, request_id, sid, questions):
+        if sid != self._session or self._agent is None:
+            return
+        if self._cron_job:                       # scheduled task: nobody is watching — decide alone
+            self._agent.answer(request_id, {"action": "decline"})
+            return
+        if self._asked:                          # an older form left open: Vibe gets « decline » for it
+            self._agent.answer(self._asked["id"], {"action": "decline"})
+        self._write_text()
+        self._asked = {"id": request_id, "questions": questions}
+        self.changed.emit()
+        if hasattr(self._app, "notify") and QGuiApplication.focusWindow() is None:
+            try:
+                self._app.notify(self._title or self.folderName, questions[0]["question"] if questions else "", "")
+            except Exception:  # noqa: BLE001
+                pass
+
+    @Slot("QVariantList")
+    def answerQuestions(self, answers):
+        asked, self._asked = self._asked, None
+        if asked and self._agent:
+            self._agent.answer(asked["id"], ornis_code.elicitation_content(
+                asked["questions"], list(answers or []), "No preference: decide yourself, and say what you chose."))
+        self.changed.emit()
+
+    @Slot()
+    def skipQuestions(self):
+        asked, self._asked = self._asked, None
+        if asked and self._agent:
+            self._agent.answer(asked["id"], {"action": "decline"})
+        self.changed.emit()
+
+    @Slot(str, result="QVariantList")
+    def sessionsOf(self, folder):
+        """The conversations of a project, most recent first: {id, title, when, updated}."""
+        rows = sorted(self._index.get(str(folder), []), key=lambda s: (not s.get("pinned"), -float(s.get("updated") or 0)))
+        return [dict(s, when=_when(float(s.get("updated") or 0), self._app.lang)) for s in rows]
+
+    @Property("QVariantList", notify=changed)
+    def recent(self):
+        """Every Code conversation, most recent first (the sidebar's lists).
+        Cron-linked runs stay under the Cron section unless the user is searching."""
+        out = []
+        for folder, rows in self._index.items():
+            for s in rows:
+                out.append(dict(s, folder=folder, folderName=self._display_name(folder),
+                                when=_when(float(s.get("updated") or 0), self._app.lang),
+                                cron=str(s.get("cron") or "")))
+        return sorted(out, key=lambda s: (not s.get("pinned"), -float(s.get("updated") or 0)))
+
+    @Slot()
+    def reloadIndex(self):
+        """Re-read sessions.json (a cron run just wrote one)."""
+        try:
+            self._index = json.loads(INDEX.read_text())
+        except (OSError, ValueError):
+            self._index = {}
+        self.changed.emit()
+
+    @Property("QVariantList", notify=changed)
+    def folders(self):
+        """The Code tab's folders: where Ornis has worked (and the one open), most recent first."""
+        last = {}
+        for folder, rows in self._index.items():
+            last[folder] = max([float(r.get("updated") or 0) for r in rows] + [0])
+        if self._folder and self._folder not in last:
+            last[self._folder] = time.time()
+        folded = self._app.pref("projects_folded") or []
+        out = []
+        for folder in sorted(last, key=lambda f: -last[f]):
+            try:
+                sub = "~/" + str(Path(folder).relative_to(Path.home()))
+            except ValueError:
+                sub = folder
+            name = self._display_name(folder)
+            out.append({"path": folder, "name": name, "sub": sub, "active": folder == self._folder, "initial": name[:1].upper() or "?",
+                        "tone": sum(ord(ch) for ch in folder) % 6, "folded": folder in folded, "missing": not Path(folder).is_dir()})
+        return out
+
+    @Slot(result=str)
+    def markdown(self):
+        """The open conversation as Markdown (« Copier la conversation », « Exporter en Markdown »)."""
+        t = self._app._t
+        out = [f"# {self._title or self.folderName}", "", f"_{self._folder}_", ""]
+        for r in self._items.rows:
+            kind = r.get("kind")
+            if kind == "user":
+                out += [f"**{t.get('you', 'Vous')}**", "", r.get("content", ""), ""]
+            elif kind == "agent" and r.get("content"):
+                out += ["**Ornis**", "", r["content"], ""]
+            elif kind == "tool":
+                out.append(f"- `{r.get('command') or r.get('short') or r.get('title') or r.get('tool')}`")
+            elif kind == "changes":
+                out += ["", f"_{t.get('code_files_changed', '%1').split('|')[-1].replace('%1', str(r.get('count', 0)))}_", ""]
+        return "\n".join(out).strip() + "\n"
+
+    @Slot()
+    def copyConversation(self):
+        self._app.copy(self.markdown())
+        self.problem.emit(self._app._t.get("copied", ""))
+
+    @Slot(str)
+    def exportTo(self, path):
+        try:
+            Path(path).write_text(self.markdown(), encoding="utf-8")
+            self.problem.emit(self._app._t.get("code_exported", "").replace("%1", Path(path).name))
+        except OSError:
+            self.problem.emit(self._app._t.get("code_export_failed", ""))
+
+    @Slot(str)
+    def forgetFolder(self, folder):
+        """« Retirer de la liste »: the folder and its conversations leave the list (nothing is deleted in the folder)."""
+        if folder == self._folder:
+            self.close()
+        if self._index.pop(folder, None) is not None:
+            self._save()
+        self.changed.emit()
+
+    # ---- files: @ in the message, files dropped or chosen, a terminal --------------------------------------------
+    @Property("QVariantList", notify=attachmentsChanged)
+    def attachments(self):
+        return self._attachments
+
+    @Slot("QVariantList")
+    def addFiles(self, urls):
+        """Files dropped on the view or chosen: joined to the next message (the agent reads them itself)."""
+        known = {a["path"] for a in self._attachments}
+        for url in urls or []:
+            text = str(url.toString() if hasattr(url, "toString") else url)
+            path = Path(text[7:] if text.startswith("file://") else text)
+            try:
+                path = path.resolve()
+            except OSError:
+                continue
+            if path.exists() and str(path) not in known and len(self._attachments) < MAX_ATTACH:
+                known.add(str(path))
+                self._attachments.append({"path": str(path), "name": path.name, "dir": path.is_dir(),
+                                          "short": self._short(path)})
+        self.attachmentsChanged.emit()
+
+    @Slot(int)
+    def removeAttachment(self, index):
+        if 0 <= index < len(self._attachments):
+            del self._attachments[index]
+            self.attachmentsChanged.emit()
+
+    def _short(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self._folder)) if self._folder else str(path)
+        except ValueError:
+            return str(path)
+
+    def _warm_files(self):
+        """The folder's list, made in the background (a big project takes seconds: never on the window's thread)."""
+        folder = self._folder
+        if not folder or self._file_list_for == folder or getattr(self, "_warming", "") == folder:
+            return
+        self._warming = folder
+        threading.Thread(target=lambda: self._list_files(folder), daemon=True, name="ornis-code-files").start()
+
+    def _list_files(self, folder: str = "") -> list[str]:
+        """The project's files, relative (git's list when it is a repository: what .gitignore leaves out stays out)."""
+        folder = folder or self._folder
+        if self._file_list_for == folder and self._file_list:
+            return self._file_list
+        files: list[str] = []
+        root = Path(folder)
+        try:
+            if (root / ".git").exists() and ornis_code.git_usable():
+                out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=root, capture_output=True, text=True,
+                                     timeout=10, creationflags=subprocess.CREATE_NO_WINDOW if system.WINDOWS else 0)
+                if out.returncode == 0:
+                    files = [f for f in out.stdout.splitlines() if f and not set(Path(f).parts) & SKIP_DIRS][:MAX_FILES]
+        except (OSError, subprocess.SubprocessError):
+            files = []
+        if not files:
+            for base, dirs, names in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+                rel = Path(base).relative_to(root)
+                files += [str(rel / n) if str(rel) != "." else n for n in sorted(names)]
+                if len(files) >= MAX_FILES:
+                    break
+        if folder == self._folder:
+            self._file_list, self._file_list_for = files[:MAX_FILES], folder
+            self._warming = ""
+        return files[:MAX_FILES]
+
+    @Slot()
+    def refreshFiles(self):
+        self._file_list_for = ""
+        self._warm_files()
+
+    @Slot(str, result="QVariantList")
+    def files(self, query):
+        """@-suggestions: the project's files whose path matches what follows the @ (the name first, then the path)."""
+        if not self._folder:
+            return []
+        q = str(query or "").lower().strip()
+        if self._file_list_for != self._folder:            # still being listed: the suggestions come at the next key
+            self._warm_files()
+            return []
+        rows = self._file_list
+        if not q:
+            return [{"path": f, "name": Path(f).name} for f in rows[:12]]
+        named = [f for f in rows if q in Path(f).name.lower()]
+        pathed = [f for f in rows if q in f.lower() and f not in named]
+        named.sort(key=lambda f: (not Path(f).name.lower().startswith(q), len(f)))
+        return [{"path": f, "name": Path(f).name} for f in (named + pathed)[:12]]
+
+    def _tree(self, folder: str = "") -> str:
+        """The first message of a conversation starts with the folder's files: the model looks there instead of guessing
+        paths (seen 02/11: twelve reads of files that do not exist)."""
+        folder = folder or self._folder
+        rows = [r for r in self._list_files(folder) if not r.replace("\\", "/").startswith(ornis_code.ORNIS_DIR + "/")]
+        if not rows:
+            return "[The working folder is empty.]\n\n"
+        shown = rows[:300]
+        more = f"\n… and {len(rows) - len(shown)} more files" if len(rows) > len(shown) else ""
+        return (f"[Files of the working folder {folder} (relative paths; read them from here, never guess a path):\n"
+                + "\n".join(shown) + more + "]\n\n")
+
+    @Slot(str, result="QVariantList")
+    def commands(self, query):
+        """« / »: what can be done at once (ours first, then the agent's own commands), filtered by what follows the /."""
+        t = self._app._t
+        q = str(query or "").lower().lstrip("/")
+        ours = [("new", "/" + t.get("slash_new_cmd", "new"), t.get("slash_new_code_sub", ""), "compose"),
+                ("compact", "/compact", t.get("slash_compact_sub", ""), "collapse"),
+                ("terminal", "/terminal", t.get("slash_terminal_sub", ""), "terminal"),
+                ("undo", "/" + t.get("code_undo_cmd", "undo"), t.get("code_undo_sub", ""), "restore")]
+        ours += [("init", "/init", t.get("code_init_sub", ""), "note"),
+                 ("remember", "/" + t.get("code_remember_cmd", "remember"), t.get("code_remember_sub", ""), "book"),
+                 ("notebook", "/ornis", t.get("code_notebook_sub", ""), "folder")]
+        ours += [("plan", "/plan", t.get("code_plan_sub", ""), "list"), ("code", "/code", t.get("code_code_sub", ""), "code"),
+                 ("goal", "/goal", t.get("code_goal_sub", ""), "flag"),
+                 ("research", "/" + t.get("slash_research_cmd", "research"), t.get("code_research_sub", ""), "search")]
+        if any(c["name"] == "retry" for c in self._commands):     # Vibe's, under our name
+            ours.append(("retry", "/" + t.get("slash_retry_cmd", "retry"), t.get("slash_retry_sub", ""), "refresh"))
+        items = [{"kind": k, "label": cmd, "sub": sub, "icon": ic, "value": cmd + " " if k == "remember" else ""}
+                 for k, cmd, sub, ic in ours if not q or q in cmd[1:].lower() or q in sub.lower()]
+        if self._folder:                          # the project's own commands (.ornis/commands/<name>.md), after ours
+            for c in ornis_code.project_commands(self._folder):
+                if not q or q in c["name"] or q in c["description"].lower():
+                    items.append({"kind": "project", "label": "/" + c["name"], "icon": "list", "value": "/" + c["name"] + " ",
+                                     "sub": c["description"] or t.get("code_project_cmd_sub", "")})
+        taken = {i["label"][1:] for i in items} | {"compact", "new", "clear", "retry"}
+        for c in self._commands:
+            if c["name"] not in taken and (not q or q in c["name"].lower() or q in c["description"].lower()):
+                items.append({"kind": "agent", "label": "/" + c["name"], "sub": c["description"][:90] or t.get("slash_agent_cmd_sub", ""),
+                              "icon": "sparkle", "value": "/" + c["name"] + " "})
+        return items[:16]
+
+    @Slot()
+    def openNotebook(self):
+        """/ornis: the project's .ornis folder in the file manager (made first if this folder never had a conversation).
+        QDesktopServices passes the activation token: a window already open comes to the front (links._qt_open)."""
+        if not self._folder:
+            return
+        ornis_code.prepare_project(self._folder, getattr(self._app, "_lang", "fr"))
+        root = ornis_code.ornis_dir(self._folder)
+        if root.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    @Slot()
+    def openTerminal(self):
+        """A terminal of the computer in the project's folder (Konsole, Terminal, Windows Terminal…)."""
+        if not self._folder:
+            return
+        folder = self._folder
+
+        def work():
+            try:
+                import ornis_shell
+                ornis_shell.in_terminal("", folder)
+            except Exception as error:  # noqa: BLE001
+                print("Ornis Code: terminal", error)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _note(self, text: str) -> str:
+        """What goes before the text for the agent (hidden in the bubbles): taken back, undone, Plan."""
+        note = ""
+        if self._retract and not text.startswith("/"):
+            self._retract = False
+            note += RETRACT_NOTE
+        if self._tell_undone and not text.startswith("/"):
+            self._tell_undone = False
+            note += UNDONE_NOTE
+        if self._plan_mode and not text.startswith("/"):
+            note += PLAN_NOTE
+        return note
+
+    def _blocks(self, text: str, note: str, attachments: list, first: bool, folder: str) -> list[dict]:
+        """The message for the agent: the text, then each file joined or named with @ (it reads them; an image is
+        given as an image). Made off the window's thread: the folder's list and the images take time."""
+        head = ornis_code.project_context(folder) + self._tree(folder) if first else ""
+        blocks = [ornis_code.text_block(note + head + text)]
+        seen = set()
+        for a in attachments:
+            seen.add(a["path"])
+            image = ornis_code.image_block(Path(a["path"])) if not a.get("dir") else None
+            blocks.append(image or ornis_code.file_block(Path(a["path"])))
+        for name in mentioned(text):
+            path = (Path(folder) / name).resolve()
+            if path.exists() and path.is_relative_to(Path(folder).resolve()) and str(path) not in seen:
+                seen.add(str(path))
+                blocks.append(ornis_code.file_block(path))
+        return blocks
+
+    # ---- conversations ---------------------------------------------------------------------------------------------
+    @Slot(str)
+    def newIn(self, folder):
+        """A new conversation in a folder (the agent starts if it is not running there)."""
+        self._open(str(folder), "")
+
+    @Slot(str, str)
+    def open(self, folder, session_id):
+        self._open(str(folder), str(session_id))
+
+    def runScheduled(self, folder: str, title: str, prompt: str, task_id: str) -> bool:
+        """Run a local Code cron task in this view so the user can watch it live. False if Code is busy."""
+        folder = str(Path(folder).expanduser().resolve()) if folder else ""
+        if not folder or not Path(folder).is_dir() or not str(prompt or "").strip():
+            return False
+        if self._busy or self._cron_job or self._host is not None:
+            return False
+        self._cron_job = {
+            "task_id": str(task_id or ""),
+            "title": str(title or "").strip() or str(task_id or "cron"),
+            "prev_mode": self._mode,
+        }
+        self._mode = "auto"
+        self._plan_mode = False
+        self._open(folder, "")
+        self._title = self._cron_job["title"]
+        self._queued = str(prompt)
+        self.changed.emit()
+        return True
+
+    def _finish_cron(self, status: str, summary: str, session: str = ""):
+        job, self._cron_job = self._cron_job, None
+        if not job:
+            return
+        if job.get("prev_mode") in ornis_code.MODES:
+            self._mode = job["prev_mode"]
+        self.cronDone.emit(str(job.get("task_id") or ""), status, summary[:300], session or self._session or "")
+        self.changed.emit()
+
+    def _open(self, folder: str, session_id: str):
+        folder = str(Path(folder).expanduser().resolve()) if folder else ""
+        if (session_id and session_id == self._session and folder == self._folder and self._agent is not None
+                and self._agent.alive()):
+            # already the one shown (sidebar, Activité, the Code tab): nothing to cancel nor to replay; a replay
+            # under a turn still streaming wrote its text twice
+            self.changed.emit()
+            return
+        # A second agent cannot load a session still held by a background cron agent
+        if session_id and self._busy and session_id == self._session:
+            self.changed.emit()
+            return
+        self._cancel_host()
+        self._opening += 1
+        self._items.quiet = False
+        if not folder or not Path(folder).is_dir():
+            self.problem.emit(self._app._t.get("code_folder_missing", ""))
+            return
+        if self._busy and self._agent and self._session:
+            # Interrupting a live cron run (user opened something else): close the task as stopped
+            if self._cron_job and self._session and session_id != self._session:
+                self._finish_cron("error", self._app._t.get("code_stopped", "Arrêté"), self._session)
+            self._agent.cancel(self._session)
+        self._items.reset()
+        self._parts_epoch += 1
+        self._parts_hold = False
+        self._compacting = False
+        self._dismissed_tips.clear()
+        self._tools.clear()
+        self._retry_ids.clear()
+        self._pending_text.clear()
+        self._plan, self._usage, self._parts = [], {}, {}
+        self.planChanged.emit()
+        self.usageChanged.emit()
+        self._session, self._title, self._busy, self._queued = session_id, "", False, ""
+        if folder != self._folder:
+            self._attachments, self._file_list_for = [], ""
+            self.attachmentsChanged.emit()
+        if session_id:
+            self._title = next((s.get("title", "") for s in self._index.get(folder, []) if s.get("id") == session_id), "")
+        same = self._agent is not None and self._agent.alive() and self._folder == folder
+        self._folder = folder
+        self._later, self._retract, self._git, self._forced = [], False, {}, None
+        self.laterChanged.emit()
+        self._refresh_git()
+        self._warm_files()
+        self._app.useWorkspace(folder) if hasattr(self._app, "useWorkspace") else None
+        if same and self._state == "ready":
+            self._attach()
+        else:
+            self._start()
+        self.changed.emit()
+
+    @Slot()
+    def close(self):
+        """Back to no conversation (the agent stays, for the next one of this folder)."""
+        self._cancel_host()
+        self._opening += 1
+        self._items.quiet = False
+        self._session, self._title = "", ""
+        self._items.reset()
+        self.changed.emit()
+
+    @Slot(str, str)
+    def forget(self, folder, session_id):
+        """Removes a conversation from the list (its history stays in the agent's home until it is cleaned)."""
+        rows = [s for s in self._index.get(folder, []) if s.get("id") != session_id]
+        if rows:
+            self._index[folder] = rows
+        else:
+            self._index.pop(folder, None)
+        self._save()
+        if session_id == self._session:
+            self.close()
+        self.changed.emit()
+
+    @Slot(str, str, str)
+    def rename(self, folder, session_id, title):
+        for s in self._index.get(folder, []):
+            if s.get("id") == session_id:
+                s["title"], s["renamed"] = title.strip() or s.get("title", ""), True
+        if session_id == self._session:
+            self._title = title.strip() or self._title
+        self._save()
+        self.changed.emit()
+
+    # ---- the agent -------------------------------------------------------------------------------------------------
+    def _start(self):
+        if self._agent is not None:
+            agent, self._agent = self._agent, None
+            threading.Thread(target=agent.close, daemon=True).start()
+        account = self._app.account()
+        if not account:
+            self._fail("code_offline")
+            return
+        if not ornis_code.supported():
+            self._fail("code_unsupported")
+            return
+        self._state = "installing" if ornis_code.binary() is None else "starting"
+        self._error, self._progress_pc = "", -1
+        self.changed.emit()
+        folder = self._folder
+        # one agent at a time: a start overtaken by another (two conversations opened quickly) is closed when ready;
+        # two agents on the same conversation each wrote the answer, mixed in one bubble (« Je reprends… » twice, 05/11)
+        self._starts = getattr(self, "_starts", 0) + 1
+        start = self._starts
+        holder = []
+
+        def work():
+            try:
+                exe = ornis_code.install(lambda done, total: self._progress.emit(int(done * 100 / total) if total else -1))
+                creds = ornis_code.credentials(*account)
+                self._gateway = {"token": creds["token"], "url": creds["url"]}
+                ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))   # its skills/ for skill_paths
+                ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder, self._app.pref("code_reasoning") or "high")
+                agent = ornis_code.Agent(exe, Path(folder), creds["token"],
+                                         on_update=lambda sid, u: self._update.emit(holder[0] if holder else None, sid, u),
+                                         on_permission=lambda rid, sid, tool, opts: self._permission.emit(rid, sid, tool, opts),
+                                         on_exit=lambda code, err: self._exited.emit(code, err),
+                                         on_question=lambda rid, sid, qs: self._question.emit(rid, sid, qs),
+                                         gateway_url=str(creds.get("url") or ""))
+                holder.append(agent)
+                agent.start()
+                if start != self._starts:            # overtaken: the newer start keeps the conversation
+                    agent.close()
+                    return
+                self._ready.emit(agent, "")
+            except ornis_code.Unavailable as error:
+                self._ready.emit(None, f"code_{error.args[0] if error.args else 'failed'}")
+            except Exception as error:  # noqa: BLE001
+                print("Ornis Code:", type(error).__name__, error)
+                self._ready.emit(None, "code_failed")
+        threading.Thread(target=work, daemon=True, name="ornis-code-start").start()
+
+    def _on_progress(self, pc):
+        self._progress_pc = pc
+        if self._state == "installing":
+            self.changed.emit()
+
+    def _on_ready(self, agent, problem):
+        if agent is None:
+            self._fail(problem)
+            return
+        if self._folder != str(agent.folder) or self._agent is not None:   # another folder, or another agent, meanwhile
+            if agent is not self._agent:
+                threading.Thread(target=agent.close, daemon=True).start()
+            return
+        self._agent, self._state = agent, "ready"
+        self._attach()
+        self.changed.emit()
+
+    def _attach(self):
+        """Opens the conversation on the agent: an existing one (replayed) or a new one when the first message goes."""
+        agent, sid = self._agent, self._session
+        if not sid:
+            if self._queued:
+                text, self._queued = self._queued, ""
+                self.send(text)
+            return
+        self._busy = True
+        self._replaying = True
+        self._items.quiet = True                 # drawn once, at the end (a long conversation froze the window)
+        self.changed.emit()
+
+        def work():
+            try:
+                agent.load_session(sid)
+                agent.set_mode(sid, self._mode)
+                self._done.emit(sid, {"loaded": True})
+            except Exception as error:  # noqa: BLE001
+                self._done.emit(sid, {"error": str(error), "loaded": True})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _fail(self, problem):
+        self._state, self._error, self._busy = "error", problem, False
+        self.changed.emit()
+
+    def _on_exit(self, code, stderr):
+        if self._agent is not None and not self._agent.alive():
+            self._cancel_host()
+            self._agent = None
+            if self._busy:
+                self._add_error("code_crashed")
+            self._busy = False
+            self._state = "idle"
+            self.changed.emit()
+
+    @Slot()
+    def retry(self):
+        if self._folder:
+            if self._error == "code_token" and self._app.account():
+                ornis_code.forget(*self._app.account()[:2])
+            self._start()
+
+    def _account_changed(self):
+        key = tuple((self._app.account() or ())[:2])
+        if key == self._account_key:             # the same account (its name or picture arrived)
+            return
+        self._cancel_host()
+        self._account_key = key
+        if self._agent is not None:
+            agent, self._agent = self._agent, None
+            threading.Thread(target=agent.close, daemon=True).start()
+        self._state, self._session, self._folder = "idle", "", ""
+        self._items.reset()
+        self.changed.emit()
+
+    # ---- sending -------------------------------------------------------------------------------------------------------
+    def _expand(self, text: str) -> str:
+        """/retenir … and the project's commands (.ornis/commands): the text the agent receives instead."""
+        if not text.startswith("/") or len(text) < 2:
+            return text
+        word, _, args = text[1:].partition(" ")
+        word = word.lower()
+        t = self._app._t
+        if word in ("remember", str(t.get("code_remember_cmd", "remember")).lower()):
+            what = args.strip()
+            if not what:                          # alone: what this conversation taught, as Claude Code's memory
+                return str(t.get("code_remember_all_text", "Save in the project's memory (.ornis/memory) what matters from this conversation."))
+            return str(t.get("code_remember_text", "Remember this in the project's memory (.ornis/memory): %1")).replace("%1", what)
+        if self._folder:                          # the project's own command wins over the agent's of that name
+            return ornis_code.expand_command(self._folder, word, args) or text
+        return text
+
+    @Slot(str)
+    def send(self, text):
+        text = str(text or "").strip()
+        if not text:
+            return
+        shown, text = text, self._expand(text)    # the bubble keeps what the user wrote
+        if self._busy and not shown.startswith("/") or self._busy and text != shown:
+            self._later.append(shown)                # sent after this turn, as in Claude Code (shown above the box)
+            self._remember_prompt(shown)
+            self.laterChanged.emit()
+            return
+        if text.lower() in ("/undo", "/" + str(self._app._t.get("code_undo_cmd", "undo")).lower()):
+            self.undoLast()                      # ours, not the agent's
+            return
+        word = text[1:].split(None, 1)[0].lower() if text.startswith("/") and len(text) > 1 else ""
+        if word in HIDDEN_COMMANDS:
+            self.problem.emit(self._app._t.get("code_command_unknown", "").replace("%1", "/" + word))
+            return
+        retry = "/" + str(self._app._t.get("slash_retry_cmd", "retry")).lower()
+        if text.lower() == retry or text.lower().startswith(retry + " "):
+            text = "/retry" + text[len(retry):]  # Vibe's command, under our name
+        if self._state != "ready" or self._agent is None:
+            self._queued = shown                     # sent as soon as the agent is there (after a replay, if any)
+            if not self._session:
+                self._items.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
+            if self._state in ("idle", "error") and self._folder:
+                self._start()
+            return
+        if self._busy:
+            return
+        if not text.startswith("/") or text != shown:
+            self._remember_prompt(shown)
+        agent = self._agent
+        if not (self._items.rows and self._items.rows[-1].get("kind") == "user" and self._items.rows[-1].get("content") in (text, shown)):
+            self._items.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
+        if self._plan_mode and not text.startswith("/"):
+            self._items.rows[-1]["plan"] = True
+            self._items.touch(len(self._items.rows) - 1)
+        self._compacting = text == "/compact"
+        if self._compacting:
+            self._invalidate_parts()
+        else:
+            self._parts_hold = False
+        self._busy = True
+        self._failures, self._looped, self._repeats = {}, False, {}
+        self._continued, self._turn_start = 0, len(self._items.rows) - 1
+        self.changed.emit()
+        sid = self._session
+        mode = self._mode
+        note = self._note(text)
+        attachments = list(self._attachments)
+        first = not self._session and not text.startswith("/")
+        files = [{"name": a["name"], "path": a["path"], "kind": "file"} for a in self._attachments]
+        for name in mentioned(text):          # the files named with @ show on the message too
+            try:
+                path = (Path(self._folder) / name).resolve()
+            except OSError:
+                continue
+            if path.exists() and path.is_relative_to(Path(self._folder).resolve()) and str(path) not in [f["path"] for f in files]:
+                files.append({"name": name, "path": str(path), "kind": "file"})
+        if files:                             # a click opens it in the panel on the right (CodeView.openInBench)
+            self._items.rows[-1]["files"] = files
+            self._items.touch(len(self._items.rows) - 1)
+        self._attachments = []
+        self.attachmentsChanged.emit()
+
+        folder = self._folder
+        self._turn_rev = ""
+
+        def work():
+            session = sid
+            if first:                         # the project's .ornis folder, made once (Ornis's memory, plans, tmp…),
+                ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))   # before the checkpoint
+            try:                              # the folder as it is now: « Annuler » brings it back after the turn
+                rev = ornis_code.Checkpoints(folder).snapshot(text[:120])
+                self._checked.emit(sid, rev)
+            except Exception:  # noqa: BLE001 - a turn without checkpoint is still a turn
+                pass
+            try:
+                blocks = self._blocks(text, note, attachments, first, folder)
+                if not session:
+                    created = agent.new_session()
+                    session = created.get("sessionId", "")
+                    self._done.emit(session, {"created": True})
+                    agent.set_mode(session, mode)
+                result = agent.prompt(session, blocks)
+                self._done.emit(session, result)
+            except Exception as error:  # noqa: BLE001
+                self._done.emit(session, {"error": str(error)})
+        threading.Thread(target=work, daemon=True, name="ornis-code-prompt").start()
+
+    def _on_done(self, session, result):
+        if result.get("created"):
+            self._session = session
+            title = self._title or ""
+            self._remember(session, title)
+            if self._cron_job:
+                self.cronSession.emit(str(self._cron_job.get("task_id") or ""), self._folder, session)
+            self.changed.emit()
+            return
+        if session != self._session:
+            return
+        if result.get("loaded"):
+            self._replaying = False
+            self._write_text()
+            self._items.quiet = False
+            self._items.reset(list(self._items.rows))
+            self._busy = False
+            if result.get("error"):
+                self._add_error("code_lost")
+            self.changed.emit()
+            if self._queued:
+                text, self._queued = self._queued, ""
+                self.send(text)
+            return
+        if self._host is not None:
+            self._host["drained"] = True
+            if self._host["cancel"].is_set():
+                self._host = None
+            else:
+                self._launch_host()
+                return
+        if self._compacting:
+            self._invalidate_parts()
+            self._compacting = False
+        self._write_text()
+        self._busy = False
+        for row in self._items.rows:         # what was still asked for is moot now
+            row.pop("permission", None)
+        self._asked = None
+        error = str(result.get("error") or "")
+        if self._forced is not None and ("cancel" in error.lower() or result.get("stopReason") == "cancelled"):
+            error, result = "", dict(result, stopReason="end_turn")      # stopped for the next message: no « Arrêté »
+        if error:
+            low = error.lower()
+            self._add_error("code_plus_text" if "plan_required" in low else
+                            "code_quota" if "402" in low or "quota" in low else
+                            "code_busy" if "rate limit" in low or "503" in low or "429" in low or "408" in low or "timeout" in low else
+                            "code_stopped" if "cancel" in low else "code_error", error)
+        elif result.get("stopReason") == "cancelled":
+            self._add_error({"text": "code_looped_text", "repeat": "code_looped_repeat"}.get(self._looped) or
+                            ("code_looped" if self._looped else "code_stopped"))
+        why = self._why_continue(error, result)
+        if why:
+            self._remember(self._session, self._title)
+            self._continue(why)                  # the same turn for « Annuler »: its checkpoint stays
+            return
+        self._remember(self._session, self._title)
+        if self._plan_mode and not error and result.get("stopReason") != "cancelled":
+            self._items.append({"kind": "planready", "done": False})
+        self.changed.emit()
+        self._turn_changes()
+        self._refresh_git()
+        if self._forced is not None:             # « Envoyer maintenant »: the turn was stopped for it
+            text, self._forced = self._forced, None
+            QTimer.singleShot(0, lambda: self.send(text))
+            return
+        if self._later and not error:            # what was written meanwhile goes now
+            text = self._later.pop(0)
+            self.laterChanged.emit()
+            QTimer.singleShot(0, lambda: self.send(text))
+            return
+        if error and self._later:                # stopped or refused: what waited goes back into the box, not sent
+            text, self._later = "\n\n".join(self._later), []
+            self.laterChanged.emit()
+            self.laterReturned.emit(text)
+        if self._cron_job:
+            status = "error" if error or result.get("stopReason") == "cancelled" else "ok"
+            summary = (self._app._t.get("cron_failed", "Échec") if status == "error"
+                       else self._app._t.get("cron_done", "Terminé"))
+            self._finish_cron(status, summary, session)
+            return
+        if not error:
+            self.finished.emit(self._title or self.folderName)
+
+    def _why_continue(self, error, result) -> str:
+        """Why the turn should go on by itself ('' when it is really over)."""
+        if (error or self._forced is not None or result.get("stopReason") not in (None, "end_turn") or self._plan_mode or self._later
+                or self._continued >= MAX_CONTINUE or not self._agent or not self._session):
+            return ""
+        rows = self._items.rows[max(0, self._turn_start):]
+        last = next((r for r in reversed(rows) if r.get("kind") == "agent"), None)
+        text = str((last or {}).get("content") or "").strip()
+        if text and tool_as_text(text):
+            return "tool"
+        tools = [r for r in rows if r.get("kind") == "tool"]
+        if any(r.get("status") == "failed" or r.get("answer") for r in tools):
+            return ""                            # a step refused or failed: Ornis says so, the user decides
+        pending = any(p.get("status") in ("pending", "in_progress") for p in self._plan)
+        if pending and tools and not text.endswith("?"):
+            return "plan"
+        return ""
+
+    def _continue(self, why: str):
+        self._continued += 1
+        self._items.append({"kind": "notice", "key": "code_continued_" + why, "id": f"notice-{time.time()}"})
+        self._busy = True
+        self.changed.emit()
+        agent, sid = self._agent, self._session
+
+        def work():
+            try:
+                self._done.emit(sid, agent.prompt(sid, [{"type": "text", "text": CONTINUE_NOTE + CONTINUE_TEXT[why]}]))
+            except Exception as error:  # noqa: BLE001
+                self._done.emit(sid, {"error": str(error)})
+        threading.Thread(target=work, daemon=True, name="ornis-code-continue").start()
+
+    @Slot()
+    def stop(self):
+        host = self._host
+        self._cancel_host()
+        if host and not host["drained"]:
+            self._host = host
+            self._busy = True  # wait for ACP cancellation before accepting another prompt
+            self.changed.emit()
+        if self._agent and self._session and self._busy:
+            self._agent.cancel(self._session)
+
+    # ---- written while Ornis works: waiting above the box (QueueDock), as in the Chat mode ----------------------
+    @Property("QVariantList", notify=laterChanged)
+    def later(self):
+        return list(self._later)
+
+    @Slot(int)
+    def dropLater(self, index):
+        if 0 <= index < len(self._later):
+            del self._later[index]
+            self.laterChanged.emit()
+
+    @Slot(int)
+    def editLater(self, index):
+        """« Modifier »: out of the queue, back into the box."""
+        if 0 <= index < len(self._later):
+            text = self._later.pop(index)
+            self.laterChanged.emit()
+            self.laterReturned.emit(text)
+
+    @Slot(int)
+    def sendLaterNow(self, index):
+        """« Envoyer maintenant »: the turn stops (its changes stay, « Annuler » still undoes them), this one goes next."""
+        if not 0 <= index < len(self._later):
+            return
+        text = self._later.pop(index)
+        self.laterChanged.emit()
+        if self._busy and self._agent and self._session:
+            self._forced = text
+            self.stop()
+        else:
+            self.send(text)
+
+    @Slot(str)
+    def setMode(self, mode):
+        if self._busy or mode not in ornis_code.MODES or mode == self._mode:
+            return
+        self._mode = mode
+        self._app.setPref("code_mode", mode)
+        if self._agent and self._session:
+            agent, sid = self._agent, self._session
+            threading.Thread(target=lambda: agent.set_mode(sid, mode), daemon=True).start()
+        self.changed.emit()
+
+    @Property(bool, notify=changed)
+    def planMode(self):
+        return self._plan_mode
+
+    @Slot(bool)
+    def setPlanMode(self, on):
+        """Plan: Ornis explores and proposes, nothing is changed (every edit and command that writes is refused)."""
+        on = bool(on)
+        if self._busy or on == self._plan_mode:
+            return
+        self._plan_mode = on
+        if self._agent and self._session:          # Vibe asks for each edit then: decide("plan") refuses it
+            agent, sid, mode = self._agent, self._session, "ask" if on else self._mode
+            threading.Thread(target=lambda: agent.set_mode(sid, mode), daemon=True).start()
+        self.changed.emit()
+
+    @Slot()
+    def runPlan(self):
+        """« Exécuter le plan »: back to the chosen autonomy, and Ornis does what it proposed."""
+        if self._busy:
+            return
+        self.setPlanMode(False)
+        for i, row in enumerate(self._items.rows):
+            if row.get("kind") == "planready" and not row.get("done"):
+                row["done"] = True
+                self._items.touch(i)
+        self.send(self._app._t.get("code_run_plan_text", "Execute the plan above."))
+
+    @Slot(int, str)
+    def answer(self, row, option_id):
+        """The user's choice on a card asking for a permission (an option id of the agent)."""
+        if not 0 <= row < len(self._items.rows):
+            return
+        item = self._items.rows[row]
+        asked = item.get("permission")
+        if not asked or self._agent is None or option_id not in {o["id"] for o in asked.get("options", [])}:
+            return
+        choice = next(o for o in asked["options"] if o["id"] == option_id)
+        item.pop("permission", None)
+        approved = choice.get("kind") == "allow_once"
+        if asked.get("host") and approved:
+            self._begin_host(row, asked)
+        elif asked.get("request") is not None:
+            self._agent.answer(asked["request"], {"outcome": {"outcome": "selected", "optionId": option_id}})
+        item["answer"] = "allowed" if choice.get("kind", "").startswith("allow") else "rejected"
+        self._items.touch(row)
+        self.changed.emit()
+
+    @Slot(int)
+    def copyCommand(self, at):
+        if 0 <= at < len(self._items.rows):
+            QGuiApplication.clipboard().setText(self._items.rows[at].get("command", ""))
+
+    @Slot(int)
+    def retryOutside(self, at):
+        if self._busy or self._host or self.waiting or not 0 <= at < len(self._items.rows):
+            return
+        row = self._items.rows[at]
+        if not row.get("retryOutside") or row.get("id") in self._retry_ids:
+            return
+        if not ornis_code.retry_outside(row.get("command", ""), row.get("output", ""), self._folder, self.sandbox):
+            return
+        row["permission"] = {"request": None, "host": True, "title": self._app._t.get("code_retry_outside", "Retry outside sandbox"), "options": [
+            {"id": "host-once", "kind": "allow_once", "label": self._app._t.get("code_retry_outside", "Retry outside sandbox")},
+            {"id": "host-no", "kind": "reject_once", "label": ""}]}
+        self._items.touch(at)
+        self.changed.emit()
+
+    def _cancel_host(self):
+        host, self._host = self._host, None
+        if host:
+            host["cancel"].set()
+            if not host["drained"]:
+                host["agent"].cancel(host["session"])
+            if host["opening"] == self._opening and 0 <= host["row"] < len(self._items.rows):
+                row = self._items.rows[host["row"]]
+                row.update(status="failed", output=self._app._t.get("code_stopped", "Stopped"))
+                self._items.touch(host["row"])
+            self._busy = False
+            self.changed.emit()
+            self._turn_changes()
+
+    def _begin_host(self, at, asked):
+        row = self._items.rows[at]
+        self._retry_ids.add(row["id"])
+        host = {"agent": self._agent, "session": self._session, "opening": self._opening,
+                "row": at, "command": row["command"], "folder": self._folder,
+                "cancel": threading.Event(), "drained": not self._busy, "started": False}
+        self._host = host
+        row.update(hostOwned=True, retryOutside=False, status="in_progress", output="")
+        self._busy = True
+        if asked.get("request") is not None:
+            outcome = {"outcome": "selected", "optionId": asked["reject"]} if asked.get("reject") else {"outcome": "cancelled"}
+            self._agent.answer(asked["request"], {"outcome": outcome})
+        if not host["drained"]:
+            self._agent.cancel(self._session)
+        else:
+            self._launch_host()
+
+    def _launch_host(self):
+        host = self._host
+        if not host or host["started"] or not host["drained"]:
+            return
+        host["started"] = True
+        def work():
+            import ornis_process
+            import ornis_code_hook
+            try:
+                if host["cancel"].is_set():
+                    return
+                result = ornis_process.start(host["command"], cwd=host["folder"], wait=0, sandbox=False)
+                while not result.get("done"):
+                    if host["cancel"].is_set():
+                        ornis_process.stop(result["job"])
+                        return
+                    result = ornis_process.status(result["job"], wait=.3)
+                output = result.get("output", "")
+                if result.get("job"):
+                    try:
+                        output = (ornis_process.JOBS / result["job"] / "output").read_text(errors="replace")
+                    except OSError:
+                        pass
+                if len(output) > ornis_code_hook.KEEP:
+                    output = ornis_code_hook.shorten(output, ornis_code_hook.save(host["folder"], "tool", str(host["row"]), output))
+                result["output"] = output + "\n[exit " + str(result.get("exit_code")) + "]"
+            except Exception as error:
+                result = {"output": str(error), "exit_code": -1}
+            self._host_done.emit(host, result)
+        threading.Thread(target=work, daemon=True, name="ornis-host-command").start()
+
+    def _on_host_done(self, host, result):
+        if self._host is not host or host["cancel"].is_set() or host["opening"] != self._opening or host["agent"] is not self._agent:
+            return
+        self._host = None
+        row = self._items.rows[host["row"]]
+        row.update(output=result["output"], manual=bool(row.get("admin") and result.get("exit_code") != 0), status="completed" if result.get("exit_code") == 0 else "failed")
+        self._items.touch(host["row"])
+        note = "[Ornis: host result]\nCommand: " + host["command"] + "\n[Executed outside sandbox]\n" + result["output"] + "\nContinue using this result; do not repeat this command."
+        def work():
+            try:
+                answer = host["agent"].prompt(host["session"], [{"type": "text", "text": note}])
+            except Exception as error:
+                answer = {"error": str(error)}
+            self._done.emit(host["session"], answer)
+        threading.Thread(target=work, daemon=True, name="ornis-host-continue").start()
+        self.changed.emit()
+
+    # ---- what the agent sends ------------------------------------------------------------------------------------------
+    def _on_update(self, agent, sid, update):
+        if sid != self._session or agent is not self._agent:   # only the agent in use writes
+            return
+        kind = update.get("sessionUpdate")
+        if kind in ("agent_message_chunk", "agent_thought_chunk", "user_message_chunk"):
+            text = _text(update.get("content"))
+            role = {"agent_message_chunk": "agent", "agent_thought_chunk": "thought", "user_message_chunk": "user"}[kind]
+            last = self._items.rows[-1] if self._items.rows else None
+            if last is None or last.get("kind") != role or (role == "user" and not self._replaying):
+                if role == "user" and not self._replaying:
+                    return                            # our own bubble is already there
+                self._write_text()
+                at = self._items.append({"kind": role, "role": "human" if role == "user" else "assistant", "content": "",
+                                         "id": f"{role}-{len(self._items.rows)}"})
+            else:
+                at = len(self._items.rows) - 1
+            self._pending_text.setdefault(at, []).append(text)
+            if self._replaying:
+                pass                                  # written when the row changes, and at the end of the replay
+            elif not self._flush.isActive():
+                self._flush.start()
+        elif kind in ("tool_call", "tool_call_update"):
+            self._write_text()
+            self._tool(update)
+        elif kind == "plan":
+            self._plan = [{"text": str(e.get("content") or ""), "status": str(e.get("status") or "pending")}
+                          for e in update.get("entries") or []]
+            self.planChanged.emit()
+        elif kind == "usage_update":
+            previous = int(self._usage.get("used") or 0)
+            self._usage = {"used": int(update.get("used") or 0), "size": int(update.get("size") or 0)}
+            if self._compacting or int(self._usage["used"]) < previous * .7:
+                self._invalidate_parts()
+            self.usageChanged.emit()
+            if not self._replaying:                   # a replayed conversation: the gateway measured another request
+                self._measure.start()
+        elif kind == "session_info_update":
+            title = str(update.get("title") or "")
+            renamed = any(s.get("renamed") for s in self._index.get(self._folder, []) if s.get("id") == self._session)
+            if title and not renamed:
+                self._title = title
+                self._remember(self._session, title)
+                self.changed.emit()
+        elif kind == "available_commands_update":
+            self._commands = [{"name": str(c.get("name") or ""), "description": str(c.get("description") or "")}
+                              for c in update.get("availableCommands") or []
+                              if isinstance(c, dict) and c.get("name") and str(c["name"]).lower() not in HIDDEN_COMMANDS]
+        elif kind == "current_mode_update":
+            pass                                      # our mode decides (decide()), whatever the agent shows
+
+    def _write_text(self):
+        for at, pieces in self._pending_text.items():
+            text = "".join(pieces)
+            if 0 <= at < len(self._items.rows):
+                row = self._items.rows[at]
+                row["content"] = row.get("content", "") + text
+                if row.get("kind") == "user" and row["content"].startswith(CONTINUE_NOTE):
+                    rest = row["content"][len(CONTINUE_NOTE):]
+                    row.update(kind="notice", key="code_continued_" + ("tool" if rest.startswith("You wrote") else "plan"))
+                if row.get("kind") == "user" and row["content"].startswith("[Ornis: host result]"):
+                    row.update(kind="notice", key="code_host_done", content="")
+                for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE):
+                    if row.get("kind") == "user" and row["content"].startswith(hidden):
+                        row["content"] = row["content"][len(hidden):]
+                if row.get("kind") == "user" and row["content"].startswith("[Project notebook"):
+                    cut = row["content"].find("\n]\n\n")    # the .ornis notebook joined to the first message: not shown
+                    if cut >= 0:
+                        row["content"] = row["content"][cut + 4:]
+                if row.get("kind") == "user" and row["content"].startswith("[Project command /"):
+                    name = row["content"][len("[Project command "):].split(" ", 1)[0]
+                    if "]\n\n" in row["content"]:
+                        row["content"] = name             # the bubble shows the command, as when it was sent
+                if row.get("kind") == "user" and row["content"].startswith("[Files of the working folder"):
+                    cut = row["content"].find("]\n\n")      # the folder's files we joined to the first message: not shown
+                    if cut >= 0:
+                        row["content"] = row["content"][cut + 3:]
+                step = len(row["content"]) // 2000
+                if (not self._replaying and row.get("kind") in ("agent", "thought") and step > row.get("_step", 0)
+                        and not row.update(_step=step) and repeating(row["content"])):
+                    if self._agent and self._session and self._busy and not self._looped:
+                        self._looped = "text"        # the model repeats itself: stopped before it eats the day's limit
+                        self._agent.cancel(self._session)
+                self._items.touch(at)
+        self._pending_text.clear()
+
+    def _tool(self, update):
+        tid = str(update.get("toolCallId") or "")
+        at = self._tools.get(tid, -1)
+        if at < 0:
+            at = self._items.append({"kind": "tool", "id": tid, "title": "", "tool": "other", "status": "pending",
+                                     "icon": KINDS["other"], "diff": [], "output": "", "path": "", "command": ""})
+            self._tools[tid] = at
+        row = self._items.rows[at]
+        if row.get("hostOwned"):
+            return
+        raw = update.get("rawInput") if isinstance(update.get("rawInput"), dict) else None
+        if raw is not None:
+            row["raw"] = raw
+            row["command"] = str(raw.get("command") or row.get("command") or "")
+            row["path"] = str(raw.get("path") or raw.get("file_path") or row.get("path") or "")
+        if update.get("title"):
+            row["title"] = str(update["title"])
+        if update.get("kind"):
+            row["tool"] = str(update["kind"])
+            row["icon"] = KINDS.get(row["tool"], KINDS["other"])
+        if update.get("status"):
+            row["status"] = str(update["status"])
+        for loc in update.get("locations") or []:
+            if isinstance(loc, dict) and loc.get("path") and not row.get("path"):
+                row["path"] = str(loc["path"])
+        for content in update.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") == "diff":
+                row["path"] = str(content.get("path") or row.get("path") or "")
+                row["diff"] = diff_lines(row["path"], content.get("oldText"), str(content.get("newText") or ""))
+                row["added"] = sum(1 for d in row["diff"] if d["t"] == "+")
+                row["removed"] = sum(1 for d in row["diff"] if d["t"] == "-")
+            else:
+                text = _text(content)
+                if text:
+                    row["output"] = (row.get("output", "") + text)[-MAX_OUTPUT:] if row["tool"] == "execute" else text[-MAX_OUTPUT:]
+        if row.get("tool") == "execute":
+            row["retryOutside"] = (row.get("status") == "failed" and tid not in self._retry_ids
+                                    and ornis_code.retry_outside(row.get("command", ""), row.get("output", ""), self._folder, self.sandbox))
+        if row.get("status") == "failed" and row.get("tool") in ("read", "search", "edit") and not row.get("_counted"):
+            row["_counted"] = True               # the same failing call again and again: it goes round in circles
+            key = (row.get("tool"), row.get("path") or row.get("title"))
+            self._failures[key] = self._failures.get(key, 0) + 1
+            if sum(self._failures.values()) >= 6 or self._failures[key] >= 3:
+                if self._agent and self._session and self._busy and not self._looped:
+                    self._looped = True
+                    self._agent.cancel(self._session)
+        if row.get("status") == "completed" and not row.get("_repeat"):
+            # the same command or search, done again and again although it answered (04/11: one grep 40 times)
+            row["_repeat"] = True
+            what = json.dumps(row.get("raw") or {"command": row.get("command"), "path": row.get("path"), "title": row.get("title")}, sort_keys=True)
+            if row.get("tool") in ("edit", "delete", "move"):
+                self._repeats.clear()             # an edit starts a new round of checks
+            elif what:
+                key = (row.get("tool"), what)
+                fingerprint = hashlib.sha256(str(row.get("output") or "").encode("utf-8", "replace")).hexdigest()
+                previous, count = self._repeats.get(key, (None, 0))
+                self._repeats[key] = (fingerprint, count + 1 if previous == fingerprint else 1)
+                if self._repeats[key][1] >= (6 if row.get("tool") == "read" else 4) and self._agent and self._session and self._busy and not self._looped:
+                    self._looped = "repeat"
+                    self._agent.cancel(self._session)
+        if row.get("path") and self._folder:
+            try:
+                row["short"] = str(Path(row["path"]).resolve().relative_to(self._folder))
+            except ValueError:
+                row["short"] = row["path"]
+        self._items.touch(at)
+
+    def _on_permission(self, request_id, sid, tool, options):
+        tid = str((tool or {}).get("toolCallId") or "")
+        if tid and sid == self._session:
+            self._tool(dict(tool, toolCallId=tid))
+        at = self._tools.get(tid, -1)
+        row = self._items.rows[at] if at >= 0 else {}
+        call = {"kind": row.get("tool"), "rawInput": row.get("raw") or {}, "title": row.get("title"),
+                "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
+                "content": (tool or {}).get("content") or []}
+        verdict = ornis_code.decide("plan" if self._plan_mode else self._mode, call, sandboxed=bool(ornis_code.sandbox_kind()),
+                                    folder=self._folder)
+        if at < 0 or sid != self._session or self._host is not None:
+            verdict = "reject"
+        opts = [o for o in options or [] if isinstance(o, dict)]
+        if verdict in ("allow", "reject") or at < 0 or sid != self._session:
+            want = "allow_once" if verdict == "allow" else "reject_once"
+            pick = next((o for o in opts if o.get("kind") == want), None) or next(
+                (o for o in opts if str(o.get("kind", "")).startswith("reject")), None)
+            if self._agent:
+                outcome = {"outcome": "selected", "optionId": pick.get("optionId")} if pick else {"outcome": "cancelled"}
+                self._agent.answer(request_id, {"outcome": outcome})
+            if at >= 0 and sid == self._session and verdict == "reject":
+                row["answer"] = "plan" if self._plan_mode else "blocked"
+                self._items.touch(at)
+            return
+        choices = []
+        for o in opts:
+            k = str(o.get("kind") or "")
+            if o.get("optionId") == "allow_always_permanent" or (k == "allow_always" and (ornis_code.always_ask(call, self._folder) or row.get("tool") in ("read", "search", "edit", "delete", "move"))):
+                continue                              # a lasting rule would skip our checks: only for this conversation
+            label = ""
+            meta = (o.get("_meta") or {}).get("required_permissions") or []
+            if k == "allow_always" and meta:
+                label = str(meta[0].get("label") or "")
+            choices.append({"id": o.get("optionId"), "kind": k, "label": label})
+        import ornis_shell
+        admin = row.get("tool") == "execute" and ornis_shell.classify(row.get("command", "")).get("level") == "admin"
+        reject = next((o.get("optionId") for o in opts if o.get("kind") == "reject_once"), None)
+        row["permission"] = {"request": request_id, "options": choices, "host": admin, "reject": reject, "title": self._app._t.get("code_admin", "Administration") if admin else ""}
+        row["admin"] = admin
+        if admin:
+            row["title"] = self._app._t.get("code_admin", "Administration")
+        self._items.touch(at)
+        self.changed.emit()
+        if hasattr(self._app, "notify") and QGuiApplication.focusWindow() is None:
+            try:
+                self._app.notify(self._title or self.folderName, self._app._t.get("code_permission_wanted", ""), "")
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ---- checkpoints: what a turn changed, and « Annuler ces modifications » (as /rewind in Claude Code) ---------------
+    def _on_checked(self, session, rev):
+        if session == self._session or not session:
+            self._turn_rev = rev
+
+    def _turn_changes(self):
+        rev, folder, session, opening = self._turn_rev, self._folder, self._session, self._opening
+        self._turn_rev = ""
+        if not rev or not folder:
+            return
+        found = next((s for s in self._index.get(folder, []) if s.get("id") == session), None)
+        if found is not None:
+            found["checkpoints"] = (found.get("checkpoints") or [])[-49:] + [rev]
+            self._save()
+
+        def work():
+            try:
+                self._changes.emit(opening, rev, ornis_code.Checkpoints(folder).changes(rev))
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=work, daemon=True, name="ornis-code-changes").start()
+
+    def _on_changes(self, opening, rev, files):
+        if opening != self._opening or not files:
+            return
+        self._bench.refresh()
+        self._items.append({"kind": "changes", "rev": rev, "files": files[:200], "count": len(files),
+                            "added": sum(f["added"] for f in files), "removed": sum(f["removed"] for f in files), "undone": False})
+
+    @Slot(str)
+    def rewind(self, rev):
+        """The folder back as it was before that turn (the turns after it are undone too)."""
+        folder = self._folder
+        if not rev or not folder or self._busy:
+            return
+
+        def work():
+            try:
+                self._restored.emit(rev, ornis_code.Checkpoints(folder).restore(rev), "")
+            except Exception as error:  # noqa: BLE001
+                self._restored.emit(rev, 0, str(error))
+        threading.Thread(target=work, daemon=True, name="ornis-code-rewind").start()
+
+    @Slot(str, str)
+    def rewindFile(self, rev, path):
+        """One file of a turn back as it was before it (the others stay as Ornis left them)."""
+        folder = self._folder
+        if not rev or not path or not folder or self._busy:
+            return
+
+        def work():
+            try:
+                ok = ornis_code.Checkpoints(folder).restore_file(rev, path)
+            except Exception:  # noqa: BLE001
+                ok = False
+            self._file_restored.emit(rev, path, ok)
+        threading.Thread(target=work, daemon=True, name="ornis-code-rewind-file").start()
+
+    def _on_file_restored(self, rev, path, ok):
+        t = self._app._t
+        if not ok:
+            self.problem.emit(t.get("code_undo_failed", ""))
+            return
+        for i, row in enumerate(self._items.rows):
+            if row.get("kind") == "changes" and row.get("rev") == rev:
+                row["reverted"] = list(row.get("reverted") or []) + [path]
+                self._items.touch(i)
+        if self._agent and self._session:
+            self._tell_undone = True              # its view of that file is old: told with the next message
+        self.refreshFiles()
+        self._refresh_git()
+        self._bench.refresh()
+
+    @Slot(str, str)
+    def commit(self, message, branch):
+        """Git: everything changed in the folder committed, on a new branch first when one is named."""
+        folder, message, branch = self._folder, (message or "").strip(), (branch or "").strip()
+        if not folder or not message or self._busy:
+            return
+
+        def work():
+            self._committed.emit(ornis_code.git_commit(folder, message, branch))
+        threading.Thread(target=work, daemon=True, name="ornis-code-commit").start()
+
+    def _on_committed(self, problem):
+        t = self._app._t
+        if problem:
+            self.problem.emit(t.get("code_commit_failed", "").replace("%1", problem))
+        else:
+            self._app.toast.emit(t.get("code_committed", ""))
+        self._refresh_git()
+        self._bench.refresh()
+
+    @Slot()
+    def undoLast(self):
+        """« /annuler »: the changes of the last turn that made some, even after the conversation was reopened."""
+        for row in reversed(self._items.rows):
+            if row.get("kind") == "changes" and not row.get("undone"):
+                self.rewind(row["rev"])
+                return
+        found = next((s for s in self._index.get(self._folder, []) if s.get("id") == self._session), None)
+        revs = (found or {}).get("checkpoints") or []
+        if revs:
+            self.rewind(revs[-1])
+        else:
+            self.problem.emit(self._app._t.get("code_nothing_to_undo", ""))
+
+    def _on_restored(self, rev, count, problem):
+        t = self._app._t
+        if problem:
+            self.problem.emit(t.get("code_undo_failed", ""))
+            return
+        # this turn and every later one are undone
+        later = False
+        for i, row in enumerate(self._items.rows):
+            if row.get("kind") == "changes" and (row.get("rev") == rev or later):
+                later = True
+                if not row.get("undone"):
+                    row["undone"] = True
+                    self._items.touch(i)
+        self.problem.emit(t.get("code_undone", "").replace("%1", str(count)) if count else t.get("code_nothing_to_undo", ""))
+        if count and self._agent and self._session:
+            self._tell_undone = True              # the agent hears it with the next message: its view of the files is old
+        self.refreshFiles()
+        self._bench.refresh()
+
+    # ---- the box: the messages sent before (↑), taking the last one back, pasting an image ---------------------------
+    def _remember_prompt(self, text):
+        rows = [t for t in self._history.get(self._folder, []) if t != text][-99:] + [text]
+        self._history[self._folder] = rows
+        try:
+            HISTORY.parent.mkdir(parents=True, exist_ok=True)
+            system.private_write(HISTORY, json.dumps(self._history, ensure_ascii=False))
+        except OSError:
+            pass
+
+    @Slot(int, result=str)
+    def historyAt(self, back):
+        """The message sent `back` times ago in this folder (1 = the last one), "" past the oldest."""
+        rows = self._history.get(self._folder, [])
+        return rows[-back] if 0 < back <= len(rows) else ""
+
+    @Slot(result=str)
+    def editLast(self):
+        """« Modifier » my last message (as Échap Échap in Claude Code): it comes back in the box, it and what followed
+        leave the conversation, its file changes are undone; the agent hears that the next message replaces it."""
+        if self._busy:
+            return ""
+        at = max((i for i, r in enumerate(self._items.rows) if r.get("kind") == "user" and not r.get("queued")), default=-1)
+        if at < 0:
+            return ""
+        text = self._items.rows[at].get("content", "")
+        undo = next((r for r in self._items.rows[at:] if r.get("kind") == "changes" and not r.get("undone")), None)
+        if undo:
+            self.rewind(undo["rev"])
+        self._items.reset(self._items.rows[:at])
+        self._retract = bool(self._session)
+        self.changed.emit()
+        return text
+
+    @Slot(result=bool)
+    def paste(self):
+        """Ctrl+V: an image (a screenshot) or files of the clipboard joined to the message; text is left to the box."""
+        mime = QGuiApplication.clipboard().mimeData()
+        if mime is None:
+            return False
+        if mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()):
+            self.addFiles([u.toLocalFile() for u in mime.urls() if u.isLocalFile()])
+            return True
+        if mime.hasImage():
+            image = QGuiApplication.clipboard().image()
+            if image.isNull():
+                return False
+            PASTED.mkdir(parents=True, exist_ok=True)
+            path = PASTED / time.strftime("Capture %Y-%m-%d %H.%M.%S.png")
+            image.save(str(path), "PNG")
+            self.addFiles([str(path)])
+            return True
+        return False
+
+    @Slot(str)
+    def openPath(self, path):
+        """A file of a card (read, changed) in the app of the computer that opens it (the editor)."""
+        target = Path(path) if Path(path).is_absolute() else Path(self._folder) / path
+        if target.exists():
+            system.open_url(target.as_uri())
+
+    @Slot(str, str, bool)
+    def pin(self, folder, session, on):
+        found = next((s for s in self._index.get(folder, []) if s.get("id") == session), None)
+        if found is not None:
+            found["pinned"] = bool(on)
+            self._save()
+            self.changed.emit()
+
+    @Property(int, notify=changed)
+    def lastUser(self):
+        """The row of my last message sent (its « Modifier »), -1 when none."""
+        return max((i for i, r in enumerate(self._items.rows) if r.get("kind") == "user" and not r.get("queued")), default=-1)
+
+    @Property("QVariantMap", notify=changed)
+    def git(self):
+        return self._git
+
+    def _refresh_git(self):
+        folder = self._folder
+
+        def work():
+            info = ornis_code.git_info(folder) if folder else {}
+            self._git_seen.emit(folder, info)
+        threading.Thread(target=work, daemon=True, name="ornis-code-git").start()
+
+    def _on_git(self, folder, info):
+        if folder == self._folder and info != self._git:
+            self._git = info
+            self.changed.emit()
+
+    def _add_error(self, key, detail=""):
+        self._items.append({"kind": "error", "key": key, "detail": detail[:300]})
+
+    # ---- the list of conversations ---------------------------------------------------------------------------------------
+    def _remember(self, session, title):
+        if not session or not self._folder:
+            return
+        rows = self._index.setdefault(self._folder, [])
+        found = next((s for s in rows if s.get("id") == session), None)
+        if found is None:
+            found = {"id": session, "title": title or "", "created": time.time()}
+            rows.append(found)
+        if title and not found.get("renamed"):
+            found["title"] = title
+        found["updated"] = time.time()
+        self._save()
+
+    def _save(self):
+        try:
+            INDEX.parent.mkdir(parents=True, exist_ok=True)
+            system.private_write(INDEX, json.dumps(self._index, ensure_ascii=False))
+        except OSError:
+            pass
+
+    def shutdown(self):
+        self._cancel_host()
+        if self._agent is not None:
+            self._agent.close()
+            self._agent = None

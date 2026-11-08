@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Plume
+GenericName=Mail, calendar and contacts
+GenericName[fr]=Courrier, agenda et contacts
+GenericName[de]=E-Mail, Kalender und Kontakte
+Comment=Mail, calendar, contacts, notes, tasks, passwords and Ornis of your Orneos account
+Comment[fr]=Le courrier, l'agenda, les contacts, les notes, les tâches, les mots de passe et Ornis de votre compte Orneos
+Comment[de]=E-Mail, Kalender, Kontakte, Notizen, Aufgaben, Passwörter und Ornis Ihres Orneos-Kontos
+Exec=plume %u
+Icon=eu.orneos.plume
+Terminal=false
+StartupNotify=true
+StartupWMClass=eu.orneos.plume
+Categories=Network;Email;Calendar;ContactManagement;Office;
+Keywords=mail;email;courrier;calendar;agenda;contacts;notes;tasks;tâches;passwords;mots de passe;passwörter;2fa;ornis;orneos;
+MimeType=x-scheme-handler/mailto;x-scheme-handler/webcal;x-scheme-handler/webcals;x-scheme-handler/orneos;x-scheme-handler/otpauth;text/calendar;

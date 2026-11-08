@@ -1,0 +1,12 @@
+# What Plume runs on, packaged (Windows, macOS, AppImage, .deb). Same versions as Orneos OS (Fedora 44) where they
+# change behaviour: Qt 6.11, icalendar 6, dateutil 2.9. The .rpm uses Fedora's own packages instead.
+PySide6==6.11.3
+keyring==25.7.0
+cryptography==50.0.2
+icalendar==6.0.1
+python-dateutil==2.9.0.post0
+tzdata==2026.5
+qrcode==8.2
+certifi==2026.10.23
+# the terminal of Ornis Code on Windows (ConPTY); Linux and macOS use the standard library (pty)
+pywinpty==3.0.5; sys_platform == "win32"

@@ -1,0 +1,96 @@
+# Plume (bureau)
+
+Plume pour Windows, macOS et Linux : courrier, agenda, contacts, notes, tâches, mots de passe, Ornis et Meet (discussions et
+appels) du compte Orneos dans une seule app native, avec la Photothèque (ouverte depuis la grille des apps, pas depuis le rail)
+et la grille des autres apps du cloud, marquées d'un petit nuage : elles s'ouvrent dans le navigateur. Elle remplace l'ancien
+lanceur Electron.
+
+La carte des lieux de la Photothèque demande QtLocation et son extension `geoservices` (tuiles OpenStreetMap) : `plume.spec`
+les garde. Ses vidéos s'ouvrent dans le lecteur de l'ordinateur (QtMultimedia en QML n'est pas embarqué).
+
+Meet démarre avec Plume (les appels sonnent fenêtre fermée) ; sa page d'appel (QtWebEngine) n'est chargée que pendant un appel.
+QtWebSockets (signaling : sonnerie immédiate, « … écrit ») et QtMultimedia (messages vocaux) restent donc dans le paquet.
+Sur macOS, la caméra et le micro sont demandés une fois (`NSCameraUsageDescription`, `NSMicrophoneUsageDescription` de `plume.spec`).
+
+**Ce dossier ne contient que l'empaquetage.** Le code est celui des apps d'Orneos OS
+(`os/files/usr/share/orneos*`). Toute amélioration d'un module profite donc aux deux. Ce qui dépend du système
+(trousseau, notifications, liens, démarrage) passe par `orneos/system.py`.
+
+Ouverture avec la session (hors Orneos OS) : Réglages › Démarrage, ou la même case dans le menu de l'icône de la zone
+de notification (les deux restent d'accord, `plume.autostart`). `system.set_autostart` écrit la clé `Run` du registre
+(Windows, retirée par la désinstallation), un LaunchAgent (macOS) ou un `.desktop` dans `~/.config/autostart` (Linux),
+toujours avec `--background` (zone de notification seule). Au lancement, une entrée existante est réécrite : elle suit
+Plume s'il a changé de place (nouvelle AppImage).
+
+Mots de passe hors d'Orneos OS : la clé de la copie chiffrée va dans le trousseau du système (Gestionnaire
+d'identifiants, Trousseau macOS, Secret Service), et le verrou demande le mot de passe du compte Windows
+(`LogonUser`, pas le code PIN) ou Mac (`dscl -authonly`), ou Windows Hello (PowerShell, `UserConsentVerifier`) ou Touch ID (`plume-touchid`, `plume/macos/touchid.swift`, compilé par la CI dans `Plume.app/Contents/MacOS`). Le Wi-Fi (NetworkManager) et la lecture d'un QR code
+à l'écran (Spectacle) n'existent que sous Linux ; un lien `otpauth://` collé ou ouvert marche partout.
+
+Sur Orneos OS, le même code donne trois apps : Courrier, Agenda et Contacts (`plume --edition=mail|calendar|contacts`,
+commandes `orneos-mail`…). Le `.rpm` de Plume reste installable à côté : il vit dans `/usr/lib/orneos-plume` et apporte
+seul `/usr/bin/plume`, `eu.orneos.plume.desktop` et son icône, que l'image n'a plus.
+
+## Fichiers
+
+| Fichier | Rôle |
+|---|---|
+| `stage.py` | Copie les apps comme dans `/usr/share` et génère `apps.json` et les icônes (`os/tools/apps.py`). Télécharge les polices d'`os/Containerfile` (mêmes sommes de contrôle) et crée l'icône `.png`/`.ico`/`.icns`. |
+| `plume.spec` | PyInstaller : Python, Qt et les bibliothèques. Les apps restent des fichiers (`launch.py`), comme sur l'OS. Les modules Qt inutiles (3D, multimédia…) sont retirés. |
+| `requirements*.txt` | Versions figées, alignées sur Orneos OS : Qt 6.11, icalendar 6, dateutil 2.9. |
+| `windows/plume.iss` | Installeur Inno Setup par utilisateur (`%LOCALAPPDATA%\Programs\Plume`), sans demande d'administrateur. Déclare `mailto:`, `webcal:`, `.ics` et `orneos://`. ⚠️ Ne change jamais son `AppId`. |
+| `linux/build.sh` | AppImage (qui s'ajoute elle-même au menu) et `.deb` (`/opt/plume`). |
+| `linux/rpm.sh` | `.rpm` noarch : les sources sur le Qt de Fedora, dans `/usr/lib/orneos-plume`. |
+
+macOS : `Plume.app` vient de `plume.spec` (`Info.plist` : `mailto`, `webcal`, `orneos`, `.ics`). La CI le signe
+« ad hoc » et le met dans un DMG.
+
+## Construire
+
+La CI (`.github/workflows/plume.yml`) construit sur Ubuntu 22.04, Windows et macOS arm64. Elle se lance :
+- avec une étiquette `plume-v<version>`, qui doit correspondre à `VERSION` dans `plume_core/__init__.py` ;
+- avec `plume-test-<nom>`, pour un essai depuis n'importe quelle branche ;
+- ou à la main.
+
+Chaque paquet passe `--self-test` : les vues des modules, Chromium (QtWebEngine), le trousseau et les polices.
+Les fichiers vont ensuite dans une *release* brouillon.
+
+En local, sous Linux, depuis la racine du dépôt :
+```sh
+python plume/stage.py build/stage
+PLUME_STAGE=build/stage pyinstaller --distpath build/dist --workpath build/work plume/plume.spec
+sh plume/linux/build.sh build/dist/Plume dist "$(cat build/stage/version)"
+sh plume/linux/rpm.sh build/stage dist
+build/dist/Plume/Plume --self-test=report.txt && cat report.txt
+```
+
+## Publier
+
+Sur le serveur, la signature se fait là où vit la clé :
+```sh
+sh tools/plume-publish.sh plume-v1.0.1 --channel=unstable   # essai
+sh tools/plume-publish.sh plume-v1.0.1                      # tout le monde
+```
+Le script télécharge la release brouillon, puis appelle `tools/client-release.php plume`. Chaque fichier va dans
+`public_html/downloads/plume/` et est signé en Ed25519 avec `private/clients/plume-ed25519.key` (à garder dans les
+sauvegardes). Le manifeste `private/clients/plume.json` est servi par `/updates/plume`.
+
+## Mises à jour
+
+`orneos/updater.py` vérifie au démarrage, puis toutes les 6 h. Il n'accepte qu'un fichier dont le SHA-256 et la
+signature correspondent : les binaires ne sont pas signés par Apple ni par Microsoft, cette signature est la seule
+garantie. Selon le paquet :
+- Windows, macOS et AppImage : Plume se remplace lui-même (« Redémarrer pour mettre à jour », sinon à la fermeture) ;
+- `.deb` et `.rpm` : le fichier est confié à l'installeur du système.
+
+Une version n'est jamais remplacée par une plus ancienne. Pour revenir en arrière, il faut publier une version plus
+récente.
+
+Pour une nouvelle version, augmente `VERSION` dans `os/files/usr/share/orneos-plume/plume_core/__init__.py`, puis
+pose l'étiquette `plume-v<version>`.
+
+## « Quoi de neuf » au premier plan
+
+La récupération consomme la fenêtre quotidienne commune au navigateur et à Plume. Elle ne démarre donc que lorsque la fenêtre est visible, active et connectée : un lancement `--background` ne doit jamais réserver l’annonce du jour. Le retour au premier plan retente la récupération (au plus une fois par minute), en plus du contrôle toutes les six heures. Un changement de compte efface les annonces en attente et invalide les réponses précédentes ; fermer l’ancienne fenêtre ne marque rien lu sur le nouveau compte. Les éditions Agenda et Contacts restent silencieuses.
+
+Tests sans réseau : `os/tests/plume/newstest.py` et `newsuitest.py`, inclus dans `os/tests/plume/run.sh`. Ce correctif de sources nécessite une nouvelle distribution pour les Plume déjà installés.

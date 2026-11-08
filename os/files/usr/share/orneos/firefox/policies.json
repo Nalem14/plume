@@ -1,0 +1,25 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "extension@orneos.eu": {
+        "installation_mode": "normal_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/extension@orneos.eu/latest.xpi"
+      }
+    },
+    "Preferences": {
+      "extensions.autoDisableScopes": { "Value": 0, "Status": "locked" },
+      "extensions.enabledScopes": { "Value": 15, "Status": "locked" },
+      "extensions.activeThemeID": { "Value": "theme@orneos.eu", "Status": "default" }
+    },
+    "Homepage": { "URL": "https://search.orneos.eu/", "StartPage": "homepage" },
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "NoDefaultBookmarks": true,
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisablePocket": true,
+    "FirefoxHome": { "SponsoredTopSites": false, "SponsoredPocket": false, "SponsoredStories": false, "Locked": false },
+    "FirefoxSuggest": { "SponsoredSuggestions": false, "ImproveSuggest": false, "Locked": false },
+    "UserMessaging": { "SkipOnboarding": true, "ExtensionRecommendations": false, "FeatureRecommendations": false, "MoreFromMozilla": false, "Locked": false }
+  }
+}

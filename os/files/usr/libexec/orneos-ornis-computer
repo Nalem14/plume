@@ -1,0 +1,455 @@
+#!/usr/bin/python3
+"""Ornis on this computer: what it may do without asking, what it is running, what it did.
+
+  orneos-ornis-computer                     the window (mode, « toujours autorisé », commands running, activity)
+  orneos-ornis-computer --state             {mode, until, rules, running} as JSON, for the Ornis app and applet
+  orneos-ornis-computer --mode ask|auto|full [--minutes N]
+  orneos-ornis-computer --stop-all          stops every command Ornis started that still runs
+
+The mode and the rules live in ~/.config/orneos/ornis-computer.json (ornis_consent), the journal and the commands
+in ~/.local/state/orneos. Undoing an entry (a move, a written file, a new folder) goes through ornis_desktop.undo.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+
+from pathlib import Path
+shared = Path(__file__).resolve().parent.parent / "share" / "orneos"
+if not shared.is_dir():
+    shared = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(shared))
+import ornis_consent  # noqa: E402
+import ornis_shell  # noqa: E402
+
+# the system sandbox, as people know it
+SANDBOX_NAMES = {"bwrap": "bubblewrap", "seatbelt": "macOS"}
+
+TEXT = {
+    "fr": {
+        "title": "Ornis sur cet ordinateur", "subtitle": "Ce qu'Ornis peut faire ici sans vous demander, et ce qu'il a fait.",
+        "permissions": "Autorisations", "ask": "Demander", "auto": "Automatique", "full": "Autonome",
+        "ask_text": "Ornis vous demande avant chaque action sur l'ordinateur, sauf ce que vous avez toujours autorisé.",
+        "auto_text": "Ornis lit et fait les petites choses tout seul (état de l'ordinateur, recherche de fichiers, son, "
+                     "ouvrir une app, commandes qui ne font que lire). Il vous demande avant de modifier quoi que ce soit.",
+        "full_text": "Ornis agit sans vous demander : installer, écrire, exécuter des commandes. Une notification montre "
+                     "chaque action, et l'activité ci-dessous permet de l'arrêter ou de l'annuler. Vos secrets et les "
+                     "actions destructrices restent toujours demandés.",
+        "for": "Pendant", "hour": "1 heure", "hours": "8 heures", "forever": "Toujours",
+        "until": "Jusqu'à {time}, puis retour à « Demander ».", "always_on": "Sans limite de durée.",
+        "rules": "Toujours autorisé", "no_rules": "Rien pour l'instant : cochez « Toujours autoriser » dans une demande d'Ornis.",
+        "remove": "Retirer", "running": "En cours", "stop": "Arrêter", "stop_all": "Tout arrêter",
+        "activity": "Activité", "no_activity": "Ornis n'a encore rien fait sur cet ordinateur.", "undo": "Annuler",
+        "undone": "Annulé", "clear": "Effacer l'activité", "seconds": "{s} s", "minutes": "{m} min",
+        "allowed": "Autorisé", "always": "Toujours autorisé", "auto_d": "Automatique", "rule": "Règle", "denied": "Refusé",
+        "blocked": "Bloqué", "timeout": "Sans réponse", "error": "Échec", "exit": "code {code}",
+        "never": "Toujours demandé, quel que soit le mode",
+        "never_secrets": "Vos secrets : clés SSH et GPG, portefeuille KDE, mots de passe, profils de navigateur, accès au cloud.",
+        "never_destroy": "Jamais exécuté : effacer un disque, le système, le dossier personnel ou le dossier Orneos.",
+        "never_power": "Les commandes administrateur demandent aussi le mot de passe du système quand il le faut.",
+        "workspace": "Dossier de travail",
+        "workspace_none": "Aucun dossier épinglé (Ornis part de votre dossier personnel).",
+        "workspace_pick": "Choisir un dossier…",
+        "workspace_clear": "Retirer",
+        "workspace_auto": "Autoriser l'édition de fichiers dans ce dossier en mode Automatique",
+        "sandbox_toggle": "Isoler les commandes de lecture dans un bac à sable système ({kind})",
+    },
+    "en": {
+        "title": "Ornis on this computer", "subtitle": "What Ornis may do here without asking, and what it did.",
+        "permissions": "Permissions", "ask": "Ask", "auto": "Automatic", "full": "Autonomous",
+        "ask_text": "Ornis asks you before every action on the computer, except what you always allowed.",
+        "auto_text": "Ornis reads and does small things on its own (computer state, finding files, sound, opening an app, "
+                     "commands that only read). It asks before changing anything.",
+        "full_text": "Ornis acts without asking: installing, writing, running commands. A notification shows each action, "
+                     "and the activity below lets you stop or undo it. Your secrets and destructive actions are always asked.",
+        "for": "For", "hour": "1 hour", "hours": "8 hours", "forever": "Always",
+        "until": "Until {time}, then back to “Ask”.", "always_on": "No time limit.",
+        "rules": "Always allowed", "no_rules": "Nothing yet: tick “Always allow” in a request from Ornis.",
+        "remove": "Remove", "running": "Running", "stop": "Stop", "stop_all": "Stop all",
+        "activity": "Activity", "no_activity": "Ornis has not done anything on this computer yet.", "undo": "Undo",
+        "undone": "Undone", "clear": "Clear the activity", "seconds": "{s} s", "minutes": "{m} min",
+        "allowed": "Allowed", "always": "Always allowed", "auto_d": "Automatic", "rule": "Rule", "denied": "Denied",
+        "blocked": "Blocked", "timeout": "No answer", "error": "Failed", "exit": "code {code}",
+        "never": "Always asked, whatever the mode",
+        "never_secrets": "Your secrets: SSH and GPG keys, KDE wallet, passwords, browser profiles, cloud access.",
+        "never_destroy": "Never run: wiping a disk, the system, the home folder or the Orneos folder.",
+        "never_power": "Administrator commands also ask for the system password when needed.",
+        "workspace": "Workspace folder",
+        "workspace_none": "No pinned folder (Ornis starts from your home directory).",
+        "workspace_pick": "Choose folder…",
+        "workspace_clear": "Clear",
+        "workspace_auto": "Allow editing files inside this folder in Automatic mode",
+        "sandbox_toggle": "Isolate read-only commands in an OS sandbox ({kind})",
+    },
+    "de": {
+        "title": "Ornis auf diesem Computer", "subtitle": "Was Ornis hier ohne Nachfrage tun darf, und was es getan hat.",
+        "permissions": "Berechtigungen", "ask": "Fragen", "auto": "Automatisch", "full": "Autonom",
+        "ask_text": "Ornis fragt Sie vor jeder Aktion auf dem Computer, außer was Sie immer erlaubt haben.",
+        "auto_text": "Ornis liest und erledigt Kleinigkeiten selbst (Zustand, Dateisuche, Ton, App öffnen, Befehle, die "
+                     "nur lesen). Bevor es etwas ändert, fragt es.",
+        "full_text": "Ornis handelt ohne Nachfrage: installieren, schreiben, Befehle ausführen. Jede Aktion wird gemeldet, "
+                     "und unten können Sie sie stoppen oder rückgängig machen. Geheimnisse und zerstörerische Aktionen "
+                     "werden immer gefragt.",
+        "for": "Für", "hour": "1 Stunde", "hours": "8 Stunden", "forever": "Immer",
+        "until": "Bis {time}, dann wieder „Fragen“.", "always_on": "Ohne Zeitlimit.",
+        "rules": "Immer erlaubt", "no_rules": "Noch nichts: „Immer erlauben“ in einer Anfrage von Ornis ankreuzen.",
+        "remove": "Entfernen", "running": "Läuft", "stop": "Stoppen", "stop_all": "Alle stoppen",
+        "activity": "Aktivität", "no_activity": "Ornis hat auf diesem Computer noch nichts getan.", "undo": "Rückgängig",
+        "undone": "Rückgängig gemacht", "clear": "Aktivität löschen", "seconds": "{s} s", "minutes": "{m} Min.",
+        "allowed": "Erlaubt", "always": "Immer erlaubt", "auto_d": "Automatisch", "rule": "Regel", "denied": "Abgelehnt",
+        "blocked": "Blockiert", "timeout": "Keine Antwort", "error": "Fehlgeschlagen", "exit": "Code {code}",
+        "never": "Immer gefragt, in jedem Modus",
+        "never_secrets": "Ihre Geheimnisse: SSH- und GPG-Schlüssel, KDE-Wallet, Passwörter, Browserprofile, Cloud-Zugang.",
+        "never_destroy": "Nie ausgeführt: eine Festplatte, das System, den persönlichen oder den Orneos-Ordner löschen.",
+        "never_power": "Administratorbefehle fragen bei Bedarf zusätzlich nach dem Systempasswort.",
+        "workspace": "Arbeitsordner",
+        "workspace_none": "Kein angehefteter Ordner (Ornis startet in Ihrem persönlichen Ordner).",
+        "workspace_pick": "Ordner wählen…",
+        "workspace_clear": "Entfernen",
+        "workspace_auto": "Bearbeiten von Dateien in diesem Ordner im automatischen Modus erlauben",
+        "sandbox_toggle": "Nur-Lese-Befehle in einer System-Sandbox isolieren ({kind})",
+    },
+}
+DURATIONS = (("hour", 60), ("hours", 480), ("forever", 0))
+
+
+def state() -> dict:
+    data = ornis_consent.settings()
+    running = [j for j in ornis_shell.jobs(20) if not j.get("done")]
+    return {"mode": data["mode"], "until": data["until"], "rules": data["rules"],
+            "workspace": data.get("workspace", ""), "workspace_auto": bool(data.get("workspace_auto", True)),
+            "sandbox": bool(data.get("sandbox", True)),
+            "running": [{"job": j["job"], "label": j["label"], "seconds": j["seconds"]} for j in running]}
+
+
+def cli(argv: list[str]) -> int | None:
+    if "--state" in argv:
+        print(json.dumps(state(), ensure_ascii=False))
+        return 0
+    if "--mode" in argv:
+        mode = argv[argv.index("--mode") + 1] if len(argv) > argv.index("--mode") + 1 else "ask"
+        minutes = int(argv[argv.index("--minutes") + 1]) if "--minutes" in argv else 0
+        print(json.dumps(ornis_consent.set_mode(mode, minutes), ensure_ascii=False))
+        return 0
+    if "--workspace" in argv:
+        ws = argv[argv.index("--workspace") + 1] if len(argv) > argv.index("--workspace") + 1 else ""
+        print(json.dumps(ornis_consent.set_workspace(ws), ensure_ascii=False))
+        return 0
+    if "--stop-all" in argv:
+        for job in state()["running"]:
+            ornis_shell.stop(job["job"])
+        return 0
+    return None
+
+
+def window() -> int:
+    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtGui import QFontDatabase, QIcon
+    from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QPlainTextEdit, QVBoxLayout, QWidget)
+    from orneosui import Card, Header, Segments, WIDTH, button, hairline, label, page, setup, tokens
+
+    import ornis_desktop
+    import ornis_local
+
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("Ornis")
+    app.setDesktopFileName("eu.orneos.ornis-computer")
+    setup(app)
+    c = tokens(app)
+    t = TEXT.get((os.environ.get("LANG") or "fr")[:2], TEXT["en"])
+    mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+    mono.setFamily("JetBrains Mono")
+    mono.setPointSizeF(9.5)
+
+    win = QWidget()
+    win.setObjectName("page")
+    win.setWindowTitle(t["title"])
+    win.setWindowIcon(QIcon.fromTheme("eu.orneos.ornis", QIcon.fromTheme("orneos")))
+    outer = QVBoxLayout(win)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+    outer.addWidget(Header(t["title"], t["subtitle"]))
+    area, col = page()
+    outer.addWidget(area)
+
+    def clear(layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                clear(item.layout())
+
+    # ---- mode -------------------------------------------------------------------------------------------------
+    perm = Card(t["permissions"])
+    segments = Segments([("ask", t["ask"]), ("auto", t["auto"]), ("full", t["full"])])
+    perm.body.addWidget(segments)
+    explain = label("", "muted")
+    perm.body.addWidget(explain)
+    row = QHBoxLayout()
+    row.addWidget(label(t["for"], wrap=False))
+    duration = QComboBox()
+    for key, _minutes in DURATIONS:
+        duration.addItem(t[key], key)
+    row.addWidget(duration)
+    row.addStretch(1)
+    duration_row = QWidget()
+    duration_row.setLayout(row)
+    perm.body.addWidget(duration_row)
+    until = label("", "muted")
+    perm.body.addWidget(until)
+    sb_kind = ornis_local.sandbox_available()    # "bwrap", "seatbelt", or "" when there is none
+    sb_check = None
+    if sb_kind:
+        sb_check = QCheckBox(t["sandbox_toggle"].format(kind=SANDBOX_NAMES.get(sb_kind, sb_kind)))
+        sb_check.setChecked(bool(ornis_consent.settings().get("sandbox", True)))
+        sb_check.toggled.connect(lambda v: ornis_consent.set_sandbox(bool(v)))
+        perm.body.addWidget(sb_check)
+    col.addWidget(perm)
+
+    # ---- workspace --------------------------------------------------------------------------------------------
+    ws_card = Card(t["workspace"])
+    ws_path_label = label("", "muted")
+    ws_card.body.addWidget(ws_path_label)
+    ws_auto_check = QCheckBox(t["workspace_auto"])
+    ws_card.body.addWidget(ws_auto_check)
+    ws_btns = QHBoxLayout()
+    ws_pick = button(t["workspace_pick"])
+    ws_clear = button(t["workspace_clear"], "quiet")
+    ws_btns.addWidget(ws_pick)
+    ws_btns.addWidget(ws_clear)
+    ws_btns.addStretch(1)
+    ws_card.body.addLayout(ws_btns)
+    col.addWidget(ws_card)
+
+    def show_workspace():
+        data = ornis_consent.settings()
+        ws = data.get("workspace") or ""
+        if ws:
+            ws_path_label.setText(ws)
+            ws_path_label.setFont(mono)
+            ws_clear.setVisible(True)
+            ws_auto_check.setVisible(True)
+            ws_auto_check.blockSignals(True)
+            ws_auto_check.setChecked(bool(data.get("workspace_auto", True)))
+            ws_auto_check.blockSignals(False)
+        else:
+            ws_path_label.setText(t["workspace_none"])
+            ws_clear.setVisible(False)
+            ws_auto_check.setVisible(False)
+
+    def pick_workspace():
+        cur = ornis_consent.settings().get("workspace") or str(Path.home())
+        chosen = QFileDialog.getExistingDirectory(win, t["workspace"], cur)
+        if chosen:
+            ornis_consent.set_workspace(chosen)
+            show_workspace()
+
+    ws_pick.clicked.connect(pick_workspace)
+    ws_clear.clicked.connect(lambda: (ornis_consent.set_workspace(""), show_workspace()))
+    ws_auto_check.toggled.connect(lambda v: ornis_consent.set_workspace(ornis_consent.settings().get("workspace") or "", auto_write=bool(v)))
+    show_workspace()
+    from ornis_extensions_ui import open_dialog, TEXT as EXT_TEXT
+    import ornis_extensions
+    ext_title = EXT_TEXT.get((os.environ.get("LANG") or "fr")[:2], EXT_TEXT["en"])[0]
+    ext_card = Card(ext_title)
+    ext_summary = label("", "muted")
+    ext_card.body.addWidget(ext_summary)
+    ext = button(ext_title + "…")
+    ext_card.body.addWidget(ext, 0, Qt.AlignLeft)
+    col.addWidget(ext_card)
+
+    def show_extensions():
+        try:
+            cat = ornis_extensions.catalogue()
+            ns, nm = len(cat.get("skills") or []), len(cat.get("mcpServers") or [])
+            lang = (os.environ.get("LANG") or "fr")[:2]
+            if lang == "fr":
+                ext_summary.setText(f"{ns} Skill(s) installé(s) · {nm} serveur(s) MCP actif(s)")
+            elif lang == "de":
+                ext_summary.setText(f"{ns} Skill(s) installiert · {nm} aktive(r) MCP-Server")
+            else:
+                ext_summary.setText(f"{ns} skill(s) installed · {nm} active MCP server(s)")
+        except Exception:
+            pass
+
+    ext.clicked.connect(lambda: (open_dialog(win), show_extensions()))
+    show_extensions()
+
+
+    def show_mode():
+        data = ornis_consent.settings()
+        segments.set_value(data["mode"])
+        explain.setText(t[data["mode"] + "_text"])
+        duration_row.setVisible(data["mode"] != "ask")
+        until.setVisible(data["mode"] != "ask")
+        if data["until"]:
+            until.setText(t["until"].format(time=time.strftime("%H:%M", time.localtime(data["until"]))))
+            remaining = (data["until"] - time.time()) / 60
+            duration.setCurrentIndex(0 if remaining <= 60 else 1)
+        else:
+            until.setText(t["always_on"])
+            duration.setCurrentIndex(2)
+        until.setStyleSheet(f"color: {c['saffron'] if data['mode'] == 'full' else c['muted']};")
+
+    def set_mode(mode=None):
+        mode = mode or segments.value()
+        key = duration.currentData()
+        minutes = dict(DURATIONS)[key]
+        if mode == "full" and ornis_consent.settings()["mode"] != "full" and key == "forever":
+            minutes = 60            # autonomous starts for an hour; « Toujours » is a second, deliberate choice
+            duration.setCurrentIndex(0)
+        ornis_consent.set_mode(mode, minutes)
+        show_mode()
+
+    segments.group.buttonClicked.connect(lambda _btn: set_mode())
+    duration.activated.connect(lambda _i: set_mode(ornis_consent.settings()["mode"]))
+    show_mode()
+
+    # ---- rules ------------------------------------------------------------------------------------------------
+    rules_card = Card(t["rules"])
+    rules_box = QVBoxLayout()
+    rules_card.body.addLayout(rules_box)
+    col.addWidget(rules_card)
+
+    def show_rules():
+        clear(rules_box)
+        rules = ornis_consent.settings()["rules"]
+        if not rules:
+            rules_box.addWidget(label(t["no_rules"], "muted"))
+        for rule in rules:
+            line = QHBoxLayout()
+            name = label(rule.get("label") or rule["value"], wrap=False)
+            if rule["kind"] == "command":
+                name.setFont(mono)
+            line.addWidget(name, 1)
+            remove = button(t["remove"], "quiet")
+            remove.clicked.connect(lambda _=False, r=rule: (ornis_consent.remove_rule(r["kind"], r["value"]), show_rules()))
+            line.addWidget(remove)
+            rules_box.addLayout(line)
+
+    show_rules()
+
+    # ---- running commands ---------------------------------------------------------------------------------------
+    jobs_card = Card(t["running"])
+    jobs_box = QVBoxLayout()
+    jobs_card.body.addLayout(jobs_box)
+    col.addWidget(jobs_card)
+    seen = {"jobs": None, "journal": None}
+
+    def duration_text(seconds):
+        return t["seconds"].format(s=seconds) if seconds < 120 else t["minutes"].format(m=seconds // 60)
+
+    def show_jobs():
+        running = [j for j in ornis_shell.jobs(20) if not j.get("done")]
+        sig = json.dumps([(j["job"], j["output"][-400:]) for j in running])
+        if sig == seen["jobs"]:
+            return
+        seen["jobs"] = sig
+        clear(jobs_box)
+        jobs_card.setVisible(bool(running))
+        for j in running:
+            head = QHBoxLayout()
+            head.addWidget(label(j["label"], "title"), 1)
+            head.addWidget(label(duration_text(j["seconds"]), "muted", wrap=False))
+            stop = button(t["stop"], "danger")
+            stop.clicked.connect(lambda _=False, job=j["job"]: (ornis_shell.stop(job), refresh()))
+            head.addWidget(stop)
+            jobs_box.addLayout(head)
+            out = QPlainTextEdit("\n".join(j["output"].splitlines()[-8:]))
+            out.setReadOnly(True)
+            out.setFont(mono)
+            out.setFixedHeight(120)
+            jobs_box.addWidget(out)
+        if len(running) > 1:
+            stop_all = button(t["stop_all"], "danger")
+            stop_all.clicked.connect(lambda: (cli(["--stop-all"]), refresh()))
+            jobs_box.addWidget(stop_all, 0, Qt.AlignRight)
+
+    # ---- activity -------------------------------------------------------------------------------------------------
+    act_card = Card(t["activity"])
+    act_box = QVBoxLayout()
+    act_card.body.addLayout(act_box)
+    col.addWidget(act_card)
+
+    def when(ts):
+        moment = time.localtime(ts)
+        return time.strftime("%H:%M" if time.strftime("%Y%m%d", moment) == time.strftime("%Y%m%d") else "%d/%m %H:%M", moment)
+
+    def show_activity():
+        rows = ornis_consent.journal(40)
+        sig = json.dumps([(r.get("id"), r.get("outcome"), r.get("undone")) for r in rows])
+        if sig == seen["journal"]:
+            return
+        seen["journal"] = sig
+        clear(act_box)
+        if not rows:
+            act_box.addWidget(label(t["no_activity"], "muted"))
+            return
+        for i, r in enumerate(rows):
+            if i:
+                act_box.addWidget(hairline())
+            line = QHBoxLayout()
+            line.setSpacing(10)
+            line.addWidget(label(when(r.get("at") or 0), "muted", wrap=False), 0, Qt.AlignTop)
+            text_col = QVBoxLayout()
+            text_col.setSpacing(2)
+            text_col.addWidget(label((r.get("summary") or r.get("action") or "").split("\n")[0]))
+            if r.get("command"):
+                cmd = label(r["command"][:300])
+                cmd.setFont(mono)
+                cmd.setStyleSheet(f"color: {c['muted']};")
+                text_col.addWidget(cmd)
+            decision = r.get("decision") or ""
+            tag = t.get("auto_d" if decision == "auto" else decision, decision)
+            if r.get("outcome") == "error":
+                tag += " · " + t["error"]
+            tone = c["danger"] if decision in ("denied", "blocked", "timeout") or r.get("outcome") == "error" else c["muted"]
+            chip = label(tag, wrap=False)
+            chip.setStyleSheet(f"color: {tone}; font-size: 11px; font-weight: 600;")
+            text_col.addWidget(chip)
+            line.addLayout(text_col, 1)
+            if isinstance(r.get("undo"), dict):
+                if r.get("undone"):
+                    line.addWidget(label(t["undone"], "muted", wrap=False), 0, Qt.AlignTop)
+                else:
+                    undo = button(t["undo"], "quiet")
+                    undo.clicked.connect(lambda _=False, e=r["id"]: (ornis_desktop.undo(e), refresh()))
+                    line.addWidget(undo, 0, Qt.AlignTop)
+            act_box.addLayout(line)
+        wipe = button(t["clear"], "quiet")
+        wipe.clicked.connect(lambda: (ornis_consent.clear_journal(), refresh()))
+        act_box.addWidget(wipe, 0, Qt.AlignRight)
+
+    never = Card(t["never"])
+    for key in ("never_secrets", "never_destroy", "never_power"):
+        never.body.addWidget(label(t[key], "muted"))
+    col.addWidget(never)
+    col.addStretch(1)
+
+    def refresh():
+        show_mode()
+        show_jobs()
+        show_activity()
+
+    refresh()
+    timer = QTimer(win)
+    timer.timeout.connect(refresh)
+    timer.start(2000)
+
+    win.setFixedWidth(WIDTH + 40)
+    screen = app.primaryScreen()
+    win.resize(WIDTH + 40, min(820, (screen.availableGeometry().height() - 80) if screen else 820))
+    if os.environ.get("ORNIS_COMPUTER_SHOT"):           # tests: a picture, then quit
+        QTimer.singleShot(700, lambda: (win.grab().save(os.environ["ORNIS_COMPUTER_SHOT"]), app.quit()))
+    win.show()
+    if "--extensions" in sys.argv[1:]:
+        QTimer.singleShot(100, lambda: (open_dialog(win), show_extensions()))
+    return app.exec()
+
+
+if __name__ == "__main__":
+    code = cli(sys.argv[1:])
+    sys.exit(code if code is not None else window())

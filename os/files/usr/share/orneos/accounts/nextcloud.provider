@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<provider id="nextcloud">
+  <name>Orneos</name>
+  <icon>orneos</icon>
+  <description>Access Orneos files in KDE apps and file dialogs; sync contacts and calendars in supported apps</description>
+  <plugin>nextcloud_plugin_kaccounts</plugin>
+  <template>
+    <group name="auth">
+      <setting name="method">password</setting>
+      <setting name="mechanism">password</setting>
+    </group>
+  </template>
+</provider>

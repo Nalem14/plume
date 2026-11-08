@@ -1,0 +1,219 @@
+/* The call stage of Meet: the tiles of the people, drawn in the Ornis palette. The controls are QML, above. */
+/* ornis-tokens:begin (generated from design/tokens.json by tools/design-tokens.py, do not edit) */
+:root {
+  --chrome: #EDF0F5;
+  --bg: #F5F6F9;
+  --card: #FFFFFF;
+  --line: #E1E5EE;
+  --hairline: #E9ECF2;
+  --text: #0F2440;
+  --body: #0F2440;
+  --muted: #5B6B82;
+  --faint: #637289;
+  --action: #002FA7;
+  --actionHover: #00238A;
+  --actionText: #FFFFFF;
+  --tint: #DCE3F7;
+  --tintText: #002FA7;
+  --accent: #002FA7;
+  --accentLine: #C9D3EC;
+  --hover: #E4E8F0;
+  --field: #FFFFFF;
+  --rail: #002FA7;
+  --railText: #FFFFFF;
+  --railMark: #FFFFFF;
+  --railMarkText: #002FA7;
+  --saffron: #F0A202;
+  --saffronText: #0F2440;
+  --saffronTint: #FDF1D6;
+  --saffronInk: #7A5200;
+  --ok: #2F7D6D;
+  --okTint: #E2F1EE;
+  --okInk: #1F5A4D;
+  --danger: #C8381E;
+  --dangerTint: #FBE7E3;
+  --overlay: #FFFFFF;
+  --overlayLine: #D5DBE6;
+  --shadow: #0F244029;
+  --scrim: #0A142466;
+  --tag1: #C8381E;
+  --tag2: #002FA7;
+  --tag3: #2F7D6D;
+  --tag4: #E09600;
+  --tag5: #6E5BB8;
+  --famCommunicate: #002FA7;
+  --famDocs: #2F7D6D;
+  --famOrganize: #8A5A00;
+  --famMedia: #1A5F7A;
+  --famTools: #0F2440;
+  --famSpace: #7A3B6E;
+  --elev: #0F244024;
+  --elevEdge: #FFFFFF00;
+  --radius: 10px;
+  --radius-control: 6px;
+  --font: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
+  color-scheme: light;
+}
+:root[data-theme=dark] {
+  --chrome: #0A1424;
+  --bg: #0A1424;
+  --card: #101D33;
+  --line: #1E2E4A;
+  --hairline: #1A2840;
+  --text: #E8ECF3;
+  --body: #DDE3EE;
+  --muted: #9AA8BF;
+  --faint: #77859C;
+  --action: #7D93FF;
+  --actionHover: #9AABFF;
+  --actionText: #0A1424;
+  --tint: #1B2C55;
+  --tintText: #C3CEFF;
+  --accent: #9AABFF;
+  --accentLine: #2A3D6B;
+  --hover: #16233A;
+  --field: #0D1A2E;
+  --rail: #0A2A8C;
+  --railText: #FFFFFF;
+  --railMark: #E8ECF3;
+  --railMarkText: #0A2A8C;
+  --saffron: #F0A202;
+  --saffronText: #0A1424;
+  --saffronTint: #3A2C0C;
+  --saffronInk: #F5C04A;
+  --ok: #5FC2AC;
+  --okTint: #123129;
+  --okInk: #8FDCC9;
+  --danger: #FF7A5C;
+  --dangerTint: #3A1A16;
+  --overlay: #132240;
+  --overlayLine: #2A3B5C;
+  --shadow: #00000080;
+  --scrim: #050A1299;
+  --tag1: #FF7A5C;
+  --tag2: #7D93FF;
+  --tag3: #5FC2AC;
+  --tag4: #F0A202;
+  --tag5: #A897F0;
+  --famCommunicate: #8A9EFF;
+  --famDocs: #5CC2AC;
+  --famOrganize: #F2B13A;
+  --famMedia: #7EB8CC;
+  --famTools: #C5D0E6;
+  --famSpace: #DDA8D3;
+  --elev: #000000A0;
+  --elevEdge: #FFFFFF14;
+  color-scheme: dark;
+}
+/* ornis-tokens:end */
+
+/* The stage is always dark, whatever the theme (the faces are what lights it): the night of the dock, a glow of
+   Klein from the top. The tiles keep the tokens of the dark theme. */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  color: #E8ECF3;
+  font-family: var(--font); font-size: 14px;
+  -webkit-user-select: none; user-select: none;
+}
+body {
+  background:
+    radial-gradient(120% 70% at 50% -10%, rgba(0, 47, 167, 0.45), transparent 60%),
+    radial-gradient(80% 60% at 100% 110%, rgba(26, 95, 122, 0.30), transparent 65%),
+    #060D1A;
+}
+
+#stage {
+  position: absolute; inset: 0;
+  padding: 72px 20px 100px;      /* the QML head and bar float above and below */
+  display: grid; gap: 14px;
+  align-content: center; justify-content: center;
+}
+#stage.speaker { grid-template-rows: 1fr auto; align-content: stretch; }
+#stage.speaker .main { grid-column: 1 / -1; }
+#stage.speaker .strip { display: flex; gap: 10px; height: 120px; justify-content: center; }
+#stage.speaker .strip .tile { width: 200px; height: 112px; flex: none; }
+
+.tile {
+  position: relative; overflow: hidden;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #14254A 0%, #0D1A31 70%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 18px 44px rgba(0, 0, 0, 0.45);
+  outline: 0 solid #F0A202; outline-offset: 0;
+  transition: outline-width 120ms ease, box-shadow 160ms ease;
+  aspect-ratio: 16 / 9;
+}
+.tile.speaking { outline-width: 3px; box-shadow: 0 0 0 1px rgba(240, 162, 2, 0.4), 0 0 36px rgba(240, 162, 2, 0.28); }
+.tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent; }
+.tile.screen video, .tile.contain video { object-fit: contain; background: #000; }
+.tile.self video { transform: scaleX(-1); }
+.tile.novideo video { visibility: hidden; }
+
+.avatar {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 28%; max-width: 120px; min-width: 52px; aspect-ratio: 1;
+  border-radius: 50%; display: grid; place-items: center;
+  font-weight: 650; font-size: clamp(16px, 3vw, 38px); letter-spacing: -0.5px;
+  background: linear-gradient(145deg, #2A47B8, #002FA7); color: #FFFFFF;
+  box-shadow: 0 0 0 6px rgba(138, 158, 255, 0.10), 0 10px 30px rgba(0, 0, 0, 0.35);
+  background-size: cover; background-position: center;
+}
+.tile.speaking .avatar { box-shadow: 0 0 0 6px rgba(240, 162, 2, 0.35), 0 10px 30px rgba(0, 0, 0, 0.35); }
+.tile:not(.novideo) .avatar { display: none; }
+
+.label {
+  position: absolute; left: 10px; bottom: 10px; max-width: calc(100% - 20px);
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 11px 5px 9px; border-radius: 999px;
+  background: rgba(6, 13, 26, 0.66); color: #fff;
+  backdrop-filter: blur(10px);
+  font-size: 13px; font-weight: 550; white-space: nowrap;
+}
+.label .name { overflow: hidden; text-overflow: ellipsis; }
+.label svg { width: 14px; height: 14px; flex: none; }
+.label .muted { color: #FF9C85; }
+.hand {
+  position: absolute; top: 10px; left: 10px;
+  padding: 4px 11px; border-radius: 999px;
+  background: #F0A202; color: #0A1424; font-weight: 650; font-size: 13px;
+  box-shadow: 0 6px 18px rgba(240, 162, 2, 0.35);
+}
+.state {
+  position: absolute; top: 10px; right: 10px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12px;
+  background: rgba(6, 13, 26, 0.66); color: #fff;
+}
+.reaction {
+  position: absolute; bottom: 44px; left: 50%;
+  font-size: 40px; pointer-events: none;
+  animation: rise 2.6s ease-out forwards;
+}
+@keyframes rise {
+  0% { transform: translate(-50%, 0) scale(0.6); opacity: 0; }
+  12% { transform: translate(-50%, -10px) scale(1.1); opacity: 1; }
+  100% { transform: translate(-50%, -160px) scale(1); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reaction { animation-duration: 1.6s; }
+  .tile { transition: none; }
+}
+
+/* alone in the call: our own picture waits in a corner */
+.tile.pip { position: absolute; right: 20px; bottom: 100px; width: min(280px, 32vw); z-index: 2; }
+.alone {
+  position: absolute; left: 50%; top: 44%; transform: translate(-50%, -50%);
+  text-align: center; color: #9AA8BF; max-width: 380px;
+}
+.alone::before {
+  content: ""; display: block; width: 72px; height: 72px; margin: 0 auto 18px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(138, 158, 255, 0.55) 0 22%, rgba(138, 158, 255, 0.16) 23% 48%, rgba(138, 158, 255, 0.06) 49%);
+  animation: wait 2.4s ease-in-out infinite;
+}
+@keyframes wait { 50% { transform: scale(1.12); opacity: 0.7; } }
+.alone strong { display: block; color: #E8ECF3; font-size: 20px; font-weight: 650; margin-bottom: 6px; }
+
+/* before the call (« Prêt à rejoindre ? »): our picture fills the card the QML puts it in */
+body.preview { background: #060D1A; }
+body.preview #stage { padding: 0; display: block; }
+body.preview .tile { position: absolute; inset: 0; aspect-ratio: auto; border-radius: 0; box-shadow: none; outline: none; }
+body.preview .label { display: none; }
