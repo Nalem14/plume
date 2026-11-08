@@ -47,10 +47,15 @@ macOS : `Plume.app` vient de `plume.spec` (`Info.plist` : `mailto`, `webcal`, `o
 
 ## Construire
 
-La CI (`.github/workflows/plume.yml`) construit sur Ubuntu 22.04, Windows et macOS arm64. Elle se lance :
-- avec une étiquette `plume-v<version>`, qui doit correspondre à `VERSION` dans `plume_core/__init__.py` ;
-- avec `plume-test-<nom>`, pour un essai depuis n'importe quelle branche ;
-- ou à la main.
+La CI (`plume/ci/plume.yml`) construit sur Ubuntu 22.04, Windows et macOS arm64. Elle ne tourne pas dans ce dépôt
+privé, dont les minutes GitHub gratuites sont épuisées (macOS compte 10 fois), mais sur **github.com/Nalem14/plume**,
+un dépôt **public** où les runners sont gratuits, macOS compris. Il ne contient que les fichiers lus par le build
+(liste `PATHS` de `tools/plume-ci.sh`) et il est remplacé à chaque build. ⚠️ Tout ce qui y va devient public : jamais
+de secret dans ces fichiers.
+```sh
+sh tools/plume-ci.sh plume-v1.0.1        # la version de plume_core/__init__.py ; prend l'étiquette locale, sinon HEAD
+sh tools/plume-ci.sh plume-test-essai    # un essai de HEAD (fichiers commités seulement)
+```
 
 Chaque paquet passe `--self-test` : les vues des modules, Chromium (QtWebEngine), le trousseau et les polices.
 Les fichiers vont ensuite dans une *release* brouillon.
@@ -86,8 +91,8 @@ garantie. Selon le paquet :
 Une version n'est jamais remplacée par une plus ancienne. Pour revenir en arrière, il faut publier une version plus
 récente.
 
-Pour une nouvelle version, augmente `VERSION` dans `os/files/usr/share/orneos-plume/plume_core/__init__.py`, puis
-pose l'étiquette `plume-v<version>`.
+Pour une nouvelle version, augmente `VERSION` dans `os/files/usr/share/orneos-plume/plume_core/__init__.py`, commite,
+pose l'étiquette `plume-v<version>`, puis lance `sh tools/plume-ci.sh plume-v<version>`.
 
 ## « Quoi de neuf » au premier plan
 

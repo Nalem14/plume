@@ -6,6 +6,7 @@ Nothing here talks to the cloud. Wall-clock hours (8 stays 8 across DST).
 from __future__ import annotations
 
 import calendar
+import contextlib
 import json
 import os
 import re
@@ -18,12 +19,21 @@ import system
 
 ROOT = system.DATA / "ornis-code"
 STORE = ROOT / "cron.json"
-LOCK = threading.RLock()
+LOCK = threading.RLock()            # this process (app, HTTP MCP threads)
+_FLOCK = ROOT / "cron.lock"         # other processes (CLI fallback, stdio MCP)
+_depth = 0
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
 MIN_INTERVAL = 15 * 60          # seconds
 CATCH_UP = 6 * 3600             # miss older than this → "missed", not run
 DEFER = 15 * 60
 MAX_RUNS = 40
+
+
+def defer_for_open_code(*, kind: str, folder: str, code_folder: str,
+                        agent_alive: bool, code_busy: bool, manual: bool) -> bool:
+    """Auto runs wait only when Code is mid-turn on the same folder (not an idle agent)."""
+    return (not manual and kind == "chat" and bool(folder) and folder == code_folder
+            and agent_alive and code_busy)
 ALIASES = {
     "@hourly": "0 * * * *",
     "@daily": "0 0 * * *",
@@ -91,7 +101,7 @@ def parse_schedule(expr: str) -> tuple[str, list[set[int]]]:
         _parse_field(parts[1], 0, 23),
         _parse_field(parts[2], 1, 31),
         _parse_field(parts[3], 1, 12),
-        _parse_field(parts[4], 0, 6),   # 0 = Sunday (crontab)
+        {d % 7 for d in _parse_field(parts[4], 0, 7)},   # 0 and 7 = Sunday (crontab)
     ]
     if not all(fields):
         raise ValueError("empty cron field")
@@ -125,10 +135,15 @@ def validate_schedule(expr: str) -> str:
 
 
 def _matches(when: datetime, fields: list[set[int]]) -> bool:
-    # crontab: day-of-month OR day-of-week when both are constrained (classic cron OR)
-    mins, hours, doms, mons, dows = fields
+    mins, hours, _, mons, _ = fields
     if when.minute not in mins or when.hour not in hours or when.month not in mons:
         return False
+    return _day_ok(when, fields)
+
+
+def _day_ok(when: datetime, fields: list[set[int]]) -> bool:
+    # crontab: day-of-month OR day-of-week when both are constrained (classic cron OR)
+    _, _, doms, _, dows = fields
     dom_star = len(doms) == 31
     dow_star = len(dows) == 7
     day_ok = when.day in doms
@@ -151,13 +166,19 @@ def next_run(expr: str, after: float | None = None) -> float:
     # start from the next minute
     cursor = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
     limit = cursor + timedelta(days=366 * 2)
+    mins, hours, _, mons, _ = fields
     while cursor < limit:
-        # skip impossible day/month combos quickly
-        last = calendar.monthrange(cursor.year, cursor.month)[1]
-        if cursor.day > last:
-            cursor = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1, hour=0, minute=0)
+        # jump whole months / days / hours that cannot match (an impossible date stays cheap)
+        if cursor.month not in mons:
+            cursor = (cursor.replace(day=1, hour=0, minute=0) + timedelta(days=32)).replace(day=1)
             continue
-        if _matches(cursor, fields):
+        if not _day_ok(cursor, fields):
+            cursor = cursor.replace(hour=0, minute=0) + timedelta(days=1)
+            continue
+        if cursor.hour not in hours:
+            cursor = cursor.replace(minute=0) + timedelta(hours=1)
+            continue
+        if cursor.minute in mins:
             return cursor.timestamp()
         cursor += timedelta(minutes=1)
     raise ValueError("no next run in the next two years")
@@ -169,9 +190,18 @@ def previous_run(expr: str, before: float | None = None) -> float | None:
     end = datetime.fromtimestamp(before if before is not None else time.time()).replace(second=0, microsecond=0)
     cursor = end
     limit = cursor - timedelta(days=366 * 2)
+    mins, hours, _, mons, _ = fields
     while cursor > limit:
-        last = calendar.monthrange(cursor.year, cursor.month)[1]
-        if cursor.day <= last and _matches(cursor, fields):
+        if cursor.month not in mons:
+            cursor = cursor.replace(day=1, hour=0, minute=0) - timedelta(minutes=1)
+            continue
+        if not _day_ok(cursor, fields):
+            cursor = cursor.replace(hour=0, minute=0) - timedelta(minutes=1)
+            continue
+        if cursor.hour not in hours:
+            cursor = cursor.replace(minute=0) - timedelta(minutes=1)
+            continue
+        if cursor.minute in mins:
             return cursor.timestamp()
         cursor -= timedelta(minutes=1)
     return None
@@ -274,6 +304,57 @@ def _empty() -> dict:
     return {"version": 1, "tasks": []}
 
 
+@contextlib.contextmanager
+def _locked():
+    """LOCK plus an advisory file lock, so a CLI/MCP process and the app never interleave a read-modify-write.
+
+    Reentrant inside this process (patch → upsert). Best effort: no lock file → the thread lock alone."""
+    global _depth
+    with LOCK:
+        if _depth:
+            _depth += 1
+            try:
+                yield
+            finally:
+                _depth -= 1
+            return
+        handle = None
+        try:
+            ROOT.mkdir(parents=True, exist_ok=True)
+            handle = open(_FLOCK, "a+b")  # noqa: SIM115
+            if system.WINDOWS:
+                import msvcrt  # noqa: PLC0415
+                for _ in range(100):
+                    try:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+            else:
+                import fcntl  # noqa: PLC0415
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            pass
+        _depth = 1
+        try:
+            yield
+        finally:
+            _depth = 0
+            if handle is not None:
+                try:
+                    if system.WINDOWS:
+                        import msvcrt  # noqa: PLC0415
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl  # noqa: PLC0415
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                handle.close()
+
+
 def load() -> dict:
     with LOCK:
         try:
@@ -286,7 +367,7 @@ def load() -> dict:
 
 
 def save(data: dict) -> None:
-    with LOCK:
+    with _locked():
         ROOT.mkdir(parents=True, exist_ok=True)
         system.private_write(STORE, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
@@ -312,7 +393,7 @@ def _ok_id(task_id: str) -> str:
 
 def upsert(task: dict, *, create: bool = False) -> dict:
     """Insert or replace a task. Validates schedule and id. Sets next_run and scheduleLabel."""
-    with LOCK:
+    with _locked():
         data = load()
         tid = _ok_id(task.get("id", ""))
         existing = next((t for t in data["tasks"] if t.get("id") == tid), None)
@@ -367,6 +448,10 @@ def upsert(task: dict, *, create: bool = False) -> dict:
                 row.pop("pending", None)
         elif task.get("clear_pending"):
             row.pop("pending", None)
+        if task.get("pending_previous"):
+            row["pending_previous"] = task["pending_previous"]   # what an AI update replaced (ask mode: « Annuler »)
+        if not row.get("pending"):
+            row.pop("pending_previous", None)
         if "force_run" in task:
             if task["force_run"]:
                 row["force_run"] = True
@@ -381,7 +466,7 @@ def upsert(task: dict, *, create: bool = False) -> dict:
 
 def set_next_run(task_id: str, when: float) -> dict:
     """Set next_run without recomputing from the crontab (defer, catch-up)."""
-    with LOCK:
+    with _locked():
         data = load()
         for t in data["tasks"]:
             if t.get("id") != task_id:
@@ -395,7 +480,7 @@ def set_next_run(task_id: str, when: float) -> dict:
 
 def clear_flag(task_id: str, *flags: str) -> dict:
     """Drop pending / force_run without touching next_run."""
-    with LOCK:
+    with _locked():
         data = load()
         for t in data["tasks"]:
             if t.get("id") != task_id:
@@ -409,16 +494,20 @@ def clear_flag(task_id: str, *flags: str) -> dict:
 
 
 def patch(task_id: str, fields: dict, lang: str = "fr") -> dict:
-    row = get(task_id)
-    if not row:
-        raise ValueError(f"unknown task: {task_id}")
-    row.update({k: v for k, v in fields.items() if v is not None})
-    row["lang"] = lang
-    return upsert(row, create=False)
+    with _locked():
+        row = get(task_id)
+        if not row:
+            raise ValueError(f"unknown task: {task_id}")
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if "schedule" in fields and expand_alias(fields["schedule"]) != row.get("schedule"):
+            row.pop("next_run", None)        # the old due time belonged to the old rhythm
+        row.update(fields)
+        row["lang"] = lang
+        return upsert(row, create=False)
 
 
 def remove(task_id: str) -> bool:
-    with LOCK:
+    with _locked():
         data = load()
         before = len(data["tasks"])
         data["tasks"] = [t for t in data["tasks"] if t.get("id") != task_id]
@@ -433,7 +522,7 @@ def set_paused(task_id: str, paused: bool, lang: str = "fr") -> dict:
 
 
 def add_run(task_id: str, run: dict) -> dict:
-    with LOCK:
+    with _locked():
         data = load()
         for t in data["tasks"]:
             if t.get("id") != task_id:
@@ -448,7 +537,7 @@ def add_run(task_id: str, run: dict) -> dict:
 
 
 def update_run(task_id: str, run_id: str, fields: dict) -> dict:
-    with LOCK:
+    with _locked():
         data = load()
         for t in data["tasks"]:
             if t.get("id") != task_id:
@@ -464,7 +553,7 @@ def update_run(task_id: str, run_id: str, fields: dict) -> dict:
 
 
 def bump_next(task_id: str, from_time: float | None = None) -> dict:
-    with LOCK:
+    with _locked():
         data = load()
         for t in data["tasks"]:
             if t.get("id") != task_id:

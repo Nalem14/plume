@@ -1348,8 +1348,9 @@ def mcp_servers(folder: str = "") -> list[dict]:
         bridge = None
     if bridge:
         auth = [{"name": "Authorization", "value": "Bearer " + bridge["token"]}]
+        key = ornis_mcp_http.context_key(folder, (os.environ.get("ORNIS_CRON_LANG") or "fr"))
         out = [
-            {"type": "http", "name": "ornis-cron", "url": bridge["cron_url"], "headers": auth},
+            {"type": "http", "name": "ornis-cron", "url": f"{bridge['cron_url']}/{key}", "headers": auth},
             {"type": "http", "name": "ornis-search", "url": bridge["search_url"], "headers": auth},
         ]
     else:

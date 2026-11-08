@@ -40,6 +40,7 @@ class Cron(QObject):
     toast = Signal(str)                     # undoable toast text
     finished = Signal(str, str, str)        # task_id, status, summary — for notifications
     _done = Signal(str, str, str, str, str)  # task_id, status, summary, folder, session
+    _register = Signal(str, str, str, str)  # folder, session, title, task_id — from a worker, applied on the GUI thread
 
     def __init__(self, app, code):
         super().__init__()
@@ -55,7 +56,9 @@ class Cron(QObject):
         self._follow: tuple[str, str] | None = None   # (folder, session) open when a background run ends
         self._bg_run: dict | None = None              # live background chat: {task, run, session, agent}
         self._ui_run: dict | None = None              # cron running inside CodeChat
+        self._dirty = False                           # cron.json written by the tick's bookkeeping
         self._done.connect(self._on_done)
+        self._register.connect(self._register_session)
         self._code.cronDone.connect(self._on_code_cron_done)
         self._code.cronSession.connect(self._on_code_cron_session)
         self._tick = QTimer(self)
@@ -247,6 +250,9 @@ class Cron(QObject):
                 elif action == "ai" and c.get("previous"):
                     prev = dict(c["previous"])
                     prev.pop("pending", None)
+                    prev.pop("pending_previous", None)
+                    prev["clear_pending"] = True
+                    prev["lang"] = self._lang()
                     ornis_cron.upsert(prev, create=False)
                 elif action == "ai":
                     ornis_cron.clear_flag(task.get("id"), "pending")
@@ -265,11 +271,7 @@ class Cron(QObject):
                 self._reload()
                 self.toast.emit(self._t("cron_saved", "Tâche enregistrée"))
             elif action == "ai":
-                row = ornis_cron.get(task["id"]) or dict(task)
-                row.pop("pending", None)
-                row["paused"] = False
-                row["clear_pending"] = True
-                ornis_cron.upsert(row, create=False)
+                self._clear_pending(ornis_cron.get(task["id"]) or dict(task))
                 self._reload()
                 self.toast.emit(self._t("cron_saved", "Tâche enregistrée"))
         except ValueError as err:
@@ -328,6 +330,12 @@ class Cron(QObject):
     def _clear_undo(self):
         self._undo = None
 
+    @staticmethod
+    def _unwatched() -> bool:
+        """No Ornis/Plume window has the focus: a scheduled run may bring Code to the front for when the user is back.
+        With a window in use, the run never yanks the user out of what they are doing (the list opens it)."""
+        return QGuiApplication.focusWindow() is None
+
     def _do_delete(self, task, undo=False):
         if undo:
             self._undo = {"kind": "delete", "previous": task, "id": task.get("id")}
@@ -343,6 +351,12 @@ class Cron(QObject):
             prev = {t["id"]: t for t in self._tasks}
             self._reload()
             self._notice_ai_changes(prev)
+            # Deleted outside the app (Ornis via MCP/CLI): no consent card for a delete, but always « Annuler »
+            gone = [prev[tid] for tid in prev if not any(t.get("id") == tid for t in self._tasks)]
+            if len(gone) == 1:
+                self._undo = {"kind": "delete", "previous": gone[0], "id": gone[0].get("id")}
+                QTimer.singleShot(8000, self._clear_undo)
+                self.toast.emit(self._t("cron_ai_deleted", "Tâche cron supprimée — Annuler"))
 
     def _reload(self):
         self._mtime = ornis_cron.mtime()
@@ -352,8 +366,9 @@ class Cron(QObject):
     def _clear_pending(self, task: dict) -> None:
         row = dict(task)
         row.pop("pending", None)
-        row["paused"] = False
+        row.pop("pending_previous", None)
         row["clear_pending"] = True
+        row["lang"] = self._lang()
         ornis_cron.upsert(row, create=False)
 
     def _notice_ai_changes(self, prev: dict | None):
@@ -386,7 +401,12 @@ class Cron(QObject):
                 except ValueError:
                     pass
             elif pending == "update" and (startup or tid in prev):
-                old, new = (prev.get(tid) if tid in prev else dict(t)), t
+                stored = t.get("pending_previous")
+                if isinstance(stored, dict) and stored:
+                    old = {**t, **stored, "runs": t.get("runs") or []}
+                else:
+                    old = prev.get(tid) if tid in prev else None
+                new = t
                 if mode == "ask":
                     if self._consent:
                         return
@@ -399,7 +419,7 @@ class Cron(QObject):
                     self._clear_pending(new)
                     self._reload()
                     self.toast.emit(self._t("cron_saved_undo", "Tâche enregistrée — Annuler"))
-                    self._undo = {"kind": "update", "id": tid, "previous": old if tid in prev else None}
+                    self._undo = {"kind": "update", "id": tid, "previous": old}
                     QTimer.singleShot(8000, self._clear_undo)
                 except ValueError:
                     pass
@@ -417,13 +437,15 @@ class Cron(QObject):
         runs = list(t.get("runs") or [])
         sessions = []
         for r in runs:
-            if r.get("session"):
-                sessions.append({
-                    "id": r["session"], "runId": r.get("id"), "status": r.get("status"),
-                    "summary": r.get("summary") or "",
-                    "when": _when(float(r.get("started") or 0), self._lang()),
-                    "folder": t.get("folder"),
-                })
+            # Show deferred/missed/error even without a session id (otherwise auto skips look like « never ran »)
+            if not r.get("session") and r.get("status") not in ("deferred", "missed", "error", "running"):
+                continue
+            sessions.append({
+                "id": r.get("session") or "", "runId": r.get("id"), "status": r.get("status"),
+                "summary": r.get("summary") or "",
+                "when": _when(float(r.get("started") or 0), self._lang()),
+                "folder": t.get("folder"),
+            })
         running = any(r.get("status") == "running" for r in runs)
         return {
             "id": t.get("id"), "title": t.get("title") or t.get("id"),
@@ -431,7 +453,7 @@ class Cron(QObject):
             "folder": t.get("folder"), "kind": t.get("kind") or "chat",
             "prompt": t.get("prompt") or "", "command": t.get("command") or "",
             "schedule": t.get("schedule") or "",
-            "scheduleLabel": t.get("scheduleLabel") or ornis_cron.schedule_label(t.get("schedule") or "", self._lang()),
+            "scheduleLabel": ornis_cron.schedule_label(t.get("schedule") or "", self._lang()),
             "paused": bool(t.get("paused")),
             "nextRun": _when(float(t["next_run"]), self._lang()) if t.get("next_run") else "",
             "nextRunAt": float(t.get("next_run") or 0),
@@ -444,7 +466,48 @@ class Cron(QObject):
             "pending": t.get("pending") or "",
         }
 
+    def _code_busy(self) -> bool:
+        """True when Code is mid-turn (not merely sitting on an idle agent in the folder)."""
+        code = self._code
+        return bool(getattr(code, "_busy", False) or getattr(code, "_cron_job", None)
+                    or getattr(code, "_host", None) or getattr(code, "_queued", None))
+
+    def _reap_stale(self) -> None:
+        """Unblock the scheduler if a run stayed « running » after a lost UI/background handle."""
+        now = time.time()
+        # Recover a stuck chat gate (cronDone never fired, agent gone)
+        if self._chat_busy and not self._ui_run and not self._bg_run:
+            self._chat_busy = False
+        changed = False
+        for t in list(ornis_cron.tasks()):
+            for r in list(t.get("runs") or []):
+                if r.get("status") != "running":
+                    continue
+                rid = r.get("id")
+                if self._ui_run and self._ui_run.get("run") == rid:
+                    continue
+                if self._bg_run and self._bg_run.get("run") == rid:
+                    continue
+                age = now - float(r.get("started") or 0)
+                # chat turns can be long; scripts use SCRIPT_TIMEOUT. Still unblock after 15 min orphan.
+                limit = SCRIPT_TIMEOUT + 60 if t.get("kind") == "script" else 15 * 60
+                if age <= limit:
+                    continue
+                try:
+                    ornis_cron.update_run(t["id"], rid, {
+                        "status": "error", "ended": now,
+                        "summary": (self._t("cron_timeout", "Délai dépassé (10 min)") if t.get("kind") == "script"
+                                    else self._t("cron_lost", "Interrompue")),
+                    })
+                    changed = True
+                except ValueError:
+                    pass
+        if changed:
+            self._chat_busy = False
+            self._reload()
+
     def _on_tick(self):
+        self._reap_stale()
         now = time.time()
         for t in list(self._tasks):
             if t.get("paused") or t.get("pending"):
@@ -454,54 +517,65 @@ class Cron(QObject):
             force = bool(t.get("force_run"))
             nxt = float(t.get("next_run") or 0)
             if force or (nxt and nxt <= now + 1):
+                # Long overdue without a force (the computer slept): the same rule as at startup — the last slot
+                # runs if it is recent enough, else it is marked missed
+                if not force and now - nxt > 120 and not self._owed(t, now):
+                    continue
                 # keep force_run until _start begins; never mark MCP/timer as manual
                 # (manual bypasses same-folder defer — only the lightning button does that)
                 self._start(t, manual=False)
+        if self._dirty:
+            self._dirty = False
+            self._reload()
+
+    def _owed(self, t: dict, now: float) -> bool:
+        """An overdue task (app closed or computer asleep): True when its last slot should still run now.
+
+        Otherwise records « missed » (once per slot) and moves next_run on."""
+        try:
+            prev = ornis_cron.previous_run(t["schedule"], now)
+        except ValueError:
+            return False
+        if not prev:
+            return False
+        age = now - prev
+        period = ornis_cron.period_seconds(t["schedule"])
+        last = next((r for r in (t.get("runs") or [])
+                     if r.get("status") in ("ok", "error", "deferred", "missed")), None)
+        try:
+            if float((last or {}).get("started") or 0) >= prev - 30:
+                ornis_cron.bump_next(t["id"], now)        # that slot already ran (or was marked missed)
+                self._dirty = True
+                return False
+            if age <= ornis_cron.CATCH_UP and age <= period:
+                return True                               # one late run for the last slot
+            ornis_cron.add_run(t["id"], {
+                "id": str(uuid.uuid4()), "started": prev, "ended": now,
+                "status": "missed",
+                "summary": self._t("cron_missed", "Manquée : l'application était fermée"),
+            })
+            ornis_cron.bump_next(t["id"], now)
+            self._dirty = True
+        except ValueError:
+            pass
+        return False
 
     def _catch_up(self):
         now = time.time()
-        # orphan "running" rows after a crash: unblock the scheduler
-        for t in list(ornis_cron.tasks()):
-            for r in list(t.get("runs") or []):
-                if r.get("status") != "running":
-                    continue
-                age = now - float(r.get("started") or 0)
-                if age <= SCRIPT_TIMEOUT + 60:
-                    continue
-                try:
-                    ornis_cron.update_run(t["id"], r["id"], {
-                        "status": "error", "ended": now,
-                        "summary": self._t("cron_timeout", "Délai dépassé (10 min)"),
-                    })
-                except ValueError:
-                    pass
+        self._reap_stale()
         for t in list(ornis_cron.tasks()):
             if t.get("paused") or t.get("pending"):
                 continue
             if any(r.get("status") == "running" for r in t.get("runs") or []):
                 continue
-            try:
-                prev = ornis_cron.previous_run(t["schedule"], now)
-            except ValueError:
+            # next_run moves forward at every start, defer, creation and edit: only a past one was owed while closed
+            # (a task created at 8:05 for « every day at 8:00 » does not owe today's 8:00)
+            nxt = float(t.get("next_run") or 0)
+            if not nxt or nxt > now:
                 continue
-            if not prev:
-                continue
-            age = now - prev
-            period = ornis_cron.period_seconds(t["schedule"])
-            last_ok = next((r for r in (t.get("runs") or []) if r.get("status") in ("ok", "error", "deferred")), None)
-            last_ts = float((last_ok or {}).get("started") or 0)
-            if last_ts >= prev - 30:
-                continue  # already ran for that slot
-            if age <= ornis_cron.CATCH_UP and age <= period:
-                # one deferred catch-up
-                QTimer.singleShot(5000, lambda tid=t["id"]: self._start(ornis_cron.get(tid) or t, manual=False))
-            elif age > ornis_cron.CATCH_UP or age > period:
-                ornis_cron.add_run(t["id"], {
-                    "id": str(uuid.uuid4()), "started": prev, "ended": now,
-                    "status": "missed",
-                    "summary": self._t("cron_missed", "Manquée : l'application était fermée"),
-                })
-                ornis_cron.bump_next(t["id"], now)
+            if self._owed(t, now):
+                QTimer.singleShot(5000, lambda tid=t["id"]: self._start(ornis_cron.get(tid) or {}, manual=False))
+        self._dirty = False
         self._reload()
 
     def _start(self, task: dict, manual: bool = False) -> bool:
@@ -513,15 +587,23 @@ class Cron(QObject):
         if any(r.get("status") == "running" for r in task.get("runs") or []):
             return False
         folder = str(task.get("folder") or "")
-        # Same folder as the open Code conversation: one Vibe agent at a time on that cwd
-        same_open = (task.get("kind") == "chat" and self._code.folder == folder
-                     and bool(self._code.folder) and self._code._agent is not None and self._code._agent.alive())
-        if same_open and not manual:
-            ornis_cron.add_run(tid, {
-                "id": str(uuid.uuid4()), "started": time.time(), "ended": time.time(),
-                "status": "deferred",
-                "summary": self._t("cron_deferred", "Reportée : vous travaillez déjà dans ce dossier"),
-            })
+        # Only defer when Code is mid-turn on that folder. An idle agent left open used to
+        # block every auto tick (manual lightning still worked) — seen 08/11 on Mac.
+        if ornis_cron.defer_for_open_code(
+                kind=str(task.get("kind") or ""), folder=folder,
+                code_folder=str(self._code.folder or ""),
+                agent_alive=bool(self._code._agent is not None and self._code._agent.alive()),
+                code_busy=self._code_busy(), manual=manual):
+            note = {"started": time.time(), "ended": time.time(), "status": "deferred",
+                    "summary": self._t("cron_deferred", "Reportée : vous travaillez déjà dans ce dossier")}
+            last = (task.get("runs") or [{}])[0]
+            try:
+                if last.get("status") == "deferred" and last.get("id"):
+                    ornis_cron.update_run(tid, last["id"], note)   # one line per streak, not one every 15 min
+                else:
+                    ornis_cron.add_run(tid, {"id": str(uuid.uuid4()), **note})
+            except ValueError:
+                return False
             try:
                 ornis_cron.set_next_run(tid, time.time() + ornis_cron.DEFER)
             except ValueError:
@@ -574,7 +656,8 @@ class Cron(QObject):
 
         def start_ui():
             if self._code.runScheduled(str(folder), title, prompt, task["id"]):
-                self.showCode.emit()
+                if self._unwatched():
+                    self.showCode.emit()
                 return
             self._ui_run = None
             self._run_chat_background(task, run_id, title, prompt, started)
@@ -594,7 +677,8 @@ class Cron(QObject):
             pass
         self._register_session(folder, session, ui.get("title") or task_id, task_id)
         self._reload()
-        self.openSession.emit(str(folder), str(session))
+        if self._unwatched():
+            self.openSession.emit(str(folder), str(session))
 
     def _on_code_cron_done(self, task_id, status, summary, session):
         ui = self._ui_run
@@ -622,6 +706,8 @@ class Cron(QObject):
         except ValueError:
             pass
         self._reload()
+        # Held from now: the reaper frees _chat_busy when neither handle is set, and the agent takes seconds to start
+        self._bg_run = {"task": task["id"], "run": run_id, "session": "", "agent": None}
 
         def work():
             session = ""
@@ -686,7 +772,7 @@ class Cron(QObject):
                 session = created.get("sessionId") or ""
                 self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent}
                 agent.set_mode(session, "auto")
-                self._register_session(str(folder), session, title, task["id"])
+                self._register.emit(str(folder), session, title, task["id"])
                 ornis_cron.update_run(task["id"], run_id, {
                     "session": session, "summary": self._t("cron_working", "En cours…"),
                 })
@@ -707,10 +793,13 @@ class Cron(QObject):
                         agent.close()
                 except Exception:  # noqa: BLE001
                     pass
-                ornis_cron.update_run(task["id"], run_id, {
-                    "status": status, "summary": summary[:300], "ended": time.time(),
-                    "session": session, "duration": round(time.time() - started, 1),
-                })
+                try:
+                    ornis_cron.update_run(task["id"], run_id, {
+                        "status": status, "summary": summary[:300], "ended": time.time(),
+                        "session": session, "duration": round(time.time() - started, 1),
+                    })
+                except ValueError:
+                    pass                        # task deleted meanwhile: still free the gate below
                 self._chat_busy = False
                 self._done.emit(task["id"], status, summary, str(folder), session)
 
@@ -808,10 +897,13 @@ class Cron(QObject):
                 status, summary = "error", self._t("cron_timeout", "Délai dépassé (10 min)")
             except Exception as err:  # noqa: BLE001
                 status, summary = "error", str(err)[:200]
-            ornis_cron.update_run(task["id"], run_id, {
-                "status": status, "summary": summary, "ended": time.time(),
-                "duration": round(time.time() - started, 1),
-            })
+            try:
+                ornis_cron.update_run(task["id"], run_id, {
+                    "status": status, "summary": summary, "ended": time.time(),
+                    "duration": round(time.time() - started, 1),
+                })
+            except ValueError:
+                pass                            # task deleted meanwhile: the slot is still given back
             self._script_n = max(0, self._script_n - 1)
             self._done.emit(task["id"], status, summary, str(folder), "")
 

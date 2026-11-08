@@ -32,6 +32,10 @@ commands:
 """
 
 
+def system_windows() -> bool:
+    return sys.platform.startswith("win")
+
+
 def _parse_args(raw: str) -> dict:
     raw = (raw or "").strip()
     if not raw:
@@ -56,12 +60,20 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, json.JSONDecodeError) as err:
         sys.stdout.write(json.dumps({"error": str(err)}, ensure_ascii=False) + "\n")
         return 1
-    # stdin JSON if no argv payload (handy for long prompts)
-    if len(argv) == 1 and not sys.stdin.isatty():
+    # stdin JSON if no argv payload (handy for long prompts). Never for `list`, and only when something is
+    # there: an agent's shell may hand over a pipe that never closes, and `read()` would hang the tool call.
+    if len(argv) == 1 and tool != "cron_list" and sys.stdin is not None and not sys.stdin.isatty():
         try:
+            if not system_windows():
+                import select  # noqa: PLC0415
+                ready, _, _ = select.select([sys.stdin], [], [], 1.0)
+                if not ready:
+                    raise EOFError
             extra = sys.stdin.read()
             if extra.strip():
                 args = _parse_args(extra)
+        except EOFError:
+            pass
         except (ValueError, json.JSONDecodeError) as err:
             sys.stdout.write(json.dumps({"error": str(err)}, ensure_ascii=False) + "\n")
             return 1

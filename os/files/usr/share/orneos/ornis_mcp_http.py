@@ -22,12 +22,23 @@ _lock = threading.Lock()
 _server: ThreadingHTTPServer | None = None
 _token = ""
 _base = ""
+_contexts: dict[str, dict] = {}     # key in /mcp/cron/<key> → {folder, lang}: one shared server, one folder per session
 
 
-def _dispatch(kind: str, msg: dict) -> dict | None:
+def context_key(folder: str, lang: str = "fr") -> str:
+    """A stable key for a Code session's folder (the cron MCP files new tasks there, not in the last folder opened)."""
+    import hashlib  # noqa: PLC0415
+    folder, lang = str(folder or "").strip(), (lang or "fr")[:2]
+    key = hashlib.sha256(f"{folder}\0{lang}".encode("utf-8")).hexdigest()[:16]
+    with _lock:
+        _contexts[key] = {"folder": folder, "lang": lang}
+    return key
+
+
+def _dispatch(kind: str, msg: dict, key: str = "") -> dict | None:
     if kind == "cron":
         import ornis_cron_mcp  # noqa: PLC0415
-        return ornis_cron_mcp.handle(msg)
+        return ornis_cron_mcp.handle(msg, _contexts.get(key))
     if kind == "search":
         import ornis_search_mcp  # noqa: PLC0415
         # search module uses _handle; expose the same shape as cron
@@ -54,13 +65,16 @@ class _Handler(BaseHTTPRequestHandler):
         expected = "Bearer " + _token
         return bool(_token) and secrets.compare_digest(auth, expected)
 
-    def _kind(self) -> str | None:
+    def _parts(self) -> tuple[str | None, str]:
         path = urlparse(self.path).path.rstrip("/")
-        # /mcp/cron or /mcp/search
+        # /mcp/cron, /mcp/cron/<context key> or /mcp/search
         parts = [p for p in path.split("/") if p]
-        if len(parts) == 2 and parts[0] == "mcp" and parts[1] in ("cron", "search"):
-            return parts[1]
-        return None
+        if len(parts) in (2, 3) and parts[0] == "mcp" and parts[1] in ("cron", "search"):
+            return parts[1], (parts[2] if len(parts) == 3 else "")
+        return None, ""
+
+    def _kind(self) -> str | None:
+        return self._parts()[0]
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._check_auth():
@@ -86,7 +100,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._check_auth():
             self._unauthorized()
             return
-        kind = self._kind()
+        kind, key = self._parts()
         if kind is None:
             self.send_response(404)
             self.end_headers()
@@ -113,7 +127,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         # Notifications / responses: 202 with empty body (Streamable HTTP)
         if msg.get("id") is None and msg.get("method"):
-            _dispatch(kind, msg)  # may be notifications/initialized
+            _dispatch(kind, msg, key)  # may be notifications/initialized
             self.send_response(202)
             self.end_headers()
             return
@@ -122,7 +136,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        reply = _dispatch(kind, msg)
+        reply = _dispatch(kind, msg, key)
         if reply is None:
             self.send_response(202)
             self.end_headers()

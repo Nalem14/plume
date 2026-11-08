@@ -780,6 +780,10 @@ class CodeChat(QObject):
             return False
         if self._busy or self._cron_job or self._host is not None:
             return False
+        # The user has a window in front with a conversation open: never swap it under them (the cron then runs
+        # on its own agent, and opens from the list once done)
+        if self._session and QGuiApplication.focusWindow() is not None:
+            return False
         self._cron_job = {
             "task_id": str(task_id or ""),
             "title": str(title or "").strip() or str(task_id or "cron"),
@@ -977,6 +981,10 @@ class CodeChat(QObject):
 
     def _fail(self, problem):
         self._state, self._error, self._busy = "error", problem, False
+        if self._cron_job:                       # the agent never came: the scheduled run ends here, not never
+            self._queued = ""
+            self._finish_cron("error", self._app._t.get(problem) or self._app._t.get("cron_failed", "Échec"),
+                              self._session)
         self.changed.emit()
 
     def _on_exit(self, code, stderr):
@@ -987,6 +995,10 @@ class CodeChat(QObject):
                 self._add_error("code_crashed")
             self._busy = False
             self._state = "idle"
+            if self._cron_job:
+                self._queued = ""
+                self._finish_cron("error", self._app._t.get("code_crashed") or self._app._t.get("cron_failed", "Échec"),
+                                  self._session)
             self.changed.emit()
 
     @Slot()
@@ -1002,6 +1014,9 @@ class CodeChat(QObject):
             return
         self._cancel_host()
         self._account_key = key
+        if self._cron_job:
+            self._queued = ""
+            self._finish_cron("error", self._app._t.get("code_stopped", "Arrêté"), self._session)
         if self._agent is not None:
             agent, self._agent = self._agent, None
             threading.Thread(target=agent.close, daemon=True).start()
@@ -1602,6 +1617,8 @@ class CodeChat(QObject):
                                     folder=self._folder)
         if at < 0 or sid != self._session or self._host is not None:
             verdict = "reject"
+        if self._cron_job and verdict == "ask":   # scheduled run: nobody to answer — as the background runs, refuse
+            verdict = "reject"
         opts = [o for o in options or [] if isinstance(o, dict)]
         if verdict in ("allow", "reject") or at < 0 or sid != self._session:
             want = "allow_once" if verdict == "allow" else "reject_once"
@@ -1882,6 +1899,8 @@ class CodeChat(QObject):
 
     def shutdown(self):
         self._cancel_host()
+        if self._cron_job:
+            self._finish_cron("error", self._app._t.get("code_stopped", "Arrêté"), self._session)
         if self._agent is not None:
             self._agent.close()
             self._agent = None

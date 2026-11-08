@@ -109,15 +109,16 @@ def _context() -> dict:
         return {}
 
 
-def _folder(args: dict) -> str:
-    ctx = _context()
-    return str(args.get("folder") or os.environ.get("ORNIS_CRON_FOLDER")
-               or ctx.get("folder") or os.getcwd()).strip()
+def _folder(args: dict, ctx: dict | None = None) -> str:
+    """The session's own folder first (HTTP bridge: one URL per Code session), else env / sidecar / cwd."""
+    side = _context()
+    return str(args.get("folder") or (ctx or {}).get("folder") or os.environ.get("ORNIS_CRON_FOLDER")
+               or side.get("folder") or os.getcwd()).strip()
 
 
-def _lang() -> str:
-    ctx = _context()
-    return (os.environ.get("ORNIS_CRON_LANG") or ctx.get("lang") or "fr")[:2]
+def _lang(ctx: dict | None = None) -> str:
+    side = _context()
+    return ((ctx or {}).get("lang") or os.environ.get("ORNIS_CRON_LANG") or side.get("lang") or "fr")[:2]
 
 
 def _ok(data) -> dict:
@@ -128,7 +129,7 @@ def _err(msg: str) -> dict:
     return {"content": [{"type": "text", "text": json.dumps({"error": str(msg)}, ensure_ascii=False)}], "isError": True}
 
 
-def call_tool(name: str, args: dict) -> dict:
+def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
     args = args or {}
     try:
         if name == "cron_list":
@@ -151,15 +152,11 @@ def call_tool(name: str, args: dict) -> dict:
                 "schedule": args["schedule"],
                 "prompt": args.get("prompt") or "",
                 "command": args.get("command") or "",
-                "folder": _folder(args),
+                "folder": _folder(args, ctx),
                 "paused": bool(args.get("paused", False)),
-                "lang": _lang(),
-                "pending": "create",
+                "lang": _lang(ctx),
+                "pending": "create",     # the app confirms it (ask mode) or clears it; never runs while pending
             }
-            # ask-mode consent: leave paused until the app confirms when pending
-            if row["pending"] and not args.get("paused"):
-                # still schedule next_run; app may pause via pending UI
-                pass
             created = ornis_cron.upsert(row, create=True)
             return _ok({"created": True, "task": {
                 "id": created["id"], "title": created["title"], "schedule": created["schedule"],
@@ -171,26 +168,37 @@ def call_tool(name: str, args: dict) -> dict:
                       if k in args and args[k] is not None}
             if "schedule" in fields:
                 fields["schedule"] = ornis_cron.validate_schedule(fields["schedule"])
-            fields["pending"] = "update"
-            updated = ornis_cron.patch(args["id"], fields, _lang())
+            with ornis_cron._locked():
+                before = ornis_cron.get(args["id"])
+                if not before:
+                    raise ValueError(f"unknown task: {args['id']}")
+                if before.get("pending") == "create":
+                    fields["pending"] = "create"     # still not confirmed: the card stays « créée », not « modifiée »
+                else:
+                    fields["pending"] = "update"
+                    if before.get("pending") != "update":   # keep the version the user last accepted
+                        fields["pending_previous"] = {k: v for k, v in before.items()
+                                                      if k not in ("runs", "pending", "pending_previous", "force_run")}
+                updated = ornis_cron.patch(args["id"], fields, _lang(ctx))
             return _ok({"updated": True, "task": {
                 "id": updated["id"], "title": updated["title"], "schedule": updated["schedule"],
                 "scheduleLabel": updated["scheduleLabel"], "paused": updated["paused"],
             }})
         if name == "cron_pause":
-            return _ok({"paused": True, "task": ornis_cron.set_paused(args["id"], True, _lang())["id"]})
+            return _ok({"paused": True, "task": ornis_cron.set_paused(args["id"], True, _lang(ctx))["id"]})
         if name == "cron_resume":
-            ornis_cron.set_paused(args["id"], False, _lang())
+            ornis_cron.set_paused(args["id"], False, _lang(ctx))
             ornis_cron.bump_next(args["id"])
             return _ok({"resumed": True, "id": args["id"]})
         if name == "cron_run":
             # Mark a manual trigger request the app picks up (next_run := now)
-            t = ornis_cron.get(args["id"])
-            if not t:
-                raise ValueError(f"unknown task: {args['id']}")
-            t["next_run"] = time.time() - 1
-            t["force_run"] = True
-            ornis_cron.upsert(t, create=False)
+            with ornis_cron._locked():
+                t = ornis_cron.get(args["id"])
+                if not t:
+                    raise ValueError(f"unknown task: {args['id']}")
+                t["next_run"] = time.time() - 1
+                t["force_run"] = True
+                ornis_cron.upsert(t, create=False)
             return _ok({"queued": True, "id": args["id"],
                         "hint": "The running Ornis/Plume app will start it within about 20 seconds."})
         if name == "cron_delete":
@@ -232,7 +240,7 @@ def _write_message(msg: dict) -> None:
     sys.stdout.buffer.flush()
 
 
-def handle(msg: dict) -> dict | None:
+def handle(msg: dict, ctx: dict | None = None) -> dict | None:
     mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
     if method == "initialize":
         return {"jsonrpc": "2.0", "id": mid, "result": {
@@ -247,7 +255,7 @@ def handle(msg: dict) -> dict | None:
     if method == "tools/call":
         name = params.get("name") or ""
         args = params.get("arguments") or {}
-        return {"jsonrpc": "2.0", "id": mid, "result": call_tool(name, args)}
+        return {"jsonrpc": "2.0", "id": mid, "result": call_tool(name, args, ctx)}
     if method == "ping":
         return {"jsonrpc": "2.0", "id": mid, "result": {}}
     if mid is not None:
