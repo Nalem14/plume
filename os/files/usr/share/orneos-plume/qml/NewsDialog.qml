@@ -31,15 +31,23 @@ Popup {
         id: later
         interval: 600
         onTriggered: {
-            if (news.items.length && !dialog.opened && dialog.ready) {
-                dialog.shownGeneration = news.generation
-                dialog.index = 0
-                dialog.open()
+            if (news.items.length && !dialog.opened && dialog.ready && !dialog.claiming) {
+                dialog.claiming = true
+                news.claim()                   // the first device today opens it (news/shown), then here
             }
         }
     }
+    property bool claiming: false
     Connections {
         target: news
+        function onClaimed(ok, generation) {
+            dialog.claiming = false
+            if (!ok) { news.drop(generation); return }
+            if (generation !== news.generation || !news.items.length || dialog.opened) return
+            dialog.shownGeneration = news.generation
+            dialog.index = 0
+            dialog.open()                      // claimed: shown even if the window lost the focus meanwhile
+        }
         function onChanged() {
             if (dialog.shownGeneration !== news.generation && dialog.visible) dialog.close()
             if (news.items.length) later.restart()

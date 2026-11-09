@@ -606,6 +606,16 @@ class Cron(QObject):
             import ornis_bots
             if not ornis_bots.get(bot):
                 return False
+            if (ornis_bots.get(bot) or {}).get("paused") and not manual:
+                try:
+                    ornis_cron.add_run(tid, {"id": str(uuid.uuid4()), "started": time.time(), "ended": time.time(),
+                                             "status": "deferred", "summary": self._t("bots_paused_skip", "Bot en pause")})
+                    ornis_cron.bump_next(tid, time.time())
+                    ornis_cron.clear_flag(tid, "force_run")
+                except ValueError:
+                    pass
+                self._reload()
+                return True
             task = dict(task, folder=ornis_bots.working_folder(bot))
             peer_worker = getattr(self._code, "_bot_peer_worker", None)
             bg_bots = getattr(self._code, "_bg_bots", {})
@@ -744,6 +754,9 @@ class Cron(QObject):
     def _run_chat_background(self, task, run_id, title, prompt, started):
         """Fallback when Code is already busy: own agent (not openable until done)."""
         bot = str(task.get("bot") or "").strip()
+        worker = getattr(self._code, "_bot_peer_worker", None)
+        if bot and worker is not None and worker.bot == bot and not worker.busy and not worker._cron_job:
+            worker.clearBot()            # its idle agent holds the conversation: never two agents on it
         folder = Path(task["folder"])
         resume = ""
         if bot:

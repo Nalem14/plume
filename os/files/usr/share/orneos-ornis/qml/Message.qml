@@ -24,6 +24,10 @@ Item {
     property bool streaming
     // Bot chat: only the « is typing » pose — no tools, thoughts or computer cards
     property bool chatOnly: false
+    // a bot's chat: its face (not the mascot) beside a speech bubble, its name above, as a messaging app
+    property var botFace: null
+    property string botName: ""
+    readonly property bool botBubble: chatOnly && !!botFace && !compactCard
     signal editRequested()
     signal imageRequested(var images, int index)
     property bool localFiles: false      // Code: the files are on this computer, a click asks for them (fileRequested)
@@ -72,7 +76,7 @@ Item {
         width: parent.width
         spacing: 2
         Rectangle {                       // the question that started a goal (Work job), a deep research, or asked for a plan
-            visible: !!msg.message.work || !!msg.message.plan
+            visible: !!msg.message.work || !!msg.message.plan || !!msg.message.askMode
             anchors.right: parent.right
             width: workChip.implicitWidth + 18; height: 22; radius: 11
             color: msg.message.plan ? msg.c.saffronTint : msg.c.tint
@@ -80,11 +84,12 @@ Item {
                 id: workChip
                 anchors.centerIn: parent
                 spacing: 5
-                Icon { anchors.verticalCenter: parent.verticalCenter; name: msg.message.plan ? "list" : msg.message.research ? "search" : "flag"; size: 12
+                Icon { anchors.verticalCenter: parent.verticalCenter; name: msg.message.plan ? "list" : msg.message.askMode ? "chat" : msg.message.research ? "search" : "flag"; size: 12
                        color: msg.message.plan ? msg.c.saffronInk : msg.c.tintText }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: msg.message.plan ? app.t.mode_plan + " · " + app.t.plan_readonly : msg.message.research ? app.t.research_card : app.t.mode_goal
+                    text: msg.message.plan ? app.t.mode_plan + " · " + app.t.plan_readonly : msg.message.askMode ? app.t.mode_ask + " · " + app.t.plan_readonly
+                          : msg.message.research ? app.t.research_card : app.t.mode_goal
                     font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
                     color: msg.message.plan ? msg.c.saffronInk : msg.c.tintText
                 }
@@ -197,7 +202,16 @@ Item {
         width: parent.width
         spacing: 14
 
+        BotFace {
+            visible: msg.botBubble
+            Layout.alignment: Qt.AlignTop
+            Layout.topMargin: botNameText.visible ? botNameText.implicitHeight + 4 : 0
+            face: msg.botFace || ({})
+            size: 30
+            busy: msg.streaming
+        }
         Rectangle {
+            visible: !msg.botBubble
             Layout.alignment: Qt.AlignTop
             implicitWidth: 30; implicitHeight: 30; radius: 15
             color: "transparent"
@@ -212,9 +226,18 @@ Item {
         }
 
         ColumnLayout {
+            id: ornisBody
             Layout.fillWidth: true
             spacing: 8
 
+            Text {
+                id: botNameText
+                visible: msg.botBubble && msg.botName !== ""
+                text: msg.botName
+                font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
+                color: (msg.botFace && msg.botFace.color) || msg.c.muted
+                Layout.bottomMargin: -4
+            }
             // what Ornis is doing, while it writes (its live reasoning says « thinking » already, until a tool runs)
             // only what it does for real (« Consulte votre agenda… »): « Ornis réfléchit » is the line above the box
             OrnisThinking {
@@ -360,10 +383,36 @@ Item {
                 font.family: "JetBrains Mono"; font.pixelSize: 11; font.weight: Font.Medium
                 color: msg.c.muted
             }
+            TextMetrics {                // the answer on one line, to size the bot's bubble to a short message (bots only)
+                id: bubbleMeasure
+                text: msg.botBubble ? msg.answer.replace(/[*_`#>]/g, "") : ""
+                font.family: "Schibsted Grotesk"; font.pixelSize: msg.size
+            }
             ColumnLayout {
                 id: bodyBlocks
-                Layout.fillWidth: true
+                Layout.fillWidth: !msg.botBubble
+                // a bot: a speech bubble (a card that fits the text, up to most of the column)
+                Layout.preferredWidth: msg.botBubble ? Math.min(Math.ceil(bubbleMeasure.advanceWidth) + 4, msg.width * 0.78 - 44 - 28) : -1
+                Layout.leftMargin: msg.botBubble ? 14 : 0
+                Layout.topMargin: msg.botBubble ? 10 : 0
+                Layout.bottomMargin: msg.botBubble ? 10 : 0
                 spacing: 8
+                Loader {                 // the bubble behind the text: made only in a bot's chat (every message of a
+                                         // project paid for it, invisible: scrolling a long session lagged, 09/11)
+                    active: msg.botBubble && !msg.mine && !msg.compactAsk
+                    parent: msg               // a plain Item: no layout places it
+                    z: -1
+                    sourceComponent: Rectangle {
+                        visible: bodyBlocks.visible
+                        x: ornisColumn.x + ornisBody.x + bodyBlocks.x - 14; y: ornisColumn.y + ornisBody.y + bodyBlocks.y - 10
+                        width: bodyBlocks.width + 28; height: bodyBlocks.height + 20
+                        radius: 16
+                        color: msg.c.card
+                        border.width: 1; border.color: msg.c.line
+                        Rectangle { width: 14; height: 14; radius: 4; color: parent.color; anchors.left: parent.left; anchors.top: parent.top
+                                    border.width: 0; z: -1 }
+                    }
+                }
                 readonly property var blocks: app.messageBlocks(msg.compactCard ? msg.compactBody : msg.answer)
                 visible: blocks.length > 0 && (!msg.compactCard || msg.summaryOpen)
                 // Kept block by block: while a reply is written, only its last block (the one growing) is laid out

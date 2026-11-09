@@ -30,6 +30,8 @@ Rectangle {
     signal botCreateRequested()
     signal botEditRequested(string id)
     signal botMenuRequested(var bot, Item item, real x, real y)
+    signal groupChosen(string id)
+    signal groupCreateRequested()
     signal taskChosen(string id)
     signal jobChosen(string session)
     signal menuRequested(var session, Item item, real x, real y)
@@ -633,6 +635,87 @@ Rectangle {
             Layout.fillHeight: true
             spacing: 4
 
+            // Groupes: several bots in one room (each answers as itself)
+            RowLayout {
+                Layout.fillWidth: true
+                visible: bots.groups.length > 0 || bots.list.length + bots.hidden.length >= 2
+                Text {
+                    Layout.fillWidth: true
+                    text: app.t.groups_title
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
+                    font.capitalization: Font.AllUppercase; font.letterSpacing: 0.5
+                    color: side.c.muted
+                }
+                OButton {
+                    kind: "quiet"; iconName: "plus"; iconSize: 15; height_: 26
+                    tip: app.t.groups_new
+                    onClicked: side.groupCreateRequested()
+                }
+            }
+            Repeater {
+                model: bots.groups
+                AbstractButton {
+                    id: gRow
+                    required property var modelData
+                    Layout.fillWidth: true
+                    implicitHeight: 48
+                    hoverEnabled: true
+                    onClicked: side.groupChosen(modelData.id)
+                    Accessible.name: modelData.title + (modelData.unread ? ", " + modelData.unread : "")
+                    background: Rectangle {
+                        radius: 8
+                        color: gRow.modelData.current && side.view === "group" ? side.c.card : gRow.hovered ? side.c.hover : "transparent"
+                    }
+                    contentItem: RowLayout {
+                        spacing: 10
+                        Item { implicitWidth: 2 }
+                        Item {                    // the members' faces, overlapping
+                            implicitWidth: 30; implicitHeight: 30
+                            Repeater {
+                                model: gRow.modelData.faces.slice(0, 3)
+                                Rectangle {
+                                    required property var modelData
+                                    required property int index
+                                    x: [0, 12, 6][index]; y: [0, 4, 14][index]
+                                    width: 18; height: 18; radius: 9
+                                    color: side.c.chrome
+                                    z: 3 - index
+                                    BotFace { anchors.centerIn: parent; face: modelData; size: 16; busy: gRow.modelData.busy }
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: gRow.modelData.title
+                                    elide: Text.ElideRight
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                                    font.weight: gRow.modelData.unread ? Font.DemiBold : Font.Medium
+                                    color: side.c.text
+                                }
+                                Text { text: gRow.modelData.when; font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: side.c.faint }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: gRow.modelData.busy ? app.t.groups_busy : (gRow.modelData.preview || gRow.modelData.description)
+                                    elide: Text.ElideRight
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.italic: gRow.modelData.busy
+                                    color: gRow.modelData.busy ? side.c.accent : side.c.muted
+                                }
+                                UnreadBadge { count: gRow.modelData.unread }
+                            }
+                        }
+                        Item { implicitWidth: 2 }
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Text {
@@ -664,9 +747,10 @@ Rectangle {
                     implicitHeight: 52
                     hoverEnabled: true
                     onClicked: side.botChosen(modelData.id)
+                    Accessible.name: modelData.title + (modelData.unread ? ", " + modelData.unread : "")
                     background: Rectangle {
                         radius: 8
-                        color: bRow.modelData.current ? side.c.card : bRow.hovered ? side.c.hover : "transparent"
+                        color: bRow.modelData.current && side.view === "code" ? side.c.card : bRow.hovered ? side.c.hover : "transparent"
                     }
                     TapHandler {
                         acceptedButtons: Qt.RightButton
@@ -675,7 +759,7 @@ Rectangle {
                     contentItem: RowLayout {
                         spacing: 10
                         Item { implicitWidth: 2 }
-                        BotFace { face: bRow.modelData.face; size: 30; busy: bRow.modelData.busy }
+                        BotFace { face: bRow.modelData.face; size: 30; busy: bRow.modelData.busy; opacity: bRow.modelData.paused ? 0.45 : 1 }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 2
@@ -700,12 +784,17 @@ Rectangle {
                                     color: side.c.faint
                                 }
                             }
-                            Text {
+                            RowLayout {
                                 Layout.fillWidth: true
-                                text: bRow.modelData.preview || bRow.modelData.description
-                                elide: Text.ElideRight
-                                font.family: "Schibsted Grotesk"; font.pixelSize: 12
-                                color: side.c.muted
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: bRow.modelData.paused ? app.t.bots_paused : (bRow.modelData.preview || bRow.modelData.description)
+                                    elide: Text.ElideRight
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                                    font.weight: bRow.modelData.unread ? Font.Medium : Font.Normal
+                                    color: bRow.modelData.unread ? side.c.text : side.c.muted
+                                }
+                                UnreadBadge { count: bRow.modelData.unread }
                             }
                         }
                         Item { implicitWidth: 2 }
@@ -1286,6 +1375,22 @@ Rectangle {
             OMenuItem { text: app.t.open_cloud; iconName: "cloud"; onTriggered: app.openCloud("") }
             OMenuItem { text: app.t.quota_more; iconName: "star"; onTriggered: side.usageRequested() }
             OMenuItem { text: app.t.reconnect; iconName: "refresh"; onTriggered: app.openConnect() }
+        }
+    }
+
+    // unread answers of a bot or a group (it spoke while you were elsewhere)
+    component UnreadBadge: Rectangle {
+        property int count: 0
+        visible: count > 0
+        implicitWidth: Math.max(18, badgeText.implicitWidth + 10); implicitHeight: 18
+        radius: 9
+        color: side.c.famCommunicate
+        Text {
+            id: badgeText
+            anchors.centerIn: parent
+            text: parent.count > 9 ? "9+" : parent.count
+            font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
+            color: "white"
         }
     }
 }

@@ -794,9 +794,24 @@ def wrap(argv: list[str], folder: Path, bot: str = "") -> list[str]:
             root = ornis_bots.bot_dir(bot)
             writable += [(root / sub).resolve() for sub in ("memory", "skills", "tmp")]
             writable.append((root / "SOUL.md").resolve())
+            # its groups' shared folders: the members work on the same files there (never in each other's folder)
+            writable += [Path(p).resolve() for p in ornis_bots.shared_folders(bot)]
         except Exception:  # noqa: BLE001
             pass
     writable += [user_home / c for c in CACHE_DIRS if (user_home / c).is_dir()]
+    # One missing path and bwrap refuses to start: the agent never ran (09/11, a home not written yet, a group's
+    # folder removed). Ornis's own folders are made; a missing folder of the person is left out, never fatal.
+    own = (ROOT.resolve(), system.DATA.resolve())
+    kept = []
+    for path in writable:
+        try:
+            if not path.exists() and any(path == o or path.is_relative_to(o) for o in own) and path.suffix == "":
+                path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        if path.exists() and path not in kept:
+            kept.append(path)
+    writable = kept
     if kind == "bwrap":
         cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", "/tmp", "/tmp"]
         for path in writable:
@@ -809,10 +824,12 @@ def wrap(argv: list[str], folder: Path, bot: str = "") -> list[str]:
                 cmd += ["--ro-bind", "/dev/null", str(path)]
         return [*cmd, "--chdir", str(folder), "--die-with-parent", "--", *argv]
     if kind == "seatbelt":
-        allow = "".join(f'(allow file-write* (subpath "{p}"))' for p in writable)
-        hide = "".join(f'(deny file-read* (subpath "{user_home / s}"))' for s in SECRET_DIRS)
+        def q(path) -> str:  # a folder named with " or \ would break the profile: the agent never starts
+            return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        allow = "".join(f"(allow file-write* (subpath {q(p)}))" for p in writable)
+        hide = "".join(f"(deny file-read* (subpath {q(user_home / s)}))" for s in SECRET_DIRS)
         profile = ("(version 1)(allow default)"
-                   f'(deny file-write* (subpath "{user_home}"))' + allow +
+                   f"(deny file-write* (subpath {q(user_home)}))" + allow +
                    '(allow file-write* (subpath "/tmp") (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/dev"))'
                    + hide)
         return ["sandbox-exec", "-p", profile, *argv]
@@ -1042,6 +1059,10 @@ class Agent:
                 pass
         for key in ("MISTRAL_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             env.pop(key, None)                       # only our gateway
+        # the built-in MCPs are on 127.0.0.1 (ornis_mcp_http): never through a proxy of the system or the shell
+        local = "127.0.0.1,localhost,::1"
+        for key in ("NO_PROXY", "no_proxy"):
+            env[key] = ",".join(x for x in (env.get(key, ""), local) if x)
         argv = wrap([str(exe)], self.folder, self.bot) if sandbox else [str(exe)]
         flags = subprocess.CREATE_NO_WINDOW if system.WINDOWS else 0
         self._lock = threading.Lock()
@@ -1147,7 +1168,10 @@ class Agent:
             slot[0].set()
         self._waiting.clear()
         if self.on_exit:
-            self.on_exit(code, "".join(self._stderr[-20:]))
+            try:
+                self.on_exit(code, "".join(self._stderr[-20:]))
+            except RuntimeError:
+                pass                     # the window that listened is gone (Ornis closing): nobody to tell
 
     def _read_errors(self) -> None:
         for line in self._proc.stderr:

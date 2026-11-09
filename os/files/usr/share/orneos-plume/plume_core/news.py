@@ -18,6 +18,7 @@ EVERY_MS = 6 * 3600 * 1000
 
 class News(QObject):
     changed = Signal()
+    claimed = Signal(bool, int)        # the day's window is ours (or another device has it), for this generation
     _loaded = Signal(int, list, str)
 
     def __init__(self, plume, edition=""):
@@ -82,19 +83,56 @@ class News(QObject):
         threading.Thread(target=self._fetch, args=(account, self._generation), daemon=True).start()
 
     def _fetch(self, account, generation):
+        items, url = [], ""
         try:
-            status, data = cloud.ocs(*account, API + "?format=json")
+            # confirm=1: asking does not take the day's window; claim() takes it when the window really opens
+            # (09/11: taken by the asking, it was lost whenever Plume did not show it — the user never saw one)
+            status, data = cloud.ocs(*account, API + "?format=json&confirm=1")
             data = ((data or {}).get("ocs") or {}).get("data") or {}
             items = [{"time": int(i.get("time") or 0), "subject": str(i.get("subject") or ""),
                       "html": str(i.get("html") or "")} for i in data.get("unread") or [] if i.get("subject")]
-            self._loaded.emit(generation, items if status == 200 else [], str(data.get("url") or ""))
+            if status != 200:
+                items = []
+            url = str(data.get("url") or "")
         except Exception:  # noqa: BLE001 - offline, old cloud: no news, never an error
-            self._loaded.emit(generation, [], "")
+            items, url = [], ""
+        try:
+            self._loaded.emit(generation, items, url)
+        except RuntimeError:  # Plume closed (or the object went) while asking: nothing to show
+            pass
 
     def _set(self, items, url):
         self._busy = False
         if items != self._items:
             self._items = items
+            self.changed.emit()
+
+    @Slot()
+    def claim(self):
+        """About to open the window: the first device today gets it (PUT news/shown), the others stay quiet."""
+        account, generation = self._plume.account(), self._generation
+        if not account or not self._items:
+            return
+
+        def work():
+            try:
+                status, data = cloud.ocs(*account, API + "/shown?format=json", "PUT", {})
+                data = ((data or {}).get("ocs") or {}).get("data") or {}
+                # an older cloud without news/shown (404): show it, as before
+                ok = bool(data.get("shown")) if status == 200 else status == 404
+            except Exception:  # noqa: BLE001
+                ok = False
+            try:
+                self.claimed.emit(ok, generation)
+            except RuntimeError:  # Plume closed meanwhile
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(int)
+    def drop(self, generation):
+        """Another device showed today's window: nothing here today (still unread, it shows another day)."""
+        if generation == self._generation and self._items:
+            self._items = []
             self.changed.emit()
 
     @Slot()

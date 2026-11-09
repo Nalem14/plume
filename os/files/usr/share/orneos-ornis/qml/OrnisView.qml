@@ -23,7 +23,7 @@ Item {
     readonly property bool roomy: width >= 760
     property bool peek: false
     readonly property bool sidebarShown: roomy ? app.prefs.sidebar !== false : peek
-    property string view: "chat"          // chat | scheduled | code | project
+    property string view: "chat"          // chat | scheduled | code | project | group (a group of Code bots)
     property alias toast: toast
     signal raiseWanted()
 
@@ -56,11 +56,13 @@ Item {
         showWorkPlans("code")
         return true
     }
-    function openCode(folder, session) { if (codeLocked()) return; mode = "projects"; view = "code"; peek = false; code.open(folder, session) }
+    function openCode(folder, session) { if (codeLocked()) return; mode = "projects"; view = "code"; peek = false; bots.closeGroup(); code.open(folder, session) }
+    // a group of bots: the room where they answer together (Code › Bots › Groupes)
+    function openGroup(id) { if (codeLocked()) return; mode = "projects"; view = "group"; peek = false; sidebar.codeTab = "bots"; bots.openGroup(id) }
     function newCode(folder) {
         if (codeLocked()) return
         if (!folder) folder = code.homeFolder          // no folder chosen: the personal folder (as Claude Code's « Cet ordinateur »)
-        mode = "projects"; view = "code"; peek = false; code.newIn(folder); codeView.focusInput()
+        mode = "projects"; view = "code"; peek = false; bots.closeGroup(); code.newIn(folder); codeView.focusInput()
     }
     function showCode() {
         if (codeLocked()) return
@@ -293,6 +295,8 @@ Item {
             onCodeMenuRequested: (session, item, x, y) => codeMenu.openFor(session, item, x, y)
             onProjectPickRequested: codeFolderDialog.open()          // the Code tab: a folder to work in
             onBotChosen: id => { if (codeLocked()) return; mode = "projects"; view = "code"; peek = false; sidebar.codeTab = "bots"; bots.open(id) }
+            onGroupChosen: id => win.openGroup(id)
+            onGroupCreateRequested: { if (codeLocked()) return; groupDialog.openNew("") }
             onBotCreateRequested: { if (codeLocked()) return; mode = "projects"; view = "code"; sidebar.codeTab = "bots"; botDialog.openNew() }
             onBotEditRequested: id => botDialog.openEdit(id)
             onBotMenuRequested: (bot, item, x, y) => botMenu.openFor(bot, item, x, y)
@@ -310,7 +314,7 @@ Item {
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: win.view === "scheduled" ? 1 : win.view === "code" ? 2 : win.view === "project" ? 3 : 0
+            currentIndex: win.view === "scheduled" ? 1 : win.view === "code" ? 2 : win.view === "project" ? 3 : win.view === "group" ? 4 : 0
             Conversation {
                 id: conversation
                 onMenuRequested: item => sessionMenu.openFor(chat.allSessions.find(s => s.id === chat.current)
@@ -330,6 +334,11 @@ Item {
                 id: projectView
                 onSettingsRequested: p => win.editProject(p)
                 onMenuRequested: (session, item, x, y) => sessionMenu.openFor(session, item, x, y)
+            }
+            GroupView {
+                id: groupView
+                onEditRequested: id => groupDialog.openEdit(id)
+                onBotRequested: id => { win.view = "code"; bots.open(id) }
             }
         }
     }
@@ -502,6 +511,7 @@ Item {
         onAccepted: win.newCode(app.localPath(selectedFolder))
     }
     BotDialog { id: botDialog }
+    GroupDialog { id: groupDialog }
     OMenu {
         id: botMenu
         property var bot: ({})
@@ -516,6 +526,14 @@ Item {
         OMenuItem {
             text: app.t.bots_edit; iconName: "edit"
             onTriggered: botDialog.openEdit(botMenu.bot.id)
+        }
+        OMenuItem {
+            text: botMenu.bot.paused ? app.t.bots_resume : app.t.bots_pause; iconName: botMenu.bot.paused ? "play" : "stop"
+            onTriggered: bots.setPaused(botMenu.bot.id, !botMenu.bot.paused)
+        }
+        OMenuItem {
+            text: app.t.groups_new_with; iconName: "people"
+            onTriggered: groupDialog.openNew(botMenu.bot.id)
         }
         OMenuItem {
             text: botMenu.bot.hidden ? app.t.bots_unhide : app.t.bots_hide; iconName: "eye"

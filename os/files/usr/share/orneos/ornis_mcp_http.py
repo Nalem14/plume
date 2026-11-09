@@ -57,11 +57,23 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003 — silence access log
         return
 
+    def _empty(self, status: int, allow: str = "") -> None:
+        """A reply without a body. HTTP/1.1 keeps the connection: without « Content-Length: 0 » the client waits for
+        a body until its timeout (seen 09/11 on macOS: the 202 of notifications/initialized blocked Vibe's MCP
+        client, every built-in tool was « not available » and the agent fell back to the CLI)."""
+        self.send_response(status)
+        if allow:
+            self.send_header("Allow", allow)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _unauthorized(self) -> None:
+        body = b'{"error":"unauthorized"}'
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(b'{"error":"unauthorized"}')
+        self.wfile.write(body)
 
     def _check_auth(self) -> bool:
         auth = self.headers.get("Authorization") or ""
@@ -84,20 +96,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._unauthorized()
             return
         if self._kind() is None:
-            self.send_response(404)
-            self.end_headers()
+            self._empty(404)
             return
         # Standalone SSE not needed for our tools; older clients may probe.
-        self.send_response(405)
-        self.send_header("Allow", "POST")
-        self.end_headers()
+        self._empty(405, "POST")
 
     def do_DELETE(self) -> None:  # noqa: N802
         if not self._check_auth():
             self._unauthorized()
             return
-        self.send_response(405)
-        self.end_headers()
+        self._empty(405)
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._check_auth():
@@ -105,44 +113,37 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind, key = self._parts()
         if kind is None:
-            self.send_response(404)
-            self.end_headers()
+            self._empty(404)
             return
         try:
             length = int(self.headers.get("Content-Length") or "0")
         except ValueError:
             length = 0
         if length <= 0 or length > 4_000_000:
-            self.send_response(400)
-            self.end_headers()
+            self._empty(400)
             return
         raw = self.rfile.read(length)
         try:
             msg = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
-            self.send_response(400)
-            self.end_headers()
+            self._empty(400)
             return
         if not isinstance(msg, dict):
-            self.send_response(400)
-            self.end_headers()
+            self._empty(400)
             return
 
         # Notifications / responses: 202 with empty body (Streamable HTTP)
         if msg.get("id") is None and msg.get("method"):
             _dispatch(kind, msg, key)  # may be notifications/initialized
-            self.send_response(202)
-            self.end_headers()
+            self._empty(202)
             return
         if msg.get("method") is None:
-            self.send_response(202)
-            self.end_headers()
+            self._empty(202)
             return
 
         reply = _dispatch(kind, msg, key)
         if reply is None:
-            self.send_response(202)
-            self.end_headers()
+            self._empty(202)
             return
         body = json.dumps(reply, ensure_ascii=False).encode("utf-8")
         self.send_response(200)

@@ -2877,6 +2877,75 @@ for _lang, _t in {
     TEXT[_lang].update(_t)
 
 
+# ---- 09/11: Ask mode of Code, one permission chip, groups of bots ---------------------------------------------------
+for _lang, _t in {
+    "fr": dict(
+        mode_ask="Ask", code_ask_sub="Ornis répond sur le projet : il lit et cherche ce qu’il faut, sans rien modifier",
+        perm_cloud="Cloud",
+        bots_group_turn="Message reçu dans le groupe « %1 »",
+        groups_title="Groupes", groups_new="Nouveau groupe", groups_edit="Réglages du groupe",
+        groups_new_with="Nouveau groupe avec ce bot",
+        groups_new_sub="Plusieurs bots dans une même discussion. Chacun garde son rôle, sa mémoire et ses skills ; "
+                       "nommez-en un avec @ pour lui confier la suite. Ils travaillent ensemble dans le dossier partagé du groupe.",
+        groups_title_ph="Nom du groupe", groups_desc_ph="À quoi sert ce groupe (facultatif)",
+        groups_members="Membres", groups_need_two="Créez au moins deux bots pour former un groupe.",
+        groups_who_answers="Qui répond quand personne n’est nommé",
+        groups_reply_lead="Le meneur", groups_reply_lead_sub="Un seul bot répond ; il peut passer la main avec @.",
+        groups_reply_all="Tout le monde", groups_reply_all_sub="Chaque membre répond, l’un après l’autre.",
+        groups_lead="Meneur",
+        groups_typing="%1 écrit…", groups_busy="En train de répondre…",
+        groups_empty="Écrivez au groupe pour commencer.",
+        groups_how="@nom pour vous adresser à un bot précis. Les bots se passent la main de la même façon, "
+                   "trois fois au plus avant votre prochain message.",
+        groups_placeholder="Écrire dans « %1 »…", groups_mention_tip="Mentionner un bot",
+        unread_bar="Non lu", code_loading_history="Chargement de la conversation…", bots_idea_1="Présente-toi : que peux-tu faire pour moi ?", bots_idea_2="Quelle routine me proposes-tu pour gagner du temps ?", bots_idea_3="Note ce que tu dois retenir de moi et de mon travail", groups_failed="%1 n’a pas pu répondre : %2", bots_pause="Mettre en pause", bots_resume="Reprendre", bots_paused="En pause", bots_paused_skip="Bot en pause : routine sautée", bots_paused_on="En pause : ses routines et messages attendent. Vous pouvez toujours lui écrire.", bots_paused_off="Le bot reprend : ce qui attendait arrive.", groups_folder_ph="Dossier partagé (facultatif)", groups_folder_open="Dossier partagé du groupe", groups_older="Messages plus anciens…", groups_missing="Ce groupe n’existe plus", groups_nobody="Personne n’est concerné : mentionnez un bot avec @",
+    ),
+    "en": dict(
+        mode_ask="Ask", code_ask_sub="Ornis answers about the project: it reads and searches what it needs, changing nothing",
+        perm_cloud="Cloud", code_mode_ask="Ask first", computer_ask="Ask first",
+        bots_group_turn="Message received in the group “%1”",
+        groups_title="Groups", groups_new="New group", groups_edit="Group settings",
+        groups_new_with="New group with this bot",
+        groups_new_sub="Several bots in one conversation. Each keeps its role, memory and skills; name one with @ "
+                       "to hand it the next step.",
+        groups_title_ph="Group name", groups_desc_ph="What this group is for (optional)",
+        groups_members="Members", groups_need_two="Create at least two bots to make a group.",
+        groups_who_answers="Who answers when nobody is named",
+        groups_reply_lead="The lead", groups_reply_lead_sub="One bot answers; it can hand over with @.",
+        groups_reply_all="Everyone", groups_reply_all_sub="Every member answers, one after the other.",
+        groups_lead="Lead",
+        groups_typing="%1 typing…", groups_busy="Answering…",
+        groups_empty="Write to the group to start.",
+        groups_how="@name to address a specific bot. Bots hand over the same way, three times at most before "
+                   "your next message.",
+        groups_placeholder="Message “%1”…", groups_mention_tip="Mention a bot",
+        unread_bar="New", code_loading_history="Loading the conversation…", bots_idea_1="Introduce yourself: what can you do for me?", bots_idea_2="Which routine would save me time?", bots_idea_3="Note what you should remember about me and my work", groups_failed="%1 could not answer: %2", bots_pause="Pause", bots_resume="Resume", bots_paused="Paused", bots_paused_skip="Bot paused: routine skipped", bots_paused_on="Paused: its routines and messages wait. You can still write to it.", bots_paused_off="The bot resumes: what was waiting comes in.", groups_folder_ph="Shared folder (optional)", groups_folder_open="The group’s shared folder", groups_older="Older messages…", groups_missing="This group no longer exists", groups_nobody="Nobody is concerned: mention a bot with @",
+    ),
+    "de": dict(
+        mode_ask="Ask", code_ask_sub="Ornis antwortet zum Projekt: liest und sucht, was nötig ist, ohne etwas zu ändern",
+        perm_cloud="Cloud",
+        bots_group_turn="Nachricht in der Gruppe „%1“",
+        groups_title="Gruppen", groups_new="Neue Gruppe", groups_edit="Gruppeneinstellungen",
+        groups_new_with="Neue Gruppe mit diesem Bot",
+        groups_new_sub="Mehrere Bots in einem Gespräch. Jeder behält Rolle, Gedächtnis und Skills; nennen Sie "
+                       "einen mit @, um ihm den nächsten Schritt zu geben.",
+        groups_title_ph="Gruppenname", groups_desc_ph="Wofür diese Gruppe da ist (optional)",
+        groups_members="Mitglieder", groups_need_two="Legen Sie mindestens zwei Bots an, um eine Gruppe zu bilden.",
+        groups_who_answers="Wer antwortet, wenn niemand genannt wird",
+        groups_reply_lead="Der Leiter", groups_reply_lead_sub="Ein Bot antwortet; er kann mit @ übergeben.",
+        groups_reply_all="Alle", groups_reply_all_sub="Jedes Mitglied antwortet, nacheinander.",
+        groups_lead="Leiter",
+        groups_typing="%1 schreibt…", groups_busy="Antwortet…",
+        groups_empty="Schreiben Sie der Gruppe, um zu beginnen.",
+        groups_how="@Name, um einen bestimmten Bot anzusprechen. Bots übergeben genauso, höchstens dreimal "
+                   "vor Ihrer nächsten Nachricht.",
+        groups_placeholder="Nachricht an „%1“…", groups_mention_tip="Bot erwähnen",
+        unread_bar="Ungelesen", code_loading_history="Gespräch wird geladen…", bots_idea_1="Stell dich vor: Was kannst du für mich tun?", bots_idea_2="Welche Routine würde mir Zeit sparen?", bots_idea_3="Notiere, was du dir über mich und meine Arbeit merken sollst", groups_failed="%1 konnte nicht antworten: %2", bots_pause="Pausieren", bots_resume="Fortsetzen", bots_paused="Pausiert", bots_paused_skip="Bot pausiert: Routine übersprungen", bots_paused_on="Pausiert: Routinen und Nachrichten warten. Sie können ihm weiter schreiben.", bots_paused_off="Der Bot macht weiter: was gewartet hat, kommt an.", groups_folder_ph="Gemeinsamer Ordner (optional)", groups_folder_open="Gemeinsamer Ordner der Gruppe", groups_older="Ältere Nachrichten…", groups_missing="Diese Gruppe gibt es nicht mehr", groups_nobody="Niemand ist gemeint: erwähnen Sie einen Bot mit @",
+    ),
+}.items():
+    TEXT[_lang].update(_t)
+
+
 def language():
     lang = QLocale().name()[:2]
     return lang if lang in TEXT else "fr"

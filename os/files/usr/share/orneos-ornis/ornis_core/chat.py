@@ -675,6 +675,18 @@ class Chat(QObject):
     def unreadCount(self):
         return len(self._unread)
 
+    # what else is unread in Ornis (Code bots and groups, set by bundle.py): one number for the dock and Plume's rail,
+    # never two signals overwriting each other
+    extra_badge = staticmethod(lambda: 0)
+
+    @Slot()
+    def refreshBadge(self):
+        try:
+            extra = int(self.extra_badge() or 0)
+        except Exception:  # noqa: BLE001
+            extra = 0
+        self.badgeChanged.emit(len(self._unread) + extra)
+
     @Property(str, notify=changed)
     def current(self):
         return self._current
@@ -915,7 +927,7 @@ class Chat(QObject):
             self.scheduledChanged.emit()
             self.loadJobs()
             self.loadScheduled()
-        self.badgeChanged.emit(len(self._unread))
+        self.refreshBadge()
         if before is None or not self._relay or not self._app.pref("notify"):
             return
         for sid, count in unread.items():              # a new answer from elsewhere (a scheduled task, another device)
@@ -947,7 +959,7 @@ class Chat(QObject):
         self._unread = {k: v for k, v in self._unread.items() if k != sid}
         self.changed.emit()
         self.scheduledChanged.emit()
-        self.badgeChanged.emit(len(self._unread))
+        self.refreshBadge()
         self._mark(sid)
 
     @Property(bool, notify=changed)
@@ -2573,7 +2585,7 @@ class Chat(QObject):
             self._current, self._messages, self._pending = "", [], []
         self.scheduledChanged.emit()
         self.changed.emit()
-        self.badgeChanged.emit(len(self._unread))
+        self.refreshBadge()
         self._app.toast.emit(self._t["scheduled_deleted"])
 
         def work():

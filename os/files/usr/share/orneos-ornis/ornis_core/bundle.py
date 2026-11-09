@@ -48,6 +48,8 @@ def build(qt):
     projects.toast.connect(app.toast)
     cron.toast.connect(app.toast)
     bots.toast.connect(app.toast)
+    chat.extra_badge = bots.unreadTotal     # one badge: conversations, bots and groups not read yet
+    bots.badgeHint.connect(chat.refreshBadge)
     theme.setMode(app.pref("theme"))
     app.prefsChanged.connect(lambda: theme.setMode(app.pref("theme")))
     qt.aboutToQuit.connect(chat.flush)      # deletions still waiting for their undo

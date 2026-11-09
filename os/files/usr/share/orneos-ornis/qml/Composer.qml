@@ -356,63 +356,21 @@ Rectangle {
                 tip: app.t.attach
                 onClicked: box.openPlus()
             }
-            AbstractButton {                 // the mode: Agent, Plan, Objectif, Recherche
+            ToolbarChip {                    // the mode: Agent, Plan, Objectif, Recherche (on the left, as in Code)
                 id: modeBtn
                 readonly property string mode: box.jobLocked ? (chat.currentJob.research ? "research" : "goal") : chat.uiMode
-                readonly property bool tinted: mode !== "agent"
                 Layout.alignment: Qt.AlignVCenter
-                implicitWidth: modeRow.implicitWidth + 18; implicitHeight: 28
-                hoverEnabled: true
-                focusPolicy: Qt.StrongFocus
                 enabled: !box.jobLocked
                 onClicked: box.openModes()
-                Accessible.role: Accessible.ButtonMenu
-                Accessible.name: app.t.mode_menu_title + " : " + modeLabel.text
-                ToolTip.text: (mode === "plan" ? app.t.mode_plan_sub : mode === "goal" ? app.t.mode_goal_sub : mode === "research" ? app.t.mode_research_sub : app.t.mode_agent_sub)
-                              + "  ·  " + app.t.mode_cycle_tip
-                ToolTip.delay: 500
-                ToolTip.visible: hovered
-                background: Rectangle {
-                    radius: 14
-                    color: modeBtn.mode === "plan" ? box.c.saffronTint : modeBtn.tinted ? box.c.tint : modeBtn.hovered || modeMenu.opened ? box.c.hover : "transparent"
-                    border.width: modeBtn.visualFocus ? 2 : modeBtn.tinted ? 1 : 0
-                    border.color: modeBtn.visualFocus ? box.c.saffron : modeBtn.mode === "plan" ? box.c.saffron : box.c.accentLine
-                }
-                contentItem: Item {
-                    Row {
-                        id: modeRow
-                        anchors.centerIn: parent
-                        spacing: 5
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: modeBtn.mode === "plan" ? "list" : modeBtn.mode === "goal" ? "flag" : modeBtn.mode === "research" ? "search" : "ornis"
-                            hovered: modeBtn.mode === "agent" && input.activeFocus      // the mascot listens while you type
-                            size: 14
-                            color: modeBtn.mode === "plan" ? box.c.saffronInk : modeBtn.tinted ? box.c.tintText : box.c.accent
-                        }
-                        Text {
-                            id: modeLabel
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: (modeBtn.mode === "plan" ? app.t.mode_plan : modeBtn.mode === "goal" ? app.t.mode_goal
-                                  : modeBtn.mode === "research" ? app.t.research_mode : app.t.mode_agent)
-                            font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
-                            color: modeBtn.mode === "plan" ? box.c.saffronInk : modeBtn.tinted ? box.c.tintText : box.c.text
-                        }
-                        Text {
-                            visible: modeBtn.mode === "plan" && box.roomy
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "· " + app.t.plan_readonly
-                            font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Medium
-                            color: box.c.saffronInk
-                        }
-                        Icon {
-                            visible: !box.jobLocked
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: "chevronDown"; size: 12
-                            color: modeBtn.mode === "plan" ? box.c.saffronInk : box.c.muted
-                        }
-                    }
-                }
+                menuOpen: modeMenu.opened
+                iconName: mode === "plan" ? "list" : mode === "goal" ? "flag" : mode === "research" ? "search" : "ornis"
+                mascot: mode === "agent"
+                label: mode === "plan" ? app.t.mode_plan : mode === "goal" ? app.t.mode_goal : mode === "research" ? app.t.research_mode : app.t.mode_agent
+                detail: mode === "plan" && box.roomy ? app.t.plan_readonly : ""
+                tone: mode === "plan" ? "saffron" : mode === "agent" ? "plain" : "tint"
+                chevron: !box.jobLocked
+                tip: (mode === "plan" ? app.t.mode_plan_sub : mode === "goal" ? app.t.mode_goal_sub : mode === "research" ? app.t.mode_research_sub : app.t.mode_agent_sub)
+                     + "  ·  " + app.t.mode_cycle_tip
             }
             AbstractButton {                 // the reasoning, on or off in one click (as ChatGPT's « Réfléchir »); paid plans
                 id: thinkBtn
@@ -501,44 +459,18 @@ Rectangle {
                 }
             }
             Item { Layout.fillWidth: true }
-            AbstractButton {                 // where Ornis acts: this computer (its permissions) or the cloud only
+            ToolbarChip {                    // what Ornis may do on its own (this computer, or the cloud only): on the right, as in Code
                 id: envBtn
                 readonly property bool local: !!app.prefs.local_tools
+                readonly property string level: local ? app.computerMode : "cloud"
                 Layout.alignment: Qt.AlignVCenter
-                implicitWidth: Math.max(30, envRow.implicitWidth + 14); implicitHeight: 28
-                hoverEnabled: true
-                focusPolicy: Qt.StrongFocus
                 onClicked: box.openEnvironment()
-                Accessible.name: ToolTip.text
-                Accessible.role: Accessible.ButtonMenu
-                ToolTip.text: local ? app.t.env_tip.replace("%1", app.computerEnvironment + " · " + app.t["computer_" + app.computerMode]) : app.t.cloud_only
-                ToolTip.delay: 500
-                ToolTip.visible: hovered
-                background: Rectangle {
-                    radius: 14
-                    color: app.computerMode === "full" && envBtn.local ? box.c.saffronTint : envBtn.hovered ? box.c.hover : "transparent"
-                    border.width: envBtn.visualFocus ? 2 : 0
-                    border.color: box.c.saffron
-                }
-                contentItem: Item {
-                    Row {
-                        id: envRow
-                        anchors.centerIn: parent
-                        spacing: 5
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: envBtn.local ? "devices" : "cloud"; size: 15
-                            color: app.computerMode === "full" && envBtn.local ? box.c.saffronInk : envBtn.hovered ? box.c.text : box.c.muted
-                        }
-                        Text {                   // named only while Autonome lasts (it acts without asking): an icon otherwise
-                            visible: box.roomy && envBtn.local && app.computerMode === "full"
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: app.t["computer_" + app.computerMode]
-                            font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Medium
-                            color: app.computerMode === "full" && envBtn.local ? box.c.saffronInk : box.c.muted
-                        }
-                    }
-                }
+                menuOpen: envMenu.opened
+                iconName: level === "cloud" ? "cloud" : level === "full" ? "play" : level === "auto" ? "shieldCheck" : "hand"
+                label: level === "cloud" ? app.t.perm_cloud : app.t["computer_" + level]
+                showLabel: box.roomy || level === "full"
+                tone: level === "full" ? "saffron" : level === "auto" ? "tint" : "plain"
+                tip: local ? app.t.env_tip.replace("%1", app.computerEnvironment + " · " + app.t["computer_" + app.computerMode]) : app.t.cloud_only
             }
             ContextGauge { id: contextGauge; Layout.alignment: Qt.AlignVCenter; onCompactRequested: chat.compact() }
             AbstractButton {                 // dictation: what is said comes into the box (Voxtral, by the cloud)

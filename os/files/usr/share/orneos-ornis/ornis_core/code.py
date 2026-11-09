@@ -36,6 +36,11 @@ HIDDEN_COMMANDS = {"teleport", "data-retention", "leanstall", "unleanstall", "pr
 PLAN_NOTE = ("[Plan mode: read only. Explore the project (read, search, read-only commands), change nothing, then answer with "
              "a numbered plan: the changes you would make, file by file, and how you would check them; write it also to "
              ".ornis/plans/ (allowed in Plan mode). The user runs it afterwards.]\n\n")
+# Ask mode (as the « Ask » of IDE assistants): Ornis answers about the project, reads what it needs, changes nothing and
+# writes no plan; decide("plan") refuses every write
+ASK_NOTE = ("[Ask mode: read only. Answer the question about the project: read, search and run read-only commands as "
+            "needed, explain with file paths and short excerpts. Change nothing, write no plan file, do not offer to "
+            "apply changes yourself.]\n\n")
 UNDONE_NOTE = "[The user undid your last changes: the files are back as they were before that turn. Read them again before editing.]\n\n"
 # The model stops half way (Codestral, 02/11: after each file, or with a tool call written as text): the turn goes
 # on by itself, a few times per message, with a line that says so. The agent reads why, the user only the line.
@@ -171,6 +176,12 @@ def diff_lines(path: str, old: str | None, new: str) -> list[dict]:
     return out
 
 
+def _group_title(text: str) -> str:
+    """« [Group message in « Title » (group id …)] » → Title (the pill in the bot's own thread)."""
+    m = re.match(r"\[Group message in « (.*?) »", str(text or ""))
+    return m.group(1) if m else ""
+
+
 class CodeChat(QObject):
     changed = Signal()             # folder, conversation, state, mode, sessions
     statusChanged = Signal()       # bot: its live status (« Orla écrit un fichier… »)
@@ -182,6 +193,8 @@ class CodeChat(QObject):
     finished = Signal(str)         # an answer is complete (title): the window may notify
     cronDone = Signal(str, str, str, str)  # task_id, status, summary, session — local Code cron finished here
     cronSession = Signal(str, str, str)    # task_id, folder, session — session id known (sidebar can open it live)
+    cronReply = Signal(str, str)           # task_id, the turn's last answer (a bot's reply posted in its group)
+    unreadMarkAt = Signal(int)             # a bot's « Non lu » bar was placed at this row: the view goes there
     _update = Signal(object, str, object)   # the agent that sent it, session, update
     _permission = Signal(object, str, object, object)
     _question = Signal(object, str, object)   # request id, session, questions (Vibe's ask_user_question)
@@ -238,7 +251,7 @@ class CodeChat(QObject):
         self._pending_text: dict[int, list[str]] = {}   # pieces not yet on their card, joined once (not text + piece)
         self._turn_rev = ""                      # the checkpoint taken before the turn running (ornis_code.Checkpoints)
         self._tell_undone = False                # changes undone: the agent hears it with the next message
-        self._plan_mode = False                  # Plan: read only, then « Exécuter le plan » (as in Claude Code)
+        self._plan_mode = self._ask_mode = False  # Plan: read only, then « Exécuter le plan » (as in Claude Code)
         self._opening = 0                        # +1 at each opening: late work of a previous one is dropped
         self._continued = 0                      # turns gone on by themselves since my last message
         self._turn_start = 0                     # the row where the turn running began
@@ -249,6 +262,8 @@ class CodeChat(QObject):
         self._cron_job = None            # {task_id, title, prev_mode} while a scheduled Code task runs here
         self._last_status = None         # bot: what its status bubble shows (_status_tick)
         self._bg_bots: dict[str, dict] = {}  # bot_id -> stashed live state while another conversation is viewed
+        self._bot_starts: dict[str, int] = {}  # bot_id -> its latest agent start (see _start)
+        self._unread_mark = 0                  # a bot opened with N answers not read: the bar goes before them
         self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
         try:
             self._history = json.loads(HISTORY.read_text())
@@ -372,7 +387,7 @@ class CodeChat(QObject):
     @Property(bool, notify=changed)
     def chatTyping(self):
         """Bot chat: the live status bubble above the box (never written into the history)."""
-        return bool(self._bot and self._busy)
+        return bool(self._bot and self._busy and not self._replaying)   # reading the thread again is no work
 
     @Property(str, notify=statusChanged)
     def botStatus(self):
@@ -786,11 +801,14 @@ class CodeChat(QObject):
         ours += [("init", "/init", t.get("code_init_sub", ""), "note"),
                  ("remember", "/" + t.get("code_remember_cmd", "remember"), t.get("code_remember_sub", ""), "book"),
                  ("notebook", "/ornis", t.get("code_notebook_sub", ""), "folder")]
-        ours += [("plan", "/plan", t.get("code_plan_sub", ""), "list"), ("code", "/code", t.get("code_code_sub", ""), "code"),
+        ours += [("plan", "/plan", t.get("code_plan_sub", ""), "list"), ("ask", "/ask", t.get("code_ask_sub", ""), "chat"),
+                 ("code", "/code", t.get("code_code_sub", ""), "code"),
                  ("goal", "/goal", t.get("code_goal_sub", ""), "flag"),
                  ("research", "/" + t.get("slash_research_cmd", "research"), t.get("code_research_sub", ""), "search")]
         if any(c["name"] == "retry" for c in self._commands):     # Vibe's, under our name
             ours.append(("retry", "/" + t.get("slash_retry_cmd", "retry"), t.get("slash_retry_sub", ""), "refresh"))
+        if self._bot:                             # a bot stays Agent + Autonome: these would do nothing there
+            ours = [o for o in ours if o[0] not in ("plan", "ask", "code", "goal", "research", "init")]
         items = [{"kind": k, "label": cmd, "sub": sub, "icon": ic, "value": cmd + " " if k == "remember" else ""}
                  for k, cmd, sub, ic in ours if not q or q in cmd[1:].lower() or q in sub.lower()]
         if self._folder:                          # the project's own commands (.ornis/commands/<name>.md), after ours
@@ -846,6 +864,8 @@ class CodeChat(QObject):
             note += UNDONE_NOTE
         if self._plan_mode and not text.startswith("/"):
             note += PLAN_NOTE
+        elif self._ask_mode and not text.startswith("/"):
+            note += ASK_NOTE
         return note
 
     def _blocks(self, text: str, note: str, attachments: list, first: bool, folder: str) -> list[dict]:
@@ -913,6 +933,30 @@ class CodeChat(QObject):
         self._asked = None
         self._cron_job = None
 
+    def markUnread(self, count: int):
+        """Called as a bot opens: its last `count` answers came while you were away (bots.Bots.open)."""
+        self._unread_mark = max(0, int(count or 0))
+        if self._unread_mark and not self._replaying and self._items.rows:
+            self._place_unread_mark()
+
+    def _place_unread_mark(self):
+        """The « Non lu » bar before the bot's answers you have not seen (as Slack), and the view goes there."""
+        n, self._unread_mark = self._unread_mark, 0
+        if not n or not self._bot:
+            return
+        rows = self._items.rows
+        answers = [i for i, r in enumerate(rows) if r.get("kind") == "agent" and str(r.get("content") or "").strip()]
+        if not answers:
+            return
+        at = answers[-min(n, len(answers))]
+        # the bar goes above the turn that produced it (its notice or the message that started it)
+        while at > 0 and rows[at - 1].get("kind") in ("tool", "thought", "notice", "peer"):
+            at -= 1
+        self._items.rows[:] = [r for r in rows if r.get("kind") != "unreadmark"]
+        self._items.rows.insert(at, {"kind": "unreadmark", "id": f"unread-{time.time()}"})
+        self._items.reset(list(self._items.rows))
+        self.unreadMarkAt.emit(at)
+
     def _restore_bot(self, bot_id: str) -> bool:
         bg = self._bg_bots.pop(bot_id, None)
         if bg is None:
@@ -940,11 +984,20 @@ class CodeChat(QObject):
         self._asked = bg.get("asked")
         self._cron_job = bg.get("cron_job")
         self._mode = "auto"
-        self._plan_mode = False
+        self._plan_mode = self._ask_mode = False
         self._pending_text.clear()
         self._failures, self._looped, self._repeats = {}, False, {}
         self._items.quiet = bool(self._replaying)
         self._items.reset(list(bg.get("rows") or []))
+        if self._agent is None and self._state not in ("starting", "installing"):
+            # no agent and none coming (it failed or was closed while away): open it again, what waited is kept
+            queued, later = self._queued or (self._later[0] if self._later else ""), self._later[1:]
+            self._busy = self._replaying = False
+            self._open(self._folder, self._session)
+            self._queued, self._later = queued, later
+            self.laterChanged.emit()
+            self.changed.emit()
+            return True
         self.syncBotExchanges()
         self._refresh_git()
         self._warm_files()
@@ -1003,7 +1056,7 @@ class CodeChat(QObject):
         self._bot = bot_id
         self._bot_brief = True
         self._mode = "auto"                        # bots: Autonome, Agent classique (no Plan)
-        self._plan_mode = False
+        self._plan_mode = self._ask_mode = False
         if bot_id:
             try:
                 import ornis_bots  # noqa: PLC0415
@@ -1036,7 +1089,7 @@ class CodeChat(QObject):
         self._session, self._title, self._folder = "", "", ""
         pref = self._app.pref("code_mode")
         self._mode = pref if pref in ornis_code.MODES else "ask"
-        self._plan_mode = False
+        self._plan_mode = self._ask_mode = False
         self._items.reset()
         self.changed.emit()
 
@@ -1061,7 +1114,7 @@ class CodeChat(QObject):
             "bot": str(bot or ""),
         }
         self._mode = "auto"
-        self._plan_mode = False
+        self._plan_mode = self._ask_mode = False
         if bot:
             self.openBot(bot, folder, session_id or "")
         else:
@@ -1078,10 +1131,30 @@ class CodeChat(QObject):
         self.changed.emit()
         return True
 
+    def _last_answer(self) -> str:
+        """The text of this turn's last answer (empty when the bot only worked, or said [SILENT])."""
+        rows = self._items.rows[max(0, self._turn_start):]
+        last = next((r for r in reversed(rows) if r.get("kind") == "agent" and str(r.get("content") or "").strip()), None)
+        text = str((last or {}).get("content") or "").strip()
+        # « [SILENT] » alone: nothing to post; at the end of a real answer: the answer without the marker
+        return text.replace("[SILENT]", "").strip()
+
+    def _bot_preview(self):
+        """The bots list shows what the bot said last (one line), as a messaging app."""
+        text = " ".join(self._last_answer().split())
+        if text:
+            try:
+                import ornis_bots  # noqa: PLC0415
+                ornis_bots.update(self._bot, {"preview": text[:120]})
+            except (ValueError, OSError):
+                pass
+
     def _finish_cron(self, status: str, summary: str, session: str = ""):
         job, self._cron_job = self._cron_job, None
         if not job:
             return
+        if status == "ok":
+            self.cronReply.emit(str(job.get("task_id") or ""), self._last_answer())
         if job.get("prev_mode") in ornis_code.MODES:
             self._mode = job["prev_mode"]
         self.cronDone.emit(str(job.get("task_id") or ""), status, summary[:300], session or self._session or "")
@@ -1121,7 +1194,10 @@ class CodeChat(QObject):
         self._plan, self._usage, self._parts = [], {}, {}
         self.planChanged.emit()
         self.usageChanged.emit()
+        # « reading again » belongs to the conversation left: its end is ignored (another session), and kept True here
+        # every message to the new one waited for ever, nothing was sent (09/11, a bot opened during a replay)
         self._session, self._title, self._busy, self._queued = session_id, "", False, ""
+        self._replaying = False
         if folder != self._folder:
             self._attachments, self._file_list_for = [], ""
             self.attachmentsChanged.emit()
@@ -1194,6 +1270,8 @@ class CodeChat(QObject):
         # two agents on the same conversation each wrote the answer, mixed in one bubble (« Je reprends… » twice, 05/11)
         self._starts = getattr(self, "_starts", 0) + 1
         start = self._starts
+        if bot:
+            self._bot_starts[bot] = start         # this bot's latest start, wherever it is shown when ready
         holder = []
 
         def work():
@@ -1212,8 +1290,10 @@ class CodeChat(QObject):
                                          gateway_url=str(creds.get("url") or ""), bot=bot)
                 holder.append(agent)
                 agent.start()
-                bg = self._bg_bots.get(bot) if bot else None
-                if start != self._starts and (not bg or bg.get("start") != start):
+                # Overtaken by another start: closed — unless it is still the latest start of its bot. That bot may
+                # have been put in the background and brought back meanwhile (09/11: the agent was closed, the bot
+                # stayed « travaille… » for ever with its message waiting); _on_ready places it or closes it.
+                if not self._start_current(start, bot):
                     agent.close()
                     return
                 self._ready.emit(agent, "")
@@ -1229,6 +1309,10 @@ class CodeChat(QObject):
         if self._state == "installing":
             self.changed.emit()
 
+    def _start_current(self, start: int, bot: str = "") -> bool:
+        """Whether an agent start is still wanted: the latest one, or the latest one of its bot."""
+        return start == self._starts or bool(bot and self._bot_starts.get(bot) == start)
+
     def _on_ready(self, agent, problem):
         if agent is None:
             self._fail(problem)
@@ -1236,6 +1320,9 @@ class CodeChat(QObject):
         bot = getattr(agent, "bot", "") or ""
         if bot and bot in self._bg_bots and self._bot != bot:
             bg = self._bg_bots[bot]
+            if bg.get("agent") is not None and bg["agent"] is not agent:    # it has one already: never two
+                threading.Thread(target=agent.close, daemon=True).start()
+                return
             bg["agent"] = agent
             bg["state"] = "ready"
             self._bg_attach(bg)
@@ -1415,9 +1502,9 @@ class CodeChat(QObject):
         text = str(text or "").strip()
         if not text:
             return
-        if self._bot and not text.startswith(("[Bot message from", "[Scheduled Code task:")):
+        if self._bot and not text.startswith(("[Bot message from", "[Scheduled Code task:", "[Group message in")):
             import ornis_bots
-            ornis_bots.update(self._bot, {"peer_depth": 0, "human_turn": time.time()})
+            ornis_bots.update(self._bot, {"peer_depth": 0, "group_depth": 0, "human_turn": time.time()})
         shown, text = text, self._expand(text)    # the bubble keeps what the user wrote
         # A bot's durable chat: /new and /reset compact instead of forking
         if self._bot:
@@ -1459,8 +1546,8 @@ class CodeChat(QObject):
         agent = self._agent
         if not (self._items.rows and self._items.rows[-1].get("kind") == "user" and self._items.rows[-1].get("content") in (text, shown)):
             self._items.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
-        if self._plan_mode and not self._bot and not text.startswith("/"):
-            self._items.rows[-1]["plan"] = True
+        if (self._plan_mode or self._ask_mode) and not self._bot and not text.startswith("/"):
+            self._items.rows[-1]["plan" if self._plan_mode else "askMode"] = True
             self._items.touch(len(self._items.rows) - 1)
         self._compacting = text == "/compact"
         if self._compacting:
@@ -1469,6 +1556,9 @@ class CodeChat(QObject):
             self._parts_hold = False
         if self._bot and shown.startswith("[Bot message from"):
             self._items.rows[-1].update(kind="notice", key="bots_silent", content="")
+            self._items.touch(len(self._items.rows) - 1)
+        elif self._bot and shown.startswith("[Group message in"):
+            self._items.rows[-1].update(kind="notice", key="bots_group_turn", content=_group_title(shown))
             self._items.touch(len(self._items.rows) - 1)
         self._busy = True
         self._failures, self._looped, self._repeats = {}, False, {}
@@ -1567,6 +1657,8 @@ class CodeChat(QObject):
             self._items.quiet = False
             self._items.reset(list(self._items.rows))
             self.syncBotExchanges()
+            if self._unread_mark and not result.get("error"):
+                self._place_unread_mark()
             self._busy = False
             if result.get("error"):
                 self._add_error("code_lost")
@@ -1620,11 +1712,26 @@ class CodeChat(QObject):
             self._continue(why)                  # the same turn for « Annuler »: its checkpoint stays
             return
         self._remember(self._session, self._title)
+        if self._bot and not error:
+            self._bot_preview()
         if self._plan_mode and not error and result.get("stopReason") != "cancelled":
             self._items.append({"kind": "planready", "done": False})
         self.changed.emit()
         self._turn_changes()
         self._refresh_git()
+        # a scheduled turn (routine, a message from a bot, a group turn) ends here, BEFORE what the person wrote
+        # meanwhile goes: otherwise its job stayed open and the answer to that private message was taken as the
+        # group's answer (09/11)
+        if self._cron_job:
+            status = "error" if error or result.get("stopReason") == "cancelled" else "ok"
+            if status == "error":
+                base_err = self._app._t.get("cron_failed", "Échec")
+                summary = f"{base_err} — {error}"[:300] if error else base_err
+            else:
+                summary = self._app._t.get("cron_done", "Terminé")
+            self._finish_cron(status, summary, session)
+            if self._forced is None and not self._later:
+                return                           # else: what waits goes now, or back into the box on an error
         if self._forced is not None:             # « Envoyer maintenant »: the turn was stopped for it
             text, self._forced = self._forced, None
             QTimer.singleShot(0, lambda: self.send(text))
@@ -1638,21 +1745,12 @@ class CodeChat(QObject):
             text, self._later = "\n\n".join(self._later), []
             self.laterChanged.emit()
             self.laterReturned.emit(text)
-        if self._cron_job:
-            status = "error" if error or result.get("stopReason") == "cancelled" else "ok"
-            if status == "error":
-                base_err = self._app._t.get("cron_failed", "Échec")
-                summary = f"{base_err} — {error}"[:300] if error else base_err
-            else:
-                summary = self._app._t.get("cron_done", "Terminé")
-            self._finish_cron(status, summary, session)
-            return
         if not error:
             self.finished.emit(self._title or self.folderName)
 
     def _why_continue(self, error, result) -> str:
         """Why the turn should go on by itself ('' when it is really over)."""
-        if (error or self._forced is not None or result.get("stopReason") not in (None, "end_turn") or self._plan_mode or self._later
+        if (error or self._forced is not None or result.get("stopReason") not in (None, "end_turn") or self._plan_mode or self._ask_mode or self._later
                 or self._continued >= MAX_CONTINUE or not self._agent or not self._session):
             return ""
         rows = self._items.rows[max(0, self._turn_start):]
@@ -1743,6 +1841,34 @@ class CodeChat(QObject):
     def planMode(self):
         return False if self._bot else self._plan_mode
 
+    @Property(bool, notify=changed)
+    def replaying(self):
+        """A conversation being read again (its rows come at the end): « Chargement… », never an empty welcome."""
+        return bool(self._replaying)
+
+    @Property(str, notify=changed)
+    def agentMode(self):
+        """The mode chip: « agent » (edits and runs), « plan » (read only, then a plan) or « ask » (read only, answers)."""
+        if self._bot:
+            return "agent"
+        return "plan" if self._plan_mode else "ask" if self._ask_mode else "agent"
+
+    @Slot(str)
+    def setAgentMode(self, mode):
+        if self._bot or self._busy or mode not in ("agent", "plan", "ask") or mode == self.agentMode:
+            return
+        if mode == "plan":
+            self._ask_mode = False
+            self.setPlanMode(True)
+            return
+        if self._plan_mode:
+            self.setPlanMode(False)
+        self._ask_mode = mode == "ask"
+        if self._agent and self._session:          # read only: Vibe asks for each edit, decide("plan") refuses it
+            agent, sid, m = self._agent, self._session, "ask" if self._ask_mode else self._mode
+            threading.Thread(target=lambda: agent.set_mode(sid, m), daemon=True).start()
+        self.changed.emit()
+
     @Slot(bool)
     def setPlanMode(self, on):
         """Plan: Ornis explores and proposes, nothing is changed (every edit and command that writes is refused)."""
@@ -1752,6 +1878,8 @@ class CodeChat(QObject):
         if self._busy or on == self._plan_mode:
             return
         self._plan_mode = on
+        if on:
+            self._ask_mode = False
         if self._agent and self._session:          # Vibe asks for each edit then: decide("plan") refuses it
             agent, sid, mode = self._agent, self._session, "ask" if on else self._mode
             threading.Thread(target=lambda: agent.set_mode(sid, mode), daemon=True).start()
@@ -2037,7 +2165,7 @@ class CodeChat(QObject):
             row.update(kind="notice", key="code_continued_" + ("tool" if rest.startswith("You wrote") else "plan"))
         if row.get("kind") == "user" and row["content"].startswith("[Ornis: host result]"):
             row.update(kind="notice", key="code_host_done", content="")
-        for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE):
+        for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE, ASK_NOTE):
             if row.get("kind") == "user" and row["content"].startswith(hidden):
                 row["content"] = row["content"][len(hidden):]
         if row.get("kind") == "user":
@@ -2057,6 +2185,8 @@ class CodeChat(QObject):
                     break
             if row["content"].startswith("[Bot message from"):
                 row.update(kind="notice", key="bots_silent", content="")
+            elif row["content"].startswith("[Group message in"):
+                row.update(kind="notice", key="bots_group_turn", content=_group_title(row["content"]))
         if is_bot and row.get("kind") == "agent" and row.get("content", "").strip() == "[SILENT]":
             # peer reply with nothing for the person: hide the bubble
             row.update(kind="notice", key="bots_silent", content="")
@@ -2203,7 +2333,7 @@ class CodeChat(QObject):
                 "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
                 "content": (tool or {}).get("content") or []}
         # Bots always decide as Autonome (even if a leftover prefs mode remains on _mode).
-        mode = "plan" if (self._plan_mode and not self._bot) else ("auto" if self._bot else self._mode)
+        mode = "plan" if ((self._plan_mode or self._ask_mode) and not self._bot) else ("auto" if self._bot else self._mode)
         verdict = ornis_code.decide(mode, call, sandboxed=bool(ornis_code.sandbox_kind()),
                                     folder=self._folder, bot=self._bot)
         if at < 0 or sid != self._session or self._host is not None:
@@ -2219,7 +2349,7 @@ class CodeChat(QObject):
                 outcome = {"outcome": "selected", "optionId": pick.get("optionId")} if pick else {"outcome": "cancelled"}
                 self._agent.answer(request_id, {"outcome": outcome})
             if at >= 0 and sid == self._session and verdict == "reject":
-                row["answer"] = "plan" if self._plan_mode else "blocked"
+                row["answer"] = "plan" if (self._plan_mode or self._ask_mode) else "blocked"
                 self._items.touch(at)
             return
         choices = []
@@ -2491,7 +2621,7 @@ class CodeChat(QObject):
             found["bot"] = bot
             try:
                 import ornis_bots  # noqa: PLC0415
-                fields = {"session": session, "preview": title or found.get("title") or ""}
+                fields = {"session": session}          # its preview is its last answer (_bot_preview), not a title
                 if touch:
                     fields["updated"] = now
                 ornis_bots.update(bot, fields)

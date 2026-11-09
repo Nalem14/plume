@@ -1,4 +1,4 @@
-"""Built-in MCP server `ornis-bots`: CRUD for local Code-mode bots.
+"""Built-in MCP server `ornis-bots`: local Code-mode bots (profiles, peer messages, groups, notifications).
 
 Started by Vibe with each Code session (ornis_code.mcp_servers). Packaged Plume:
 `Plume --ornis-helper=bots-mcp`. Stdio MCP (JSON-RPC, Content-Length framing).
@@ -48,7 +48,8 @@ TOOLS = [
     },
     {
         "name": "bot_update",
-        "description": "Update a bot's title, description, folder, face, hidden flag or enabled Ornis skills.",
+        "description": ("Update your own profile, or one of a bot you created: title, description, folder (inside your "
+                        "working folder), face, hidden flag or enabled Ornis skills."),
         "inputSchema": {
             "type": "object",
             "required": ["id"],
@@ -68,7 +69,7 @@ TOOLS = [
     },
     {
         "name": "bot_set_soul",
-        "description": "Replace this bot's SOUL.md (persona and standing instructions).",
+        "description": "Replace the SOUL.md (persona and standing instructions) of yourself or of a bot you created.",
         "inputSchema": {
             "type": "object",
             "required": ["id", "soul"],
@@ -103,14 +104,85 @@ TOOLS = [
             "properties": {
                 "target": {"type": "string", "description": "Peer bot id"},
                 "message": {"type": "string"},
-                "from": {"type": "string", "description": "Sender id; defaults to ORNIS_BOT_ID"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bot_exchange",
+        "description": "Read your past messages with another bot (oldest first), to recall what was agreed.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["peer"],
+            "properties": {"peer": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "notify_user",
+        "description": (
+            "Show a desktop notification to the person (6 per hour at most). Only for what they must see soon: "
+            "a result they asked to be told about, or a problem that blocks you. Not for ordinary answers."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["message"],
+            "properties": {"title": {"type": "string"}, "message": {"type": "string", "description": "One or two sentences"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "group_list",
+        "description": "List the groups (rooms shared by several bots and the person) with their members and lead.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "group_read",
+        "description": "Read the last messages of a group you belong to.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["group"],
+            "properties": {"group": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "group_post",
+        "description": (
+            "Post a message in a group you belong to (a routine's result, a hand-over). Members named with @id get it "
+            "as a turn; nobody else is woken. In a group turn, your final answer is already posted: do not repeat it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["group", "message"],
+            "properties": {"group": {"type": "string"}, "message": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "group_create",
+        "description": (
+            "Create a group of bots (at least two, you included) for a shared project, when the person asks for it. "
+            "The lead answers messages that name nobody; reply \"all\" makes every member answer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["title", "members"],
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string", "description": "What the group is for"},
+                "members": {"type": "array", "items": {"type": "string"}},
+                "lead": {"type": "string"},
+                "reply": {"type": "string", "enum": ["lead", "all"]},
+                "folder": {"type": "string", "description": "Shared folder (inside your working folder); default: the group's own"},
             },
             "additionalProperties": False,
         },
     },
     {
         "name": "bot_delete",
-        "description": "Permanently delete a bot profile. Requires confirm: true. Do not call without an explicit user request.",
+        "description": ("Permanently delete a bot profile you created. Requires confirm: true. Do not call without an "
+                        "explicit request of the person. A bot cannot delete itself nor a bot it did not create."),
         "inputSchema": {
             "type": "object",
             "required": ["id", "confirm"],
@@ -128,8 +200,11 @@ def _lang() -> str:
     return (os.environ.get("ORNIS_BOT_LANG") or os.environ.get("ORNIS_CRON_LANG") or "fr")[:2]
 
 
-def _sender(args: dict) -> str:
-    return str(args.get("from") or os.environ.get("ORNIS_BOT_ID") or "").strip()
+def _actor(ctx: dict | None) -> str:
+    """The bot calling (its session's context, else the CLI's environment); empty for an ordinary session."""
+    if ctx is not None:
+        return str(ctx.get("bot") or "").strip()
+    return str(os.environ.get("ORNIS_BOT_ID") or "").strip()
 
 
 def _ok(data) -> dict:
@@ -145,25 +220,28 @@ def _err(msg: str) -> dict:
 
 def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
     args = args or {}
+    actor = _actor(ctx)
     try:
         if name == "bot_list":
             rows = []
             for b in ornis_bots.list_bots(include_hidden=bool(args.get("include_hidden", True))):
                 rows.append({
                     "id": b["id"], "title": b.get("title"), "description": b.get("description"),
-                    "folder": b.get("folder"), "hidden": b.get("hidden"),
-                    "preview": b.get("preview"), "session": b.get("session"),
-                    "face": b.get("face"),
+                    "folder": b.get("folder"), "hidden": b.get("hidden"), "face": b.get("face"),
+                    "yours": bool(actor and (b["id"] == actor or b.get("created_by") == actor)),
                 })
-            return _ok({"bots": rows})
+            return _ok({"bots": rows, "you": actor or None})
         if name == "bot_create":
-            created = ornis_bots.create(args, lang=(ctx or {}).get("lang") or _lang())
+            created = ornis_bots.create(args, lang=(ctx or {}).get("lang") or _lang(), actor=actor)
             return _ok({"created": True, "bot": {
                 "id": created["id"], "title": created["title"],
                 "description": created.get("description"), "folder": created.get("folder"),
                 "face": created.get("face"),
             }, "hint": "Confirm to the user in one sentence: title, role, where it works."})
         if name == "bot_update":
+            ornis_bots.check_manage(actor, args["id"])
+            if actor and "folder" in args:
+                ornis_bots._check_folder_scope(actor, args.get("folder"))
             fields = {k: args[k] for k in ("title", "description", "folder", "hidden", "enabled_skills")
                       if k in args and args[k] is not None}
             if any(k in args for k in ("shape", "color", "lock_face")):
@@ -187,10 +265,12 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 "enabled_skills": updated.get("enabled_skills"),
             }})
         if name == "bot_set_soul":
+            ornis_bots.check_manage(actor, args["id"])
             ornis_bots.set_soul(args["id"], args.get("soul") or "")
             return _ok({"soul": True, "id": args["id"], "chars": len(args.get("soul") or "")})
         if name == "bot_skills":
             if "enabled_skills" in args and args["enabled_skills"] is not None:
+                ornis_bots.check_manage(actor, args["id"])
                 ornis_bots.set_enabled_skills(args["id"], list(args["enabled_skills"] or []))
             profile = ornis_bots.get(args["id"])
             if not profile:
@@ -201,16 +281,51 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 "enabled_skills": profile.get("enabled_skills") or [],
             })
         if name == "bot_message":
-            sender = str(ctx.get("bot") or "") if ctx is not None else _sender(args)
-            if not sender:
-                raise ValueError("from / ORNIS_BOT_ID is required")
-            row = ornis_bots.append_exchange(sender, args["target"], args.get("message") or "")
+            if not actor:
+                raise ValueError("bot_message is for bots: this session is not a bot")
+            row = ornis_bots.append_exchange(actor, args["target"], args.get("message") or "")
             return _ok({
                 "queued": True, "id": row["id"], "from": row["from"], "to": row["to"],
                 "hint": "Delivery is queued into the peer's durable chat; do not wait for a reply here.",
             })
+        if name == "bot_exchange":
+            if not actor:
+                raise ValueError("bot_exchange is for bots: this session is not a bot")
+            rows = ornis_bots.read_exchange(actor, args["peer"], limit=int(args.get("limit") or 30))
+            return _ok({"messages": [{"from": r.get("from"), "to": r.get("to"), "text": r.get("text"),
+                                      "at": r.get("at")} for r in rows]})
+        if name == "notify_user":
+            if not actor:
+                raise ValueError("notify_user is for bots: this session is not a bot")
+            row = ornis_bots.push_notice(actor, args.get("title") or "", args.get("message") or "")
+            return _ok({"notified": True, "id": row["id"]})
+        if name == "group_list":
+            return _ok({"groups": [{"id": g["id"], "title": g["title"], "description": g["description"],
+                                    "members": g["members"], "lead": g["lead"], "reply": g["reply"],
+                                    "folder": ornis_bots.group_folder(g["id"]) if actor in g["members"] else None,
+                                    "member": bool(actor in g["members"])} for g in ornis_bots.list_groups()]})
+        if name == "group_read":
+            g = ornis_bots.get_group(args["group"])
+            if not g:
+                raise ValueError(f"unknown group: {args['group']}")
+            if actor and actor not in g["members"]:
+                raise ValueError("you are not a member of this group")
+            rows = ornis_bots.read_group(g["id"], limit=int(args.get("limit") or 30))
+            return _ok({"group": g["id"], "messages": [{"from": r.get("from"), "text": r.get("text"), "at": r.get("at")}
+                                                       for r in rows]})
+        if name == "group_post":
+            if not actor:
+                raise ValueError("group_post is for bots: this session is not a bot")
+            row = ornis_bots.post_group(args["group"], actor, args.get("message") or "",
+                                        depth=ornis_bots.turn_depth(actor, args["group"]))
+            return _ok({"posted": True, "id": row["id"], "delivered_to": row.get("targets") or []})
+        if name == "group_create":
+            g = ornis_bots.create_group(args, actor=actor)
+            return _ok({"created": True, "group": {"id": g["id"], "title": g["title"], "members": g["members"],
+                                                   "lead": g["lead"], "reply": g["reply"],
+                                                   "folder": ornis_bots.group_folder(g["id"])}})
         if name == "bot_delete":
-            if not ornis_bots.remove(args["id"], confirm=bool(args.get("confirm"))):
+            if not ornis_bots.remove(args["id"], confirm=bool(args.get("confirm")), actor=actor):
                 raise ValueError(f"unknown bot: {args['id']}")
             return _ok({"deleted": True, "id": args["id"]})
         return _err(f"unknown tool: {name}")
@@ -248,7 +363,7 @@ def handle(msg: dict, ctx: dict | None = None) -> dict | None:
         return {"jsonrpc": "2.0", "id": mid, "result": {
             "protocolVersion": params.get("protocolVersion") or "2024-11-05",
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "ornis-bots", "version": "1.0.0"},
+            "serverInfo": {"name": "ornis-bots", "version": "1.1.0"},
         }}
     if method == "notifications/initialized" or method == "initialized":
         return None

@@ -25,6 +25,12 @@ commands:
   soul     '{"id":"…","soul":"…"}'
   skills   '{"id":"…","enabled_skills":["…"]}'
   message  '{"target":"…","message":"…"}'   (from= ORNIS_BOT_ID)
+  exchange '{"peer":"…"}'
+  notify   '{"title":"…","message":"…"}'
+  groups
+  group-read '{"group":"…"}'
+  group-post '{"group":"…","message":"…"}'
+  group-create '{"title":"…","members":["…","…"]}'
   delete   '{"id":"…","confirm":true}'
 """
 
@@ -35,6 +41,12 @@ CMD_MAP = {
     "soul": "bot_set_soul",
     "skills": "bot_skills",
     "message": "bot_message",
+    "exchange": "bot_exchange",
+    "notify": "notify_user",
+    "groups": "group_list",
+    "group-read": "group_read",
+    "group-post": "group_post",
+    "group-create": "group_create",
     "delete": "bot_delete",
 }
 
@@ -56,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(USAGE)
         return 0 if argv else 1
     cmd = argv[0].removeprefix("bot_")
-    tool = CMD_MAP.get(cmd) or (f"bot_{cmd}" if not cmd.startswith("bot_") else cmd)
+    tool = CMD_MAP.get(cmd) or (cmd if cmd.startswith(("bot_", "group_")) or cmd == "notify_user" else f"bot_{cmd}")
     try:
         args = _parse_args(argv[1] if len(argv) > 1 else "")
     except (ValueError, json.JSONDecodeError) as err:

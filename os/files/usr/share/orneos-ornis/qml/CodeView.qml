@@ -107,10 +107,11 @@ Item {
         if (row.kind === "compact") { code.compact(); return }
         if (row.kind === "terminal") { code.openTerminal(); return }
         if (row.kind === "undo") { code.undoLast(); return }
-        if (row.kind === "plan") { code.setPlanMode(true); return }
+        if (row.kind === "plan") { code.setAgentMode("plan"); return }
+        if (row.kind === "ask") { code.setAgentMode("ask"); return }
         if (row.kind === "init") { code.send(app.t.code_init_text); return }
         if (row.kind === "notebook") { code.openNotebook(); return }
-        if (row.kind === "code") { code.setPlanMode(false); return }
+        if (row.kind === "code") { code.setAgentMode("agent"); return }
         if (row.kind === "goal" || row.kind === "research") { view.leaveRequested(row.kind); return }
         if (row.kind === "retry") { code.send("/retry"); return }
         input.insert(input.cursorPosition, row.value)
@@ -125,7 +126,7 @@ Item {
     function openModes() { openAbove(workMenu, modeBtn) }
     readonly property var modeInfo: ({
         ask: { label: app.t.code_mode_ask, sub: app.t.code_mode_ask_sub, icon: "hand" },
-        edits: { label: app.t.code_mode_edits, sub: app.t.code_mode_edits_sub, icon: "edit" },
+        edits: { label: app.t.code_mode_edits, sub: app.t.code_mode_edits_sub, icon: "shieldCheck" },
         auto: { label: app.t.code_mode_auto, sub: app.t.code_mode_auto_sub, icon: "play" }
     })
 
@@ -139,6 +140,13 @@ Item {
             input.text = input.text ? text + "\n\n" + input.text : text
             input.cursorPosition = input.length
             input.forceActiveFocus()
+        }
+    }
+    Connections {                           // a bot opened with answers you have not read: the « Non lu » bar
+        target: code
+        function onUnreadMarkAt(at) {
+            view.stick = false
+            Qt.callLater(() => list.positionViewAtIndex(at, ListView.Beginning))
         }
     }
     Connections {
@@ -199,6 +207,13 @@ Item {
                     RowLayout {              // bot role, or the folder (its full path on hover) + Git branch
                         Layout.fillWidth: true
                         spacing: 5
+                        ToolbarChip {        // a bot on pause: says so, one click resumes it
+                            visible: code.bot !== "" && !!(bots.current && bots.current.paused)
+                            implicitHeight: 20
+                            iconName: "play"; label: app.t.bots_paused; tone: "saffron"; chevron: false
+                            tip: app.t.bots_resume
+                            onClicked: bots.setPaused(code.bot, false)
+                        }
                         Text {
                             visible: code.bot !== "" && !!(bots.current && bots.current.description)
                             Layout.maximumWidth: 320
@@ -384,11 +399,58 @@ Item {
                 }
             }
 
+            // the conversation is read again: said, never an empty welcome that looks like a lost history (09/11)
+            ColumnLayout {
+                anchors.centerIn: parent
+                visible: code.state === "ready" && list.count === 0 && code.replaying
+                spacing: 10
+                BotFace { visible: code.bot !== ""; Layout.alignment: Qt.AlignHCenter; face: (bots.current && bots.current.face) || {}; size: 40; busy: true }
+                Icon { visible: code.bot === ""; Layout.alignment: Qt.AlignHCenter; name: "ornis"; thinking: true; size: 30; color: view.c.accent }
+                Text { Layout.alignment: Qt.AlignHCenter; text: app.t.code_loading_history
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 14; color: view.c.muted }
+            }
+            // a bot that never spoke: who it is, three things to ask it
+            ColumnLayout {
+                anchors.centerIn: parent
+                width: Math.min(520, parent.width - 48)
+                visible: code.bot !== "" && code.state === "ready" && list.count === 0 && !code.replaying
+                spacing: 12
+                BotFace { Layout.alignment: Qt.AlignHCenter; face: (bots.current && bots.current.face) || {}; size: 56 }
+                Text { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                       text: (bots.current && bots.current.title) || ""
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 22; font.weight: Font.DemiBold; color: view.c.text }
+                Text { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                       text: (bots.current && bots.current.description) || app.t.bots_new_sub
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 14; color: view.c.muted }
+                Repeater {
+                    model: [app.t.bots_idea_1, app.t.bots_idea_2, app.t.bots_idea_3]
+                    AbstractButton {
+                        id: botIdea
+                        required property string modelData
+                        Layout.fillWidth: true
+                        implicitHeight: 40
+                        hoverEnabled: true
+                        onClicked: { input.text = modelData; view.send() }
+                        Accessible.name: modelData
+                        background: Rectangle { radius: 20; color: botIdea.hovered ? view.c.hover : view.c.card; border.color: view.c.line }
+                        contentItem: Text { leftPadding: 16; rightPadding: 16; verticalAlignment: Text.AlignVCenter
+                                            text: botIdea.modelData; elide: Text.ElideRight
+                                            font.family: "Schibsted Grotesk"; font.pixelSize: 14; color: view.c.text }
+                    }
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 8
+                    Icon { name: "shieldCheck"; size: 14; color: view.c.okInk }
+                    Text { text: (app.t.bots_autonome_note || "") + " · " + app.t.code_local
+                           font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: view.c.muted }
+                }
+            }
             // a new conversation: what Code does, three ideas
             ColumnLayout {
                 anchors.centerIn: parent
                 width: Math.min(560, parent.width - 48)
-                visible: code.state === "ready" && list.count === 0
+                visible: code.bot === "" && code.state === "ready" && list.count === 0 && !code.replaying
                 spacing: 12
                 Text {
                     Layout.fillWidth: true
@@ -532,14 +594,25 @@ Item {
                             id: c7
                             x: (list.width - view.column) / 2; width: view.column
                             spacing: 8
-                            Icon { name: "refresh"; size: 13; color: view.c.muted }
+                            Icon { name: d7.item.key === "bots_group_turn" ? "people" : "refresh"; size: 13; color: view.c.muted }
                             Text {
                                 Layout.fillWidth: true
-                                text: app.t[d7.item.key] || ""
+                                text: String(app.t[d7.item.key] || "").replace("%1", d7.item.content || "")
                                 wrapMode: width > 80 ? Text.Wrap : Text.NoWrap
                                 font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.italic: true
                                 color: view.c.muted
                             }
+                        }
+                    } }
+                    DelegateChoice { roleValue: "unreadmark"; delegate: Item {   // what the bot said while you were away
+                        width: list.width; height: 28
+                        RowLayout {
+                            x: (list.width - view.column) / 2; width: view.column
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 10
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: view.c.danger }
+                            Text { text: app.t.unread_bar; font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
+                                   font.capitalization: Font.AllUppercase; font.letterSpacing: 0.6; color: view.c.danger }
                         }
                     } }
                     DelegateChoice { roleValue: "peer"; delegate: Item {
@@ -621,6 +694,8 @@ Item {
                                   lastMine: d4.index === code.lastUser
                                   localFiles: true
                                   chatOnly: code.bot !== ""
+                                  botFace: code.bot !== "" && bots.current ? bots.current.face : null
+                                  botName: code.bot !== "" && bots.current ? (bots.current.title || "") : ""
                                   onFileRequested: path => view.openInBench(path)
                                   editable: d4.index === code.lastUser && !code.busy
                                   onEditRequested: { const t = code.editLast(); if (t) { input.text = t; input.cursorPosition = input.length; input.forceActiveFocus() } }
@@ -747,6 +822,7 @@ Item {
         BotStatusBubble {
             active: code.chatTyping && !codePerm.visible && !codeQuestions.visible
             text: code.botStatus
+            face: bots.current ? bots.current.face : null
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: view.column
             Layout.topMargin: active ? 8 : 0
@@ -882,11 +958,12 @@ Item {
                             if (mentionPopup.opened) { mentionPopup.close(); event.accepted = true }
                             else event.accepted = false
                         }
-                        // Maj+Tab, as in Claude Code: Demander → Modifier → Autonome → Plan → Demander
+                        // Maj+Tab, as in Claude Code: Demander → Modifier → Autonome → Plan → Ask → Demander
                         Keys.onBacktabPressed: event => {
                             if (code.bot !== "" || code.busy) { event.accepted = true; return }
-                            if (code.planMode) { code.setPlanMode(false); code.setMode("ask") }
-                            else if (code.mode === "auto") code.setPlanMode(true)
+                            if (code.agentMode === "plan") code.setAgentMode("ask")
+                            else if (code.agentMode === "ask") { code.setAgentMode("agent"); code.setMode("ask") }
+                            else if (code.mode === "auto") code.setAgentMode("plan")
                             else code.setMode(code.mode === "ask" ? "edits" : "auto")
                             event.accepted = true
                         }
@@ -932,67 +1009,38 @@ Item {
                                             font.family: "JetBrains Mono"; font.pixelSize: 15; font.weight: Font.DemiBold
                                             color: slashBtn.hovered ? view.c.text : view.c.muted }
                     }
-                    AbstractButton {             // the mode: Agent or Plan (Objectif and Recherche are the Discussion's)
+                    ToolbarChip {                // the mode: Agent, Plan or Ask — on the left, the same chip as the Discussion's
                         id: modeBtn
+                        readonly property string m: code.agentMode
                         visible: code.bot === ""     // bots: always classic Agent
                         enabled: !code.busy
                         Layout.alignment: Qt.AlignVCenter
                         Layout.leftMargin: 4
-                        implicitWidth: modeRow2.implicitWidth + 18; implicitHeight: 28
-                        hoverEnabled: true
                         onClicked: view.openModes()
-                        Accessible.role: Accessible.ButtonMenu
-                        Accessible.name: app.t.mode_menu_title + " : " + (code.planMode ? app.t.mode_plan : app.t.mode_agent)
-                        ToolTip.text: (code.planMode ? app.t.code_plan_sub : app.t.code_code_sub) + "  ·  " + app.t.mode_cycle_tip; ToolTip.delay: 500; ToolTip.visible: hovered
-                        background: Rectangle { radius: 14; color: code.planMode ? view.c.saffronTint : view.c.tint; border.width: 1
-                                                border.color: code.planMode ? view.c.saffron : view.c.accentLine }
-                        contentItem: Item {
-                            Row {
-                                id: modeRow2
-                                anchors.centerIn: parent
-                                spacing: 5
-                                Icon { anchors.verticalCenter: parent.verticalCenter; name: code.planMode ? "list" : "ornis"; size: 14
-                                       color: code.planMode ? view.c.saffronInk : view.c.tintText }
-                                Text { anchors.verticalCenter: parent.verticalCenter; text: code.planMode ? app.t.mode_plan : app.t.mode_agent
-                                       font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
-                                       color: code.planMode ? view.c.saffronInk : view.c.tintText }
-                                Icon { anchors.verticalCenter: parent.verticalCenter; name: "chevronDown"; size: 12; color: view.c.muted }
-                            }
-                        }
-                    }
-                    AbstractButton {             // what Ornis does without asking (as « Demander » in the Discussion mode)
-                        id: autoBtn
-                        visible: code.bot === ""     // bots: Autonome is forced, no rights picker
-                        enabled: !code.busy
-                        Layout.alignment: Qt.AlignVCenter
-                        implicitWidth: autoRow.implicitWidth + 18; implicitHeight: 28
-                        hoverEnabled: true
-                        onClicked: view.openAbove(modeMenu, autoBtn)
-                        Accessible.role: Accessible.ButtonMenu
-                        Accessible.name: app.t.code_mode_title + " : " + view.modeInfo[code.mode].label
-                        ToolTip.text: view.modeInfo[code.mode].sub + "  ·  " + (code.sandbox ? app.t.code_sandbox : app.t.code_no_sandbox)
-                        ToolTip.delay: 500; ToolTip.visible: hovered
-                        background: Rectangle {
-                            radius: 14
-                            color: code.mode === "auto" ? view.c.saffronTint : view.c.tint
-                            border.width: 1
-                            border.color: code.mode === "auto" ? view.c.saffron : view.c.accentLine
-                        }
-                        contentItem: Item {
-                            Row {
-                                id: autoRow
-                                anchors.centerIn: parent
-                                spacing: 5
-                                Icon { anchors.verticalCenter: parent.verticalCenter; name: code.sandbox ? "shieldCheck" : view.modeInfo[code.mode].icon; size: 14
-                                       color: code.mode === "auto" ? view.c.saffronInk : code.sandbox ? view.c.okInk : view.c.muted }
-                                Text { anchors.verticalCenter: parent.verticalCenter; text: view.modeInfo[code.mode].label
-                                       font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
-                                       color: code.mode === "auto" ? view.c.saffronInk : view.c.tintText }
-                                Icon { anchors.verticalCenter: parent.verticalCenter; name: "chevronDown"; size: 12; color: view.c.muted }
-                            }
-                        }
+                        menuOpen: workMenu.opened
+                        iconName: m === "plan" ? "list" : m === "ask" ? "chat" : "ornis"
+                        mascot: m === "agent"
+                        label: m === "plan" ? app.t.mode_plan : m === "ask" ? app.t.mode_ask : app.t.mode_agent
+                        detail: m === "plan" && view.width >= 640 ? app.t.plan_readonly : ""
+                        tone: m === "plan" ? "saffron" : m === "ask" ? "tint" : "plain"
+                        tip: (m === "plan" ? app.t.code_plan_sub : m === "ask" ? app.t.code_ask_sub : app.t.code_code_sub) + "  ·  " + app.t.mode_cycle_tip
                     }
                     Item { Layout.fillWidth: true }
+                    ToolbarChip {                // what Ornis does without asking: on the right, the same chip as the Discussion's
+                        id: autoBtn
+                        enabled: !code.busy || code.bot !== ""
+                        Layout.alignment: Qt.AlignVCenter
+                        onClicked: if (code.bot === "") view.openAbove(modeMenu, autoBtn)
+                        menuOpen: modeMenu.opened
+                        // bots: Autonome is forced (shown, not a menu)
+                        iconName: code.bot !== "" ? "play" : view.modeInfo[code.mode].icon
+                        label: code.bot !== "" ? app.t.code_mode_auto : view.modeInfo[code.mode].label
+                        showLabel: view.width >= 560 || code.mode === "auto" || code.bot !== ""
+                        chevron: code.bot === ""
+                        tone: code.bot !== "" || code.mode === "auto" ? "saffron" : code.mode === "edits" ? "tint" : "plain"
+                        tip: code.bot !== "" ? app.t.bots_autonome_note
+                             : view.modeInfo[code.mode].sub + "  ·  " + (code.sandbox ? app.t.code_sandbox : app.t.code_no_sandbox)
+                    }
                     AbstractButton {             // dictation, as in the Discussion's box (the same recorder)
                         id: codeMic
                         readonly property var v: chat.voice
@@ -1576,14 +1624,16 @@ Item {
         heading: app.t.mode_menu_title
         subheading: app.t.mode_cycle_tip
         Repeater {
-            // the two modes of a folder, as in the Discussion: Agent (it edits and runs) or Plan (read only, then a plan)
-            model: [["agent", "ornis", app.t.mode_agent, app.t.code_code_sub], ["plan", "list", app.t.mode_plan + " · " + app.t.plan_readonly, app.t.code_plan_sub]]
+            // the modes of a folder: Agent (it edits and runs), Plan (read only, then a plan), Ask (read only, it answers)
+            model: [["agent", "ornis", app.t.mode_agent, app.t.code_code_sub],
+                    ["plan", "list", app.t.mode_plan + " · " + app.t.plan_readonly, app.t.code_plan_sub],
+                    ["ask", "chat", app.t.mode_ask + " · " + app.t.plan_readonly, app.t.code_ask_sub]]
             OMenuItem {
                 required property var modelData
                 text: modelData[2]
-                iconName: (modelData[0] === "agent") === !code.planMode ? "check" : modelData[1]
+                iconName: code.agentMode === modelData[0] ? "check" : modelData[1]
                 enabled: !code.busy
-                onTriggered: { code.setPlanMode(modelData[0] === "plan"); input.forceActiveFocus() }
+                onTriggered: { code.setAgentMode(modelData[0]); input.forceActiveFocus() }
                 ToolTip.visible: hovered; ToolTip.delay: 400; ToolTip.text: modelData[3]
             }
         }
