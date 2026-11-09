@@ -28,6 +28,8 @@ CRON_NOTE = (
     "End with two short lines: what you did, and where the files are.]\n\n"
 )
 SCRIPT_TIMEOUT = 600
+BG_SILENT = 15 * 60       # a routine in the background with no sign of life this long is stuck: stopped
+BG_MAX = 60 * 60          # and none runs longer: it holds its conversation (and its bot) meanwhile
 MAX_SCRIPT_OUT = 12000
 
 
@@ -290,8 +292,8 @@ class Cron(QObject):
         t = ornis_cron.get(task_id)
         return self._view(t) if t else {}
 
-    @Slot(str, int, int, int, int, result=str)
-    def plainSchedule(self, kind, hour=8, minute=0, weekday=1, every=15):
+    @Slot(str, str, int, int, int, result=str)
+    def plainSchedule(self, kind, hour="8", minute=0, weekday=1, every=15):
         try:
             return ornis_cron.validate_schedule(ornis_cron.plain_to_cron(kind, hour, minute, weekday, every))
         except ValueError as err:
@@ -487,9 +489,32 @@ class Cron(QObject):
         return bool(getattr(code, "_busy", False) or getattr(code, "_cron_job", None)
                     or getattr(code, "_host", None) or getattr(code, "_queued", None))
 
+    def _stop_stuck(self, now: float) -> None:
+        """A background routine that hangs (a call that never returns, a tool waiting forever) would hold its
+        conversation and its bot until Plume restarts (« Toujours en cours », 09/11): stopped, its run marked."""
+        bg = self._bg_run or {}
+        ctl, agent = bg.get("ctl"), bg.get("agent")
+        if not ctl or agent is None or ctl.get("stopped"):
+            return
+        if now - ctl["beat"] < BG_SILENT and now - ctl["started"] < BG_MAX:
+            return
+        ctl["stopped"] = True
+        session = bg.get("session") or ""
+
+        def stop():
+            try:
+                if session:
+                    agent.cancel(session)
+                time.sleep(5)
+                agent.close()              # the prompt it waits on fails: the run ends, its conversation is free
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=stop, daemon=True, name="ornis-cron-stop").start()
+
     def _reap_stale(self, startup: bool = False) -> None:
         """Unblock the scheduler if a run stayed « running » after a lost UI/background handle."""
         now = time.time()
+        self._stop_stuck(now)
         # Recover a stuck chat gate (cronDone never fired, agent gone)
         if self._chat_busy and not self._ui_run and not self._bg_run:
             self._chat_busy = False
@@ -775,7 +800,8 @@ class Cron(QObject):
             pass
         self._reload()
         # Held from now: the reaper frees _chat_busy when neither handle is set, and the agent takes seconds to start
-        self._bg_run = {"task": task["id"], "run": run_id, "session": "", "agent": None}
+        ctl = {"started": time.time(), "beat": time.time(), "stopped": False}     # the watchdog's (_reap_stale)
+        self._bg_run = {"task": task["id"], "run": run_id, "session": "", "agent": None, "ctl": ctl}
 
         def work():
             session = ""
@@ -816,6 +842,7 @@ class Cron(QObject):
                 def on_update(sid, update):
                     if not isinstance(update, dict):
                         return
+                    ctl["beat"] = time.time()
                     kind_ = str(update.get("sessionUpdate") or "")
                     if bot and kind_ == "agent_message_chunk":
                         content = update.get("content")
@@ -855,7 +882,7 @@ class Cron(QObject):
                 else:
                     created = agent.new_session()
                     session = created.get("sessionId") or ""
-                self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent, "bot": bot}
+                self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent, "bot": bot, "ctl": ctl}
                 agent.set_mode(session, "auto")
                 self._register.emit(str(folder), session, title, task["id"])
                 if bot and session:
@@ -897,6 +924,8 @@ class Cron(QObject):
                 base = self._t("cron_failed", "Échec")
                 status, summary = "error", (f"{base} — {detail}" if detail else base)[:300]
             finally:
+                if ctl["stopped"]:
+                    status, summary = "error", self._t("cron_stuck", "Arrêtée : plus de nouvelles depuis 15 min")
                 self._bg_run = None
                 try:
                     if agent:

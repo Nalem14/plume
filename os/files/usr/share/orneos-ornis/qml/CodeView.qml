@@ -535,7 +535,10 @@ Item {
                 visible: count > 0
                 clip: true
                 model: code.items
-                spacing: 12
+                // bots: tools and thoughts are hidden (height 0); a spacing between them all made long empty
+                // stretches (09/11) — there, each shown row carries its own gap
+                readonly property int gap: code.bot !== "" ? 12 : 0
+                spacing: code.bot !== "" ? 0 : 12
                 topMargin: 20; bottomMargin: 20
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; onPressedChanged: if (pressed) view.stick = false }
@@ -555,7 +558,7 @@ Item {
                     } }
                     DelegateChoice { roleValue: "error"; delegate: Item {
                         id: d2; required property var item
-                        width: list.width; height: c2.implicitHeight
+                        width: list.width; height: c2.implicitHeight + list.gap
                         ErrorCard { id: c2; x: (list.width - view.column) / 2; width: view.column; entry: d2.item }
                     } }
                     DelegateChoice { roleValue: "planready"; delegate: Item {
@@ -590,7 +593,7 @@ Item {
                         id: d7; required property var item
                         width: list.width
                         // [SILENT] peer replies leave an empty notice: take no space
-                        height: d7.item.key === "bots_silent" ? 0 : c7.implicitHeight
+                        height: d7.item.key === "bots_silent" ? 0 : c7.implicitHeight + list.gap
                         visible: d7.item.key !== "bots_silent"
                         RowLayout {
                             id: c7
@@ -607,7 +610,7 @@ Item {
                         }
                     } }
                     DelegateChoice { roleValue: "unreadmark"; delegate: Item {   // what the bot said while you were away
-                        width: list.width; height: 28
+                        width: list.width; height: 28 + list.gap
                         RowLayout {
                             x: (list.width - view.column) / 2; width: view.column
                             anchors.verticalCenter: parent.verticalCenter
@@ -620,7 +623,7 @@ Item {
                     DelegateChoice { roleValue: "peer"; delegate: Item {
                         id: dPeer; required property var item
                         width: list.width
-                        height: (dPeer.item.count || 0) > 0 ? peerPill.implicitHeight + 8 : 0
+                        height: (dPeer.item.count || 0) > 0 ? peerPill.implicitHeight + 8 + list.gap : 0
                         visible: (dPeer.item.count || 0) > 0
                         AbstractButton {
                             id: peerPill
@@ -690,7 +693,7 @@ Item {
                         // Bot chat: an answer with no text yet (only tools behind it) is no empty bubble
                         readonly property bool blank: code.bot !== "" && d4.item.kind === "agent"
                                                       && String(d4.item.content || "").trim() === ""
-                        width: list.width; height: blank ? 0 : c4.implicitHeight
+                        width: list.width; height: blank ? 0 : c4.implicitHeight + list.gap
                         visible: !blank
                         Message { id: c4; x: (list.width - view.column) / 2; width: view.column; message: d4.item
                                   lastMine: d4.index === code.lastUser

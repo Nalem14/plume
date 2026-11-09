@@ -264,5 +264,10 @@ Window {
         }
     }
 
+    // in the panel, the focus is often in the page: the shortcuts of Annoter work there too
+    Shortcut { sequence: "Ctrl+Shift+D"; enabled: win.embedded; onActivated: { win.annotating = !win.annotating; win.changed() } }
+    Shortcut { sequence: "Escape"; enabled: win.embedded && win.annotating && !note.visible
+               onActivated: { win.annotating = false; hoverBox.width = 0; win.changed() } }
+
     Component.onCompleted: addTab(startUrl)
 }

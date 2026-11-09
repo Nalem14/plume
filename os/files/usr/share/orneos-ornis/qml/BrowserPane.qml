@@ -21,13 +21,32 @@ Item {
         if (watching === want) return
         if (watching !== "") { frame.window = null; browser.setWatched(watching, false) }   // let go first, then hide it
         watching = want
-        if (want !== "") { browser.setWatched(want, true); frame.window = browser.windowFor(want) }
+        if (want !== "") {          // the window first (it may not exist yet), then usable, then here
+            const w = browser.windowFor(want)
+            browser.setWatched(want, true)
+            frame.window = w
+        }
         refresh()
     }
     onShownNowChanged: watch()
     onOwnerChanged: watch()
     Component.onDestruction: if (browser && watching !== "") browser.setWatched(watching, false)
     Connections { target: browser; function onChanged() { pane.refresh() } }
+    // A dialog or menu of the window opened over the panel would be drawn under the page (a native window above the
+    // window's items): the page steps aside while one is open.
+    property bool covered: false
+    function checkCovered() {
+        const o = pane.Overlay.overlay
+        let any = false
+        if (o) for (let i = 0; i < o.children.length; ++i) {      // a dialog or a menu over the page (not a tooltip)
+            const k = o.children[i]
+            if (!k.visible || k.width < 120 || k.height < 80) continue
+            const p = k.mapToItem(pane, 0, 0)
+            if (p.x + k.width > 0 && p.x < pane.width && p.y + k.height > 0 && p.y < pane.height) any = true
+        }
+        covered = any
+    }
+    Timer { interval: 150; repeat: true; running: pane.shownNow; onTriggered: pane.checkCovered() }
 
     ColumnLayout {
         anchors.fill: parent
@@ -46,6 +65,7 @@ Item {
                       onClicked: browser.act(pane.owner, pane.st.loading ? "stop" : "reload") }
             OTextField {
                 id: address
+                objectName: "browserAddress"
                 Layout.fillWidth: true
                 font.pixelSize: 13
                 placeholderText: app.t.browser_url_ph
@@ -55,22 +75,26 @@ Item {
             }
             OButton {
                 id: sizeBtn
+                objectName: "browserSize"
                 kind: pane.st.devW > 0 ? "secondary" : "quiet"; iconName: "devices"; iconSize: 15; height_: 30
                 text: pane.st.devW > 0 ? pane.st.devW + "×" + pane.st.devH : ""
                 tip: app.t.browser_devices
-                onClicked: sizeMenu.popup(sizeBtn, 0, sizeBtn.height + 4)
+                onClicked: { sizeMenu.parent = sizeBtn; sizeMenu.x = sizeBtn.width - sizeMenu.width; sizeMenu.y = sizeBtn.height + 4
+                             sizeMenu.open() }
             }
-            OButton { kind: pane.st.annotating ? "secondary" : "quiet"; iconName: "edit"; iconSize: 15; height_: 30
+            OButton { objectName: "browserAnnotate"; kind: pane.st.annotating ? "secondary" : "quiet"; iconName: "edit"; iconSize: 15; height_: 30
                       tip: app.t.browser_annotate + "  (Ctrl+Shift+D)"; onClicked: browser.annotate(pane.owner, !pane.st.annotating) }
             OButton { kind: "quiet"; iconName: "openExternal"; iconSize: 14; height_: 30; tip: app.t.browser_external
                       enabled: !!pane.st.url && pane.st.url !== "about:blank"; onClicked: app.openLink(pane.st.url) }
         }
         OMenu {
             id: sizeMenu
+            popupType: Popup.Window      // above the page: the page is a window of its own, an item would open under it
             Repeater {
                 model: pane.st.presets || []
                 OMenuItem {
                     required property var modelData
+                    objectName: "preset-" + modelData.key
                     text: (app.t["browser_preset_" + modelData.key.replace("-", "_")] || modelData.key)
                           + (modelData.w ? "  " + modelData.w + "×" + modelData.h : "")
                     onTriggered: browser.preset(pane.owner, modelData.key)
@@ -128,7 +152,9 @@ Item {
             color: pane.c.field
             WindowContainer {                         // the browser itself: its own window, live
                 id: frame
+                objectName: "browserFrame"
                 anchors.fill: parent
+                visible: !pane.covered
                 window: null
             }
             Column {

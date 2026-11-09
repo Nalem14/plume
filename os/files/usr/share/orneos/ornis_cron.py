@@ -231,20 +231,23 @@ def schedule_label(expr: str, lang: str = "fr") -> str:
             return f"{h}:{m:02d} Uhr"
         return f"{h}:{m:02d}"
 
-    if len(mins) == 1 and len(hours) == 1 and len(doms) == 31 and len(mons) == 12:
-        h, m = next(iter(hours)), next(iter(mins))
+    if len(mins) == 1 and 1 <= len(hours) <= 8 and len(doms) == 31 and len(mons) == 12:
+        m = next(iter(mins))
+        times = [hm(x, m) for x in sorted(hours)]            # « 9 h, 13 h et 17 h »: several times a day
+        at = times[0] if len(times) == 1 else (", ".join(times[:-1])
+                                               + (" et " if fr else " und " if de else " and ") + times[-1])
         if len(dows) == 7:
             if fr:
-                return f"Tous les jours à {hm(h, m)}"
+                return f"Tous les jours à {at}"
             if de:
-                return f"Täglich um {hm(h, m)}"
-            return f"Every day at {hm(h, m)}"
+                return f"Täglich um {at}"
+            return f"Every day at {at}"
         if dows == {1, 2, 3, 4, 5}:
             if fr:
-                return f"Jours ouvrés à {hm(h, m)}"
+                return f"Jours ouvrés à {at}"
             if de:
-                return f"Werktags um {hm(h, m)}"
-            return f"Weekdays at {hm(h, m)}"
+                return f"Werktags um {at}"
+            return f"Weekdays at {at}"
         if len(dows) == 1:
             names = {
                 "fr": ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"],
@@ -253,10 +256,10 @@ def schedule_label(expr: str, lang: str = "fr") -> str:
             }
             day = names["fr" if fr else "de" if de else "en"][next(iter(dows))]
             if fr:
-                return f"Chaque {day} à {hm(h, m)}"
+                return f"Chaque {day} à {at}"
             if de:
-                return f"Jeden {day} um {hm(h, m)}"
-            return f"Every {day} at {hm(h, m)}"
+                return f"Jeden {day} um {at}"
+            return f"Every {day} at {at}"
     if mins == set(range(0, 60, 15)) and hours == set(range(24)) and len(doms) == 31 and len(mons) == 12 and len(dows) == 7:
         return "Toutes les 15 minutes" if fr else ("Alle 15 Minuten" if de else "Every 15 minutes")
     if mins == {0} and len(hours) == 24 and len(doms) == 31 and len(mons) == 12 and len(dows) == 7:
@@ -279,9 +282,13 @@ def next_times(expr: str, n: int = 2, after: float | None = None) -> list[float]
     return out
 
 
-def plain_to_cron(kind: str, hour: int = 8, minute: int = 0, weekday: int = 1, every: int = 15) -> str:
-    """Shortcuts for the simple UI. weekday: 0=Sun … 6=Sat (crontab). every: minutes (≥ 15)."""
-    hour, minute = int(hour) % 24, int(minute) % 60
+def plain_to_cron(kind: str, hour: int | str = 8, minute: int = 0, weekday: int = 1, every: int = 15) -> str:
+    """Shortcuts for the simple UI. hour: one hour, or several (« 9, 13, 17 »: the same minute each time).
+    weekday: 0=Sun … 6=Sat (crontab). every: minutes (≥ 15)."""
+    hours = sorted({int(h) % 24 for h in str(hour).replace(";", ",").replace(" ", ",").split(",") if h.strip().isdigit()})
+    if not hours:
+        raise ValueError(f"no hour in {hour!r}")
+    hour, minute = ",".join(str(h) for h in hours), int(minute) % 60
     if kind == "daily":
         return f"{minute} {hour} * * *"
     if kind == "weekdays":

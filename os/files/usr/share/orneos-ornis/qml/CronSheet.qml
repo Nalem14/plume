@@ -10,7 +10,7 @@ ODialog {
     property string botId: ""
     property bool advanced: false
     property string plainKind: "daily"
-    property int hour: 8
+    property string hours: "8"            // one hour, or several: « 9, 13, 17 »
     property int minute: 0
     property int weekday: 1
     property int everyMin: 15
@@ -34,17 +34,22 @@ ODialog {
         commandField.text = t.command || ""
         scheduleField.text = t.schedule || "0 8 * * *"
         pausedSwitch.checked = !!t.paused
-        plainKind = "daily"; hour = 8; minute = 0; weekday = 1; everyMin = 15
+        plainKind = "daily"; hours = "8"; minute = 0; weekday = 1; everyMin = 15
         if (t.schedule) {
             const p = String(t.schedule).trim().split(/\s+/)
             if (p.length === 5) {
                 const [mi, ho, dom, mon, dow] = p
                 minute = parseInt(mi) || 0
-                hour = parseInt(ho) || 0
+                hours = ho.split(",").join(", ")
+                // what the simple form cannot say exactly (« 9-17 », « 0,30 », « */2 »…) stays in the advanced
+                // field: saved from here, it would have become something else (« 0 9,13,17 » read as 9 h, 09/11)
+                const simpleHours = /^\d{1,2}(,\d{1,2})*$/.test(ho), simpleMin = /^\d{1,2}$/.test(mi)
                 if (mi.indexOf("*/") === 0 && ho === "*" && dom === "*" && mon === "*" && dow === "*") {
                     plainKind = "every"; everyMin = parseInt(mi.slice(2)) || 15
-                } else if (ho === "*" && dom === "*" && mon === "*" && dow === "*" && mi.indexOf("/") < 0) {
+                } else if (ho === "*" && dom === "*" && mon === "*" && dow === "*" && simpleMin) {
                     plainKind = "hourly"   // before daily: daily also has * * * on day/month/dow
+                } else if (!simpleHours || !simpleMin) {
+                    advanced = true
                 } else if (dom === "*" && mon === "*" && dow === "*") {
                     plainKind = "daily"
                 } else if (dom === "*" && mon === "*" && dow === "1-5") {
@@ -65,7 +70,7 @@ ODialog {
 
     function syncFromPlain() {
         if (advanced) return
-        const expr = cron.plainSchedule(plainKind, hour, minute, weekday, everyMin)
+        const expr = cron.plainSchedule(plainKind, hours, minute, weekday, everyMin)
         if (expr) scheduleField.text = expr
         scheduleError = ""
     }
@@ -169,8 +174,12 @@ ODialog {
                 OTextField {
                     // hourly = every hour at :MM — only the minute matters
                     visible: sheet.plainKind !== "hourly"
-                    Layout.preferredWidth: 48; text: String(sheet.hour)
-                    onEditingFinished: { sheet.hour = Math.max(0, Math.min(23, parseInt(text) || 0)); sheet.syncFromPlain() }
+                    Layout.preferredWidth: 120; text: sheet.hours
+                    placeholderText: "9, 13, 17"
+                    onEditingFinished: {
+                        const hs = [...new Set(text.split(/[,;\s]+/).map(h => parseInt(h)).filter(h => h >= 0 && h <= 23))].sort((a, b) => a - b)
+                        sheet.hours = hs.length ? hs.join(", ") : "8"; text = sheet.hours; sheet.syncFromPlain()
+                    }
                 }
                 Text {
                     visible: sheet.plainKind !== "hourly"
@@ -209,11 +218,13 @@ ODialog {
                     onActivated: { sheet.weekday = parseInt(model[currentIndex].value); sheet.syncFromPlain() }
                 }
             }
-            Text {
+            Text {                                      // « Tous les jours à 9 h, 13 h et 17 h · demain 9 h »
                 Layout.fillWidth: true
-                text: scheduleField.text
-                font.family: "JetBrains Mono"; font.pixelSize: 12
-                color: theme.c.faint
+                wrapMode: Text.Wrap
+                text: cron.labelOf(scheduleField.text) + (cron.nextTimes(scheduleField.text).length
+                                                          ? " · " + cron.nextTimes(scheduleField.text).join(" · ") : "")
+                font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                color: theme.c.muted
             }
         }
 
