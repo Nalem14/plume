@@ -303,6 +303,8 @@ class CodeChat(QObject):
         self._last_status = None         # bot: what its status bubble shows (_status_tick)
         self._bg_bots: dict[str, dict] = {}  # bot_id -> stashed live state while another conversation is viewed
         self._bot_starts: dict[str, int] = {}  # bot_id -> its latest agent start (see _start)
+        self._handed: dict[str, "CodeChat"] = {}   # session -> the window its live turn was handed to (adopt)
+        self._scheduling = False               # runScheduled opening its bot: never takes a worker's turn (adopt)
         self._unread_mark = 0                  # a bot opened with N answers not read: the bar goes before them
         self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
         try:
@@ -546,6 +548,10 @@ class CodeChat(QObject):
         threading.Thread(target=work, daemon=True, name="ornis-code-context").start()
 
     def _on_measured(self, session, data):
+        target = self._passed_on(session)
+        if target is not None:
+            target._on_measured(session, data)
+            return
         if session == self._session and not self._parts_hold and data.get("epoch") == self._parts_epoch:
             self._parts = data
             self.usageChanged.emit()
@@ -973,6 +979,8 @@ class CodeChat(QObject):
             "cron_job": self._cron_job,
             "bot_brief": self._bot_brief,
             "start": getattr(self, "_starts", 0),
+            "turn_start": self._turn_start, "turn_asked": self._turn_asked,
+            "turn_rev": self._turn_rev, "continued": getattr(self, "_continued", 0),
         }
         self._agent = None
         self._busy = False
@@ -1032,6 +1040,10 @@ class CodeChat(QObject):
         self._parts = dict(bg.get("parts") or {})
         self._asked = bg.get("asked")
         self._cron_job = bg.get("cron_job")
+        self._turn_start = int(bg.get("turn_start") or 0)
+        self._turn_asked = str(bg.get("turn_asked") or "")
+        self._turn_rev = str(bg.get("turn_rev") or "")
+        self._continued = int(bg.get("continued") or 0)
         self._mode = "auto" if self._bot else (bg.get("mode") or "auto")     # bots are always Autonome
         self._plan_mode = bool(bg.get("plan_mode")) and not self._bot
         self._ask_mode = bool(bg.get("ask_mode")) and not self._bot
@@ -1059,8 +1071,68 @@ class CodeChat(QObject):
         self._status_tick()
         return True
 
+    def _bind(self, agent):
+        """An agent's news now come to this CodeChat (a turn handed over by a background worker: adopt)."""
+        agent.on_update = lambda sid, u: _emit_safe(self._update, agent, sid, u)
+        agent.on_permission = lambda rid, sid, tool, opts: self._permission.emit(rid, sid, tool, opts)
+        agent.on_exit = lambda code, err: self._exited.emit(code, err)
+        agent.on_question = lambda rid, sid, qs: self._question.emit(rid, sid, qs)
+
+    def can_adopt(self, worker) -> bool:
+        return bool(worker is not self and getattr(worker, "_bot", "") and worker._agent is not None
+                    and worker._agent.alive() and worker._state == "ready" and not worker._replaying
+                    and worker._host is None and not worker._compacting and worker._session
+                    and (worker._busy or worker._queued or worker._later))
+
+    def adopt(self, worker) -> bool:
+        """A bot working in a background worker (a message from a bot, a group turn, a routine) comes to the front,
+        live, with its agent and its turn: its thread used to open only once the turn was over (09/11: « pourquoi
+        quand une IA travaille je peux pas ouvrir sa conv ? »). False when it cannot be taken now (agent starting,
+        thread being read again): the caller waits as before."""
+        if not self.can_adopt(worker):
+            return False
+        bid = worker._bot
+        activity = float(getattr(worker, "_activity_at", 0) or 0)
+        worker._stash_bot("")
+        bg = worker._bg_bots.pop(bid, None)
+        if bg is None or bg.get("agent") is None:
+            return False
+        self._bind(bg["agent"])
+        worker._handed[bg["session"]] = self          # its prompt thread still reports there: passed on (_on_done)
+        worker._bot, worker._bot_brief, worker._session, worker._title = "", False, "", ""
+        worker._state = "idle"
+        worker._items.reset()
+        worker.changed.emit()
+        self._stash_bot(bid)
+        bg["key"] = bid
+        self._bg_bots[bid] = bg
+        self._restore_bot(bid)
+        self._activity_at = max(float(getattr(self, "_activity_at", 0) or 0), activity)
+        return True
+
+    def _passed_on(self, session: str):
+        """The window a handed-over turn of this session went to (adopt), or None."""
+        target = self._handed.get(session) if session else None
+        return target if target is not None and session != self._session else None
+
+    def _bg_finish_cron(self, bg: dict, status: str, summary: str, session: str = "", answer: str = ""):
+        job, bg["cron_job"] = bg.get("cron_job"), None
+        if not job:
+            return
+        tid = str(job.get("task_id") or "")
+        if status == "ok":
+            try:
+                import ornis_bots  # noqa: PLC0415
+                answer = ornis_bots.strip_silent(answer)
+            except ImportError:
+                pass
+            self.cronReply.emit(tid, answer)
+        self.cronDone.emit(tid, status, summary[:300], session or bg.get("session") or "")
+
     def _close_bg_bot(self, bot_id: str):
         bg = self._bg_bots.pop(bot_id, None)
+        if bg and bg.get("cron_job"):
+            self._bg_finish_cron(bg, "error", self._app._t.get("code_stopped", "Arrêté"))
         if bg and bg.get("agent") is not None:
             agent = bg["agent"]
             threading.Thread(target=agent.close, daemon=True).start()
@@ -1094,8 +1166,10 @@ class CodeChat(QObject):
         bot_id = str(bot_id or "").strip()
         cron = getattr(self, "_bot_cron", None)
         workers = getattr(self, "_bot_peer_workers", None) or [w for w in [getattr(self, "_bot_peer_worker", None)] if w]
-        if ((cron and cron._chat_busy and getattr(cron, "_running_bot", "") == bot_id
-             and not (cron._ui_run and cron._ui_run.get("bot") == bot_id))
+        runner = next((w for w in workers if w.bot == bot_id and (w.busy or w._cron_job)), None)
+        if runner is not None and not self._scheduling and self.adopt(runner):
+            return                                   # its turn goes on here, live
+        if ((cron and cron.bg_bot(bot_id))
                 or any(w.bot == bot_id and (w.busy or w._cron_job) for w in workers)):
             opening = self._opening
             QTimer.singleShot(500, lambda: self.openBot(bot_id, folder, session_id)
@@ -1175,7 +1249,11 @@ class CodeChat(QObject):
         self._mode = "auto"
         self._plan_mode = self._ask_mode = False
         if bot:
-            self.openBot(bot, folder, session_id or "")
+            self._scheduling = True
+            try:
+                self.openBot(bot, folder, session_id or "")
+            finally:
+                self._scheduling = False
         else:
             self._bot, self._bot_brief = "", False
             self._open(folder, "")
@@ -1246,6 +1324,7 @@ class CodeChat(QObject):
             self.changed.emit()
             return
         self._cancel_host()
+        self._handed.pop(session_id, None)           # its own again (a turn handed to the window has ended)
         self._opening += 1
         self._items.quiet = False
         if not folder or not Path(folder).is_dir():
@@ -1690,6 +1769,12 @@ class CodeChat(QObject):
 
     def _on_done(self, session, result):
         result = result if isinstance(result, dict) else {}
+        target = self._passed_on(session)
+        if target is not None:                       # a turn handed to the window (adopt): its end goes there
+            if not result.get("created") and not result.get("loaded"):
+                self._handed.pop(session, None)
+            target._on_done(session, result)
+            return
         bot_id = str(result.get("_bot") or "")
         bg = self._bg_bots.get(bot_id) if (bot_id and bot_id != self._bot) else None
         if bg is None and session != self._session:
@@ -1708,16 +1793,27 @@ class CodeChat(QObject):
                     bg["queued"] = ""
                     self._bg_send(bg, text)
                 else:
+                    self._bg_finish_cron(bg, "error", self._app._t.get("code_lost", "") or "error", session)
                     self._close_bg_bot(bg.get("key") or bg["bot"])
                 self.changed.emit()
                 return
             bg["busy"] = False
+            answer = ""
             if not result.get("error"):
                 rows = bg.get("rows") or []
                 ask_at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("kind") == "user"), -1)
                 answer = next((str(r.get("content") or "") for r in reversed(rows[ask_at + 1:])
                                if r.get("kind") == "agent" and str(r.get("content") or "").strip()), "")
                 _bot_record(bg["bot"], str(rows[ask_at].get("content") or "") if ask_at >= 0 else "", answer)
+            # a scheduled turn (a bot's message, a group turn, a routine) that went on in the background ends here:
+            # its group answer is posted and its routine marked, as in front (else it stayed « écrit… » for ever)
+            if bg.get("cron_job"):
+                error = str(result.get("error") or "")
+                failed = bool(error) or result.get("stopReason") == "cancelled"
+                base = self._app._t.get("cron_failed", "Échec")
+                self._bg_finish_cron(bg, "error" if failed else "ok",
+                                     (f"{base} — {error}"[:300] if error else base) if failed
+                                     else self._app._t.get("cron_done", "Terminé"), session, answer)
             self._remember_for(bg["folder"], bg.get("session") or session, bg.get("title") or "", bg["bot"], touch=True)
             if bg.get("later") and not result.get("error"):
                 text = bg["later"].pop(0)
@@ -2480,6 +2576,10 @@ class CodeChat(QObject):
 
     # ---- checkpoints: what a turn changed, and « Annuler ces modifications » (as /rewind in Claude Code) ---------------
     def _on_checked(self, session, rev):
+        target = self._passed_on(session)
+        if target is not None:
+            target._on_checked(session, rev)
+            return
         if session == self._session or not session:
             self._turn_rev = rev
 

@@ -30,6 +30,7 @@ CRON_NOTE = (
 SCRIPT_TIMEOUT = 600
 BG_SILENT = 15 * 60       # a routine in the background with no sign of life this long is stuck: stopped
 BG_MAX = 60 * 60          # and none runs longer: it holds its conversation (and its bot) meanwhile
+BG_PARALLEL = 3           # conversation routines on their own agent at once (each bot's routines still one by one)
 MAX_SCRIPT_OUT = 12000
 
 
@@ -51,19 +52,23 @@ class Cron(QObject):
         code._bot_cron = self
         self._tasks: list[dict] = []
         self._mtime = 0.0
-        self._chat_busy = False
         self._script_n = 0
         self._consent = None                # {id, action, task, previous?}
         self._undo = None                   # {task snapshot or id, kind: create|update|delete}
         self._expanded: set[str] = set()
         self._follow: tuple[str, str] | None = None   # (folder, session) open when a background run ends
-        self._bg_run: dict | None = None              # live background chat: {task, run, session, agent}
-        self._ui_run: dict | None = None              # cron running inside CodeChat
+        # Routines run side by side (09/11: « une autre tâche cron tourne déjà » at the lightning while another
+        # bot's routine ran): one in the window, a bot's ones in its background worker (openable live), the others
+        # on their own agent. Only a bot's own routines wait for each other: they share its thread.
+        self._bg_runs: dict[str, dict] = {}           # run id -> live chat on its own agent: {task, run, session, agent, ctl}
+        self._ui_run: dict | None = None              # cron running inside the window's CodeChat
+        self._worker_runs: dict[str, dict] = {}       # task id -> a bot's routine in a worker: {run, folder, title, started, bot, ctl}
         self._dirty = False                           # cron.json written by the tick's bookkeeping
         self._done.connect(self._on_done)
         self._register.connect(self._register_session)
         self._code.cronDone.connect(self._on_code_cron_done)
         self._code.cronSession.connect(self._on_code_cron_session)
+        QTimer.singleShot(0, self._hook_workers)
         self._tick = QTimer(self)
         self._tick.setInterval(20_000)
         self._tick.timeout.connect(self._on_tick)
@@ -97,6 +102,35 @@ class Cron(QObject):
         return self._consent is not None
 
     @Slot(str)
+    def _hook_workers(self):
+        """The bots' background workers run bot routines too (Bots made them): their ends come here."""
+        for w in getattr(self._code, "_bot_peer_workers", None) or []:
+            if not getattr(w, "_cron_hooked", False):
+                w._cron_hooked = True
+                w.cronDone.connect(self._on_code_cron_done)
+                w.cronSession.connect(self._on_code_cron_session)
+
+    @property
+    def _chat_busy(self) -> bool:
+        """Every slot for a conversation routine is taken (the window's, and BG_PARALLEL own agents)."""
+        return len(self._bg_runs) >= BG_PARALLEL and self._ui_run is not None
+
+    def running_bots(self) -> set:
+        """The bots a conversation routine runs for now (their thread is in use)."""
+        bots = {str(r.get("bot") or "") for r in [*self._bg_runs.values(), *self._worker_runs.values()]}
+        if self._ui_run:
+            bots.add(str(self._ui_run.get("bot") or ""))
+        bots.discard("")
+        return bots
+
+    def bg_bot(self, bot: str) -> bool:
+        """A routine of this bot runs on its own agent (its thread opens once it is done)."""
+        return bool(bot) and any(r.get("bot") == bot for r in list(self._bg_runs.values()))
+
+    def _bg_of_session(self, session: str):
+        return next((r for r in self._bg_runs.values() if session and r.get("session") == session), None)
+
+    @Slot(str)
     def toggleExpand(self, task_id):
         tid = str(task_id or "")
         if tid in self._expanded:
@@ -120,8 +154,8 @@ class Cron(QObject):
             self.openSession.emit(folder, session_id)
             return
         # Background agent still owns the session: a second load would fail with « n'a pas pu être ouverte »
-        bg = self._bg_run or {}
-        if bg.get("session") == session_id and bg.get("agent") is not None:
+        bg = self._bg_of_session(session_id) or {}
+        if bg.get("agent") is not None:
             self._follow = (folder, session_id)
             self.toast.emit(self._t("cron_watch_wait",
                                     "Toujours en cours — la conversation s'ouvrira dès qu'elle est terminée"))
@@ -156,12 +190,21 @@ class Cron(QObject):
         if any(r.get("status") == "running" for r in task.get("runs") or []):
             self.toast.emit(self._t("cron_already", "Cette tâche tourne déjà"))
             return
-        if task.get("kind") == "chat" and self._chat_busy:
-            self.toast.emit(self._t("cron_busy", "Une autre tâche cron tourne déjà"))
-            return
         started = self._start(task, manual=True)
         if not started:
-            self.toast.emit(self._t("cron_busy", "Une autre tâche cron tourne déjà"))
+            # not refused: it goes as soon as its bot (or a slot) is free, the lightning keeps it waiting
+            try:
+                ornis_cron.patch(task_id, {"force_run": True}, self._lang())
+            except ValueError:
+                pass
+            bot = str(task.get("bot") or "")
+            if bot and bot in self._bot_busy_now():
+                import ornis_bots  # noqa: PLC0415
+                name = (ornis_bots.get(bot) or {}).get("title") or bot
+                self.toast.emit(self._t("cron_after_bot", "%1 finit ce qu’il fait : la routine part juste après")
+                                .replace("%1", name))
+            else:
+                self.toast.emit(self._t("cron_queued", "La routine part dès qu’une autre a fini"))
 
     @Slot(str)
     def remove(self, task_id):
@@ -492,7 +535,25 @@ class Cron(QObject):
     def _stop_stuck(self, now: float) -> None:
         """A background routine that hangs (a call that never returns, a tool waiting forever) would hold its
         conversation and its bot until Plume restarts (« Toujours en cours », 09/11): stopped, its run marked."""
-        bg = self._bg_run or {}
+        for tid, wr in list(self._worker_runs.items()):      # a bot's routine in a worker (or taken to the window)
+            ctl, runner = wr["ctl"], self._runner_of_job(tid)
+            if runner is None or ctl.get("stopped"):
+                continue
+            beat = max(float(ctl["started"]), float(getattr(runner, "_activity_at", 0) or 0))
+            if now - beat >= BG_SILENT or now - ctl["started"] >= BG_MAX:
+                ctl["stopped"] = True
+                runner.stop()
+        for bg in list(self._bg_runs.values()):
+            self._stop_one(bg, now)
+
+    def _runner_of_job(self, task_id: str):
+        """The CodeChat running this routine now: its worker, or the window that took it (adopt)."""
+        for c in [self._code, *(getattr(self._code, "_bot_peer_workers", None) or [])]:
+            if (getattr(c, "_cron_job", None) or {}).get("task_id") == task_id:
+                return c
+        return None
+
+    def _stop_one(self, bg: dict, now: float) -> None:
         ctl, agent = bg.get("ctl"), bg.get("agent")
         if not ctl or agent is None or ctl.get("stopped"):
             return
@@ -515,9 +576,10 @@ class Cron(QObject):
         """Unblock the scheduler if a run stayed « running » after a lost UI/background handle."""
         now = time.time()
         self._stop_stuck(now)
-        # Recover a stuck chat gate (cronDone never fired, agent gone)
-        if self._chat_busy and not self._ui_run and not self._bg_run:
-            self._chat_busy = False
+        # a routine whose worker lost it (cronDone never came, nobody runs it any more): its bot is free again
+        for tid, wr in list(self._worker_runs.items()):
+            if self._runner_of_job(tid) is None and now - float(wr.get("started") or now) > 30:
+                self._worker_runs.pop(tid, None)
         changed = False
         for t in list(ornis_cron.tasks()):
             for r in list(t.get("runs") or []):
@@ -526,7 +588,7 @@ class Cron(QObject):
                 rid = r.get("id")
                 if self._ui_run and self._ui_run.get("run") == rid:
                     continue
-                if self._bg_run and self._bg_run.get("run") == rid:
+                if rid in self._bg_runs or any(w.get("run") == rid for w in self._worker_runs.values()):
                     continue
                 age = now - float(r.get("started") or 0)
                 # chat turns can be long; scripts use SCRIPT_TIMEOUT. Still unblock after 15 min orphan.
@@ -543,7 +605,6 @@ class Cron(QObject):
                 except ValueError:
                     pass
         if changed:
-            self._chat_busy = False
             self._reload()
 
     def _on_tick(self):
@@ -642,13 +703,9 @@ class Cron(QObject):
                 self._reload()
                 return True
             task = dict(task, folder=ornis_bots.working_folder(bot))
-            peer_workers = getattr(self._code, "_bot_peer_workers", None) or []
-            bg_bots = getattr(self._code, "_bg_bots", {})
             # a conversation routine runs in the bot's own thread: it waits for the bot's turn to end. A script does
             # not use the thread: it never waits (09/11: a bot's test script « queued » while the bot was talking)
-            if task.get("kind") == "chat" and ((self._code.bot == bot and (self._code.busy or self._code._queued))
-                    or bot in bg_bots
-                    or any(w.bot == bot and (w.busy or w._cron_job) for w in peer_workers)):
+            if task.get("kind") == "chat" and bot in self._bot_busy_now():
                 if manual:
                     ornis_cron.patch(tid, {"force_run": True}, self._lang())
                 return False
@@ -681,7 +738,7 @@ class Cron(QObject):
             self._reload()
             return True
         if task.get("kind") == "chat":
-            if self._chat_busy:
+            if not self._chat_room(bot):
                 return False  # keep force_run / due next_run for the next tick
             self._begin_run(tid, manual)
             self._run_chat(task)
@@ -691,6 +748,25 @@ class Cron(QObject):
         self._begin_run(tid, manual)
         self._run_script(task)
         return True
+
+    def _bot_busy_now(self) -> set:
+        """The bots whose thread is in use: a turn in the window, in the background, in a worker, or a routine."""
+        code = self._code
+        busy = set(self.running_bots()) | set(getattr(code, "_bg_bots", {}) or {})
+        if code.bot and (code.busy or code._queued or code._cron_job):
+            busy.add(code.bot)
+        for w in getattr(code, "_bot_peer_workers", None) or []:
+            if w.bot and (w.busy or w._cron_job):
+                busy.add(w.bot)
+        return busy
+
+    def _free_worker(self, bot: str):
+        pick = getattr(self._code, "_bot_pick_worker", None)
+        return pick(bot) if (bot and pick) else None
+
+    def _chat_room(self, bot: str) -> bool:
+        """Somewhere for a conversation routine to run now: the window, a bot's worker, or an own agent."""
+        return self._ui_run is None or len(self._bg_runs) < BG_PARALLEL or self._free_worker(bot) is not None
 
     def _begin_run(self, tid: str, manual: bool) -> None:
         """Clear force_run and advance next_run once we are committed to starting."""
@@ -705,8 +781,6 @@ class Cron(QObject):
         self._reload()
 
     def _run_chat(self, task: dict):
-        self._chat_busy = True
-        self._running_bot = str(task.get("bot") or "")
         run_id = str(uuid.uuid4())
         started = time.time()
         ornis_cron.add_run(task["id"], {
@@ -728,11 +802,30 @@ class Cron(QObject):
         day = datetime.now().strftime("%d %b").lstrip("0")
         title = f"{task.get('title') or task['id']} · {day}"
         prompt = CRON_NOTE + str(task.get("prompt") or "")
+        info = {"task": task["id"], "run": run_id, "folder": str(folder), "title": title,
+                "started": started, "bot": bot, "ctl": {"started": started, "stopped": False}}
+
+        def in_worker() -> bool:
+            # a bot's routine: in its background worker, a real conversation the person can open live (adopt)
+            worker = self._free_worker(bot)
+            if worker is None:
+                return False
+            self._worker_runs[task["id"]] = info
+            if worker.runScheduled(str(folder), title, prompt, task["id"], bot=bot, session_id=session_id):
+                return True
+            self._worker_runs.pop(task["id"], None)
+            return False
+
+        if self._ui_run is not None:                 # the window runs another routine: never wait for it
+            if not in_worker():
+                self._run_chat_background(task, run_id, title, prompt, started)
+            return
         # Prefer the Code view: the user sees the turn live and can open it from the list
-        self._ui_run = {"task": task["id"], "run": run_id, "folder": str(folder), "title": title,
-                        "started": started, "bot": bot}
+        self._ui_run = info
 
         def start_ui():
+            if self._ui_run is not info:
+                return
             if self._code.runScheduled(str(folder), title, prompt, task["id"], bot=bot, session_id=session_id):
                 if self._unwatched():
                     self.showCode.emit()
@@ -741,13 +834,14 @@ class Cron(QObject):
                 QTimer.singleShot(400, start_ui)
                 return
             self._ui_run = None
-            self._run_chat_background(task, run_id, title, prompt, started)
+            if not in_worker():
+                self._run_chat_background(task, run_id, title, prompt, started)
 
         QTimer.singleShot(0, start_ui)
 
     def _on_code_cron_session(self, task_id, folder, session):
-        ui = self._ui_run
-        if not ui or ui.get("task") != task_id:
+        ui = self._ui_run if (self._ui_run or {}).get("task") == task_id else self._worker_runs.get(task_id)
+        if not ui:
             return
         try:
             ornis_cron.update_run(task_id, ui["run"], {
@@ -758,14 +852,18 @@ class Cron(QObject):
             pass
         self._register_session(folder, session, ui.get("title") or task_id, task_id)
         self._reload()
-        if self._unwatched() and not ui.get("bot"):
+        if self._unwatched() and not ui.get("bot") and ui is self._ui_run:
             self.openSession.emit(str(folder), str(session))
 
     def _on_code_cron_done(self, task_id, status, summary, session):
-        ui = self._ui_run
-        if not ui or ui.get("task") != task_id:
+        if (self._ui_run or {}).get("task") == task_id:
+            ui, self._ui_run = self._ui_run, None
+        else:
+            ui = self._worker_runs.pop(task_id, None)
+        if not ui:
             return
-        self._ui_run = None
+        if (ui.get("ctl") or {}).get("stopped") and status != "ok":
+            summary = self._t("cron_stuck", "Arrêtée : plus de nouvelles depuis 15 min")
         started = float(ui.get("started") or time.time())
         try:
             ornis_cron.update_run(task_id, ui["run"], {
@@ -774,11 +872,10 @@ class Cron(QObject):
             })
         except ValueError:
             pass
-        self._chat_busy = False
         self._done.emit(task_id, status, summary, str(ui.get("folder") or ""), session or "")
 
     def _run_chat_background(self, task, run_id, title, prompt, started):
-        """Fallback when Code is already busy: own agent (not openable until done)."""
+        """When neither the window nor a bot's worker can take it: its own agent (openable once done)."""
         bot = str(task.get("bot") or "").strip()
         for worker in getattr(self._code, "_bot_peer_workers", None) or []:
             if bot and worker.bot == bot and not worker.busy and not worker._cron_job:
@@ -800,9 +897,10 @@ class Cron(QObject):
         except ValueError:
             pass
         self._reload()
-        # Held from now: the reaper frees _chat_busy when neither handle is set, and the agent takes seconds to start
+        # Held from now (its bot is busy, a slot is taken): the agent takes seconds to start
         ctl = {"started": time.time(), "beat": time.time(), "stopped": False}     # the watchdog's (_reap_stale)
-        self._bg_run = {"task": task["id"], "run": run_id, "session": "", "agent": None, "ctl": ctl}
+        bg_run = {"task": task["id"], "run": run_id, "session": "", "agent": None, "bot": bot, "ctl": ctl}
+        self._bg_runs[run_id] = bg_run
 
         def work():
             session = ""
@@ -883,7 +981,7 @@ class Cron(QObject):
                 else:
                     created = agent.new_session()
                     session = created.get("sessionId") or ""
-                self._bg_run = {"task": task["id"], "run": run_id, "session": session, "agent": agent, "bot": bot, "ctl": ctl}
+                bg_run.update(session=session, agent=agent)
                 agent.set_mode(session, "auto")
                 self._register.emit(str(folder), session, title, task["id"])
                 if bot and session:
@@ -927,7 +1025,7 @@ class Cron(QObject):
             finally:
                 if ctl["stopped"]:
                     status, summary = "error", self._t("cron_stuck", "Arrêtée : plus de nouvelles depuis 15 min")
-                self._bg_run = None
+                self._bg_runs.pop(run_id, None)
                 try:
                     if agent:
                         agent.close()
@@ -940,7 +1038,6 @@ class Cron(QObject):
                     })
                 except ValueError:
                     pass                        # task deleted meanwhile: still free the gate below
-                self._chat_busy = False
                 self._done.emit(task["id"], status, summary, str(folder), session)
 
         threading.Thread(target=work, daemon=True, name=f"ornis-cron-{task['id']}").start()

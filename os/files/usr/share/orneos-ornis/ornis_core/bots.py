@@ -49,6 +49,7 @@ class Bots(QObject):
         self._worker = self._workers[0]
         code._bot_peer_workers = self._workers
         code._bot_peer_worker = self._worker
+        code._bot_pick_worker = self._free_worker      # a bot's routine runs in a worker too (cron.Cron._run_chat)
         self._pending = {}
         self._open_requested = ""
         code.cronDone.connect(self._peer_done)
@@ -216,7 +217,7 @@ class Bots(QObject):
         if not profile:
             self.toast.emit(self._t("bots_missing", "Ce bot n'existe plus"))
             return
-        if self._occupied(bot_id):
+        if self._occupied(bot_id) and not self._adoptable(bot_id):
             gid = self._typing.get(bot_id) or ""
             room = (ornis_bots.get_group(gid) or {}).get("title") if gid else ""
             if room:                                 # not an error: it answers in a room, its thread opens after
@@ -244,7 +245,7 @@ class Bots(QObject):
     def _open_when_idle(self, bot_id, opening):
         if self._open_requested != bot_id or self._code._opening != opening:
             return
-        if self._occupied(bot_id):
+        if self._occupied(bot_id) and not self._adoptable(bot_id):
             QTimer.singleShot(500, lambda: self._open_when_idle(bot_id, opening))
         else:
             self.open(bot_id)
@@ -546,9 +547,14 @@ class Bots(QObject):
         return next((w for w in idle if w.bot == bid), None) or next((w for w in idle if not w.bot), None) \
             or (idle[0] if idle else None)
 
+    def _adoptable(self, bid) -> bool:
+        """Its turn runs in a worker the window can take live (CodeChat.adopt): its thread opens now."""
+        runner = next((w for w in self._workers if w.bot == bid and (w.busy or w._cron_job)), None)
+        return runner is not None and self._code.can_adopt(runner)
+
     def _occupied(self, bid):
         cron = getattr(self._code, "_bot_cron", None)
-        return bool((cron and cron._chat_busy and getattr(cron, "_running_bot", "") == bid)
+        return bool((cron and cron.bg_bot(bid))
                     or any(w.bot == bid and (w.busy or w._cron_job) for w in self._workers))
 
     def _stop_silent(self):
