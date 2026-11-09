@@ -1171,7 +1171,11 @@ class CodeChat(QObject):
         last = next((r for r in reversed(rows) if r.get("kind") == "agent" and str(r.get("content") or "").strip()), None)
         text = str((last or {}).get("content") or "").strip()
         # « [SILENT] » alone: nothing to post; at the end of a real answer: the answer without the marker
-        return text.replace("[SILENT]", "").strip()
+        try:
+            import ornis_bots  # noqa: PLC0415
+            return ornis_bots.strip_silent(text)
+        except ImportError:
+            return text.replace("[SILENT]", "").strip()
 
     def _bot_preview(self):
         """The bots list shows what the bot said last (one line), as a messaging app."""
@@ -2238,9 +2242,14 @@ class CodeChat(QObject):
                 row.update(kind="notice", key="bots_silent", content="")
             elif row["content"].startswith("[Group message in"):
                 row.update(kind="notice", key="bots_group_turn", content=_group_title(row["content"]))
-        if is_bot and row.get("kind") == "agent" and row.get("content", "").strip() == "[SILENT]":
-            # peer reply with nothing for the person: hide the bubble
-            row.update(kind="notice", key="bots_silent", content="")
+        if is_bot and row.get("kind") == "agent" and "SILENT" in row.get("content", ""):
+            import ornis_bots  # noqa: PLC0415
+            kept = ornis_bots.strip_silent(row["content"])
+            if not kept and not row["content"].rstrip().endswith(("[SILENT", "[SIL", "[")):
+                # nothing for the person (« [SILENT] », however written): hide the bubble
+                row.update(kind="notice", key="bots_silent", content="")
+            elif kept and row["content"].rstrip().endswith("]"):
+                row["content"] = kept                  # the answer, without the marker at its end
         if row.get("kind") == "user" and row["content"].startswith("[Project command /"):
             name = row["content"][len("[Project command "):].split(" ", 1)[0]
             if "]\n\n" in row["content"]:

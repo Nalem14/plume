@@ -210,8 +210,9 @@ def _looks_like_path(text: str) -> bool:
     t = text.strip()
     if not t or len(t) > 260 or t != text.strip("`") or any(c in t for c in "\n\t\"'<>|*?;=(){}[]$`"):
         return False
-    if re.match(r"^[a-z][a-z0-9+.-]*://", t, re.I) or t.startswith(("-", "@", "#")) or " " in t.strip():
-        return False
+    absolute = t.startswith(("/", "~/")) or bool(re.match(r"^[A-Za-z]:[\\/]", t))
+    if re.match(r"^[a-z][a-z0-9+.-]*://", t, re.I) or t.startswith(("-", "@", "#")) or (" " in t and not absolute):
+        return False                             # a full path may hold a space (« Application Support »)
     t = re.sub(r":\d+(?::\d+)?$", "", t)      # src/app.py:42
     if "/" in t or "\\" in t or t.startswith("~"):
         return bool(re.search(r"[\w.-]", t)) and not re.fullmatch(r"[\d/.:-]+", t)   # not a date, a ratio
@@ -234,6 +235,23 @@ def _resolve_local(ref: str, bases) -> Path | None:
                 return candidate.resolve()
         except OSError:
             continue
+    if path.is_absolute():
+        return None
+    # named by its name or the end of its path only (« 01-offre-lancement.md », written by another bot):
+    # looked for under the same folders, a few thousand entries each at most
+    want = path.parts
+    for base in bases:
+        seen = 0
+        for root, dirs, files in os.walk(base):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv", "venv")]
+            seen += len(dirs) + len(files)
+            if seen > 5000:
+                break
+            for name in files + dirs:
+                if name == want[-1]:
+                    found = Path(root) / name
+                    if found.parts[-len(want):] == want:
+                        return found.resolve()
     return None
 
 

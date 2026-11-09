@@ -30,6 +30,7 @@ Rectangle {
     signal botCreateRequested()
     signal botEditRequested(string id)
     signal botMenuRequested(var bot, Item item, real x, real y)
+    signal groupMenuRequested(var group, Item item, real x, real y)
     signal groupChosen(string id)
     signal groupCreateRequested()
     signal taskChosen(string id)
@@ -662,6 +663,10 @@ Rectangle {
                     hoverEnabled: true
                     onClicked: side.groupChosen(modelData.id)
                     Accessible.name: modelData.title + (modelData.unread ? ", " + modelData.unread : "")
+                    TapHandler {              // settings, shared folder, delete: as a bot's menu
+                        acceptedButtons: Qt.RightButton
+                        onTapped: event => side.groupMenuRequested(gRow.modelData, gRow, event.position.x, event.position.y)
+                    }
                     background: Rectangle {
                         radius: 8
                         color: gRow.modelData.current && side.view === "group" ? side.c.card : gRow.hovered ? side.c.hover : "transparent"

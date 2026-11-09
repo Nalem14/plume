@@ -169,7 +169,8 @@ class Bots(QObject):
             "id": b["id"],
             "title": b.get("title") or b["id"],
             "description": b.get("description") or "",
-            "preview": b.get("preview") or "",
+            "preview": (ornis_bots.strip_silent(b.get("preview") or "") if "SILENT" in str(b.get("preview") or "")
+                        else b.get("preview") or ""),
             "folder": b.get("folder") or "",
             "session": b.get("session") or "",
             "hidden": bool(b.get("hidden")),
@@ -199,7 +200,14 @@ class Bots(QObject):
             self.toast.emit(self._t("bots_missing", "Ce bot n'existe plus"))
             return
         if self._occupied(bot_id):
-            self.toast.emit(self._t("cron_watch_wait", "La conversation s’ouvrira à la fin du travail en cours"))
+            gid = self._typing.get(bot_id) or ""
+            room = (ornis_bots.get_group(gid) or {}).get("title") if gid else ""
+            if room:                                 # not an error: it answers in a room, its thread opens after
+                self.toast.emit(self._t("bots_open_after_group", "%1 répond dans « %2 » : son fil s’ouvre dès qu’il a fini")
+                                .replace("%1", self._title(bot_id)).replace("%2", room))
+            else:
+                self.toast.emit(self._t("bots_open_after_work", "%1 termine un travail : son fil s’ouvre dès qu’il a fini")
+                                .replace("%1", self._title(bot_id)))
             opening = self._code._opening
             QTimer.singleShot(500, lambda: self._open_when_idle(bot_id, opening))
             return
@@ -577,7 +585,8 @@ class Bots(QObject):
         return {
             "id": g["id"], "title": g["title"], "description": g.get("description") or "",
             "members": g["members"], "lead": g["lead"], "reply": g["reply"], "faces": faces,
-            "preview": g.get("preview") or "", "when": _when(float(g.get("updated") or 0), self._lang()),
+            "preview": ornis_bots.strip_silent(g.get("preview") or "") if "SILENT" in str(g.get("preview") or "")
+                       else g.get("preview") or "", "when": _when(float(g.get("updated") or 0), self._lang()),
             "unread": 0 if g["id"] == self._group else int(g.get("unread") or 0),
             "current": g["id"] == self._group,
             "busy": any(v == g["id"] for v in self._typing.values()),

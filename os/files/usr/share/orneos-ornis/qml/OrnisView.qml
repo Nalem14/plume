@@ -296,6 +296,7 @@ Item {
             onProjectPickRequested: codeFolderDialog.open()          // the Code tab: a folder to work in
             onBotChosen: id => { if (win.codeLocked()) return; win.mode = "projects"; win.view = "code"; win.peek = false; sidebar.codeTab = "bots"; bots.closeGroup(); bots.open(id) }   // win.: the sidebar has a view of its own
             onGroupChosen: id => win.openGroup(id)
+            onGroupMenuRequested: (g, item, x, y) => groupMenu.openFor(g, item, x, y)
             onGroupCreateRequested: { if (codeLocked()) return; groupDialog.openNew("") }
             onBotCreateRequested: { if (win.codeLocked()) return; win.mode = "projects"; win.view = "code"; sidebar.codeTab = "bots"; botDialog.openNew() }
             onBotEditRequested: id => botDialog.openEdit(id)
@@ -554,6 +555,40 @@ Item {
                 app.t.bots_delete_text,
                 [{ id: "cancel", text: app.t.cancel }, { id: "yes", text: app.t.delete, kind: "danger" }],
                 () => bots.remove(botMenu.bot.id))
+        }
+    }
+    OMenu {
+        id: groupMenu
+        property var group: ({})
+        parent: Overlay.overlay
+        function openFor(g, item, px, py) {
+            group = g
+            const p = item.mapToItem(Overlay.overlay, px, py)
+            x = Math.min(p.x, Overlay.overlay.width - implicitWidth - 8)
+            y = Math.min(p.y, Overlay.overlay.height - implicitHeight - 8)
+            open()
+        }
+        OMenuItem {
+            text: app.t.groups_edit; iconName: "edit"
+            onTriggered: groupDialog.openEdit(groupMenu.group.id)
+        }
+        OMenuItem {
+            text: app.t.groups_folder_open; iconName: "folder"
+            onTriggered: {
+                const path = bots.groupFolder(groupMenu.group.id)
+                if (path) app.openFolder(path)
+            }
+        }
+        Rectangle { width: parent ? parent.width : 0; height: 1; color: win.c.hairline }
+        OMenuItem {
+            text: app.t.delete; iconName: "trash"
+            onTriggered: workDialog.ask(
+                app.t.groups_delete_title.replace("%1", groupMenu.group.title || groupMenu.group.id),
+                app.t.groups_delete_text,
+                [{ id: "cancel", text: app.t.cancel }, { id: "yes", text: app.t.delete, kind: "danger" }],
+                () => { const open = win.view === "group" && bots.group.id === groupMenu.group.id
+                        bots.removeGroup(groupMenu.group.id)
+                        if (open) win.view = "code" })
         }
     }
     ProfileDialog { id: profileDialog }

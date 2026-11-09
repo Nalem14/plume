@@ -170,7 +170,7 @@ ODialog {
     OTextArea {
         id: descField
         Layout.fillWidth: true
-        Layout.preferredHeight: 72
+        Layout.preferredHeight: Math.max(72, implicitHeight)     // grows with the role: the dialog scrolls, never the text cut
         placeholderText: app.t.bots_desc_ph
     }
     RowLayout {
@@ -221,7 +221,7 @@ ODialog {
         OTextArea {
             id: soulField
             Layout.fillWidth: true
-            Layout.preferredHeight: 140
+            Layout.preferredHeight: Math.max(140, implicitHeight)
             font.family: "JetBrains Mono"; font.pixelSize: 12
         }
         Text {

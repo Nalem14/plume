@@ -67,7 +67,13 @@ def build(qt):
             out.append(projects.local_folder(chat.current) or "")
         except Exception:  # noqa: BLE001
             pass
-        return [b for b in out if b]
+        try:                                     # last: the other bots' folders (a bot citing another's file)
+            import ornis_bots  # noqa: PLC0415
+            out += [ornis_bots.working_folder(b["id"]) for b in ornis_bots.list_bots(include_hidden=True)]
+        except Exception:  # noqa: BLE001
+            pass
+        seen = set()
+        return [b for b in out if b and not (b in seen or seen.add(b))]
     app.path_bases = path_bases
     projects.toast.connect(app.toast)
     cron.toast.connect(app.toast)

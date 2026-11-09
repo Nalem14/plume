@@ -738,6 +738,10 @@ def read_group(group_id: str, *, limit: int = 200) -> list[dict]:
         except ValueError:
             continue
         if isinstance(row, dict):
+            if row.get("from") not in ("user", "system") and "SILENT" in str(row.get("text") or ""):
+                row["text"] = strip_silent(row.get("text"))       # posted before 1.0.90: not shown
+                if not row["text"]:
+                    continue
             rows.append(row)
     return rows
 
@@ -777,6 +781,8 @@ def post_group(group_id: str, sender: str, text: str, *, depth: int = 0, route: 
     if sender != "user" and sender not in g["members"]:
         raise ValueError("only a member of this group can write in it")
     body = str(text or "").strip()
+    if sender != "user":
+        body = strip_silent(body)           # a bot with nothing to say posts nothing
     if not body:
         raise ValueError("message is empty")
     row = {"id": str(uuid.uuid4()), "from": sender, "text": body[:16000], "at": time.time(), "depth": int(depth)}
@@ -860,11 +866,12 @@ def group_prompt(bot_id: str, item: dict) -> str:
         f"[Group message in « {g.get('title') or item.get('group')} » (group id `{g.get('id')}`)]\n"
         f"Members: {members}. You are @{bot_id}: answer as yourself, from your own role, memory and skills.\n{desc}"
         f"Shared folder of the group (every member reads and writes it; put the files you work on together there, "
-        f"and name them in your answer): {group_folder(g.get('id') or item.get('group') or '')}\n"
+        f"and name them in your answer by their full path): {group_folder(g.get('id') or item.get('group') or '')}\n"
         f"Recent messages in the room:\n{group_transcript(item.get('group') or '', upto=item.get('msg') or '')}\n\n"
         f"The last message (from {sender}) is for you. Your final answer is posted in the room as is: keep it "
         "short, like a chat message. Do the work first if it is asked (tools, files). To hand a part over, name the "
-        "member with @id in your answer (they will get it); otherwise name nobody. If nothing needs an answer from "
+        "member with @id in your answer (they will get it); otherwise name nobody. A file you mention: its full "
+        "path in backticks (the others do not work in your folder). If nothing needs an answer from "
         "you, reply exactly [SILENT].\n"
     )
 
@@ -922,6 +929,24 @@ def memory_files(bot_id: str, limit: int = 40) -> list[dict]:
 HISTORY_MAX = 4 * 1024 * 1024      # past this, the oldest half goes (a few years of daily turns)
 
 
+_SILENT = re.compile(r"\[+\s*SILENT\s*\]*|\[*\s*\bSILENT\s*\]+")
+
+
+def strip_silent(text: str) -> str:
+    """The answer without the [SILENT] marker, however the model wrote it (09/11: « [[SILENT]SILENT] »,
+    « **[SILENT]** », « [SILENT]. » were shown and posted). Empty: nothing to show or post."""
+    out = str(text or "")
+    for _ in range(4):
+        cleaned = _SILENT.sub("", out)
+        if cleaned == out:
+            break
+        out = cleaned
+    out = out.strip()
+    if re.fullmatch(r"[\s*_`.!\-\[\]()]*(SILENT)?[\s*_`.!\-\[\]()]*", out):
+        return ""
+    return out
+
+
 def history_file(bot_id: str) -> Path:
     return bot_dir(bot_id) / "history.jsonl"
 
@@ -940,7 +965,7 @@ def turn_source(text: str) -> str:
 def record_turn(bot_id: str, asked: str, answer: str) -> None:
     """One finished turn of the bot's thread, on this computer only (as the conversation itself)."""
     asked = str(asked or "").strip()
-    answer = str(answer or "").replace("[SILENT]", "").strip()
+    answer = strip_silent(answer)
     if not get(bot_id) or not (asked or answer) or asked.startswith("/"):
         return
     row = {"at": time.time(), "source": turn_source(asked), "asked": asked[:4000], "answer": answer[:8000]}
@@ -1313,6 +1338,8 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         "fits each recurring job, a prompt that says exactly what to do and where to write), then list them; never "
         "answer that you will remember. Preparing content is not publishing: a routine may draft and report, and "
         "anything public waits for the person's go.\n"
+        "- Name a file for the person or another bot by its **full path** in backticks (`/…/notes.md`), never a bare "
+        "name: it becomes a link that opens it, from any thread.\n"
         "- `history_search` finds what was said in this thread before it was summarised (dates, words); "
         "use it before saying you do not remember.\n"
         "- Message another bot with `bot_message` (or the CLI below). Delivery is queued; "
