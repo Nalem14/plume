@@ -1,6 +1,8 @@
 # What Plume runs on, packaged (Windows, macOS, AppImage, .deb). Same versions as Orneos OS (Fedora 44) where they
 # change behaviour: Qt 6.11, icalendar 6, dateutil 2.9. The .rpm uses Fedora's own packages instead.
-PySide6==6.11.3
+# Intel Macs: Qt 6.9, the last one for macOS 12 Monterey (6.10+ wants macOS 13); a Mac on macOS 12 is always Intel
+PySide6==6.11.3; sys_platform != "darwin" or platform_machine != "x86_64"
+PySide6==6.9.3; sys_platform == "darwin" and platform_machine == "x86_64"
 keyring==25.7.0
 # cryptography 49+ has no wheel for Intel Macs: they keep 48.0.1 (AES-GCM and Ed25519 are all Plume uses)
 cryptography==50.0.2; sys_platform != "darwin" or platform_machine != "x86_64"

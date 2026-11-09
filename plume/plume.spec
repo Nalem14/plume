@@ -4,6 +4,7 @@
 # The apps are data (the tree of /usr/share, see launch.py), not frozen modules: PyInstaller only reads them
 # to find what they import (Qt, the libraries, the standard library), then they are left out of its archive.
 import os
+import platform
 import re
 import sys
 from pathlib import Path
@@ -112,7 +113,7 @@ if sys.platform == "darwin":
             "CFBundleDisplayName": "Plume",
             "CFBundleShortVersionString": VERSION,
             "CFBundleVersion": VERSION,
-            "LSMinimumSystemVersion": "13.0",
+            "LSMinimumSystemVersion": "12.0" if platform.machine() == "x86_64" else "13.0",  # Intel: Qt 6.9
             "NSHighResolutionCapable": True,
             "LSApplicationCategoryType": "public.app-category.productivity",
             "NSHumanReadableCopyright": "Orneos",
