@@ -10,6 +10,7 @@ Item {
     property string name
     property string email
     property string initials
+    property string avatar               // our photo, round (Meet: the cloud's), over the initials once loaded
     property string settingsText: app.t.settings
     property string dot                  // a colour: our status on the picture (Meet), none when empty
     property string detail               // under the name instead of the address (a status message)
@@ -95,6 +96,15 @@ Item {
                         text: bar.initials
                         font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
                         color: bar.c.chrome
+                    }
+                    // round already when it comes from Meet's provider (meet_core/images.py)
+                    Image {
+                        anchors.fill: parent
+                        visible: bar.avatar !== "" && status === Image.Ready
+                        source: bar.avatar
+                        sourceSize: Qt.size(60, 60)
+                        asynchronous: true
+                        fillMode: Image.PreserveAspectCrop
                     }
                     Rectangle {
                         visible: bar.dot !== ""

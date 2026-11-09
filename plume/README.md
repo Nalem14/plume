@@ -47,7 +47,7 @@ macOS : `Plume.app` vient de `plume.spec` (`Info.plist` : `mailto`, `webcal`, `o
 
 ## Construire
 
-La CI (`plume/ci/plume.yml`) construit sur Ubuntu 22.04, Windows et macOS arm64. Elle ne tourne pas dans ce dépôt
+La CI (`plume/ci/plume.yml`) construit sur Ubuntu 22.04, Windows, macOS arm64 (Apple Silicon) et macOS x86_64 (Mac Intel, runner `macos-15-intel`). Elle ne tourne pas dans ce dépôt
 privé, dont les minutes GitHub gratuites sont épuisées (macOS compte 10 fois), mais sur **github.com/Nalem14/plume**,
 un dépôt **public** où les runners sont gratuits, macOS compris. Il ne contient que les fichiers lus par le build
 (liste `PATHS` de `tools/plume-ci.sh`) et il est remplacé à chaque build. ⚠️ Tout ce qui y va devient public : jamais

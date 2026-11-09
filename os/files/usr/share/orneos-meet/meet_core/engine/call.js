@@ -20,6 +20,9 @@ class Call {
         this.screen = null                            // MediaStream (screen share)
         this.audioOn = config.audio !== false
         this.videoOn = config.video !== false
+        this.camera = false                           // a camera to turn on (its track is stopped while the video is off)
+        this.cameraId = config.camera || ''           // the one to open again
+        this.wantBlur = false                         // the blur, for when the camera is on again
         this.hand = false
         this.speaking = false
         this.inCall = false
@@ -42,7 +45,10 @@ class Call {
         this.media = this.openMedia()
         await this.media
         if (this.left) return
-        if (this.config.blur && this.config.vision && this.hasVideo()) Blur.set(this, 'blur', this.config.vision)
+        if (this.config.blur && this.config.vision && this.hasVideo()) {
+            if (this.liveVideo()) Blur.set(this, 'blur', this.config.vision)
+            else this.wantBlur = true
+        }
         if (this.config.settings) this.connect()
         else this.render()
     }
@@ -122,7 +128,8 @@ class Call {
         if (this.config.mic) audio.deviceId = { exact: this.config.mic }
         const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
         if (this.config.camera) video.deviceId = { exact: this.config.camera }
-        const tries = [{ audio, video }, { audio, video: false }, { audio: false, video }]
+        // without the video, the camera is not opened at all: a disabled track keeps the device (and its light) on
+        const tries = this.videoOn ? [{ audio, video }, { audio, video: false }, { audio: false, video }] : [{ audio, video: false }]
         for (const constraints of tries) {
             try {
                 this.local = await navigator.mediaDevices.getUserMedia(constraints)
@@ -139,6 +146,12 @@ class Call {
             this.local = new MediaStream()
             this.emit({ type: 'error', code: 'no_media' })
         }
+        this.camera = this.local.getVideoTracks().length > 0
+        if (!this.camera && !this.videoOn) {
+            try {
+                this.camera = (await navigator.mediaDevices.enumerateDevices()).some((d) => d.kind === 'videoinput')
+            } catch (e) {}
+        }
         if (!this.local.getVideoTracks().length) this.videoOn = false
         if (!this.local.getAudioTracks().length) this.audioOn = false
         this.applyMute()
@@ -150,8 +163,71 @@ class Call {
         return this.local && this.local.getAudioTracks().length > 0
     }
 
+    // a camera we can turn on (it may be stopped: the video is off)
     hasVideo() {
-        return this.local && this.local.getVideoTracks().length > 0
+        return this.camera
+    }
+
+    liveVideo() {
+        return !!(this.local && this.local.getVideoTracks().length > 0)
+    }
+
+    videoTransceiver() {
+        return this.publisher && this.publisher.pc.getTransceivers().find((t) =>
+            !t.stopped && t.receiver && t.receiver.track && t.receiver.track.kind === 'video')
+    }
+
+    showSelf() {
+        const self = this.view.tiles.get('self')
+        if (self && self.querySelector('video')) self.querySelector('video').srcObject = this.local
+    }
+
+    // the video off: the camera stopped for real (its light goes out); the publisher keeps its line, empty
+    async parkCamera() {
+        const blurred = !!Blur.active
+        const raw = blurred ? Blur.stop(this, true) : this.local && this.local.getVideoTracks()[0]
+        if (!raw) return
+        if (blurred) this.wantBlur = true
+        this.cameraId = raw.getSettings().deviceId || this.cameraId
+        if (!blurred) this.local.removeTrack(raw)
+        raw.stop()
+        const tr = this.videoTransceiver()
+        if (tr) await tr.sender.replaceTrack(null).catch(() => {})
+        this.showSelf()
+    }
+
+    // the video on again: the camera opened again, into the publisher's line (a new publisher if it had none)
+    async unparkCamera() {
+        if (this.liveVideo()) return true
+        const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+        let stream = null
+        for (const constraints of this.cameraId ? [{ video: { ...video, deviceId: { exact: this.cameraId } } }, { video }] : [{ video }]) {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia(constraints)
+                break
+            } catch (e) {}
+        }
+        if (!stream) {
+            this.emit({ type: 'error', code: 'device' })
+            return false
+        }
+        const track = stream.getVideoTracks()[0]
+        if (this.left || !this.videoOn || this.liveVideo()) {     // off again (or hung up) while it opened
+            track.stop()
+            return this.liveVideo()
+        }
+        this.local.addTrack(track)
+        track.enabled = true
+        const tr = this.videoTransceiver()
+        if (tr) await tr.sender.replaceTrack(track).catch(() => {})
+        else if (this.publisher) this.publish(true)
+        this.showSelf()
+        if (this.wantBlur && this.config.vision) {
+            this.wantBlur = false
+            await Blur.set(this, 'blur', this.config.vision)
+        }
+        this.devices()
+        return true
     }
 
     flags() {
@@ -180,11 +256,18 @@ class Call {
 
     trackDevice(kind) {
         const track = this.local && (kind === 'audio' ? this.local.getAudioTracks() : this.local.getVideoTracks())[0]
+        if (!track && kind === 'video') return this.cameraId
         return track ? (track.getSettings().deviceId || '') : ''
     }
 
     // another microphone or camera, in the middle of a call: the new track replaces the old one in the publisher
     async switchDevice(kind, deviceId) {
+        if (kind === 'video' && !this.liveVideo()) {      // the camera is off: the one opened next time
+            this.cameraId = deviceId
+            this.camera = true
+            this.devices()
+            return
+        }
         const constraints = kind === 'audio'
             ? { audio: { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
             : { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } } }
@@ -275,7 +358,9 @@ class Call {
         const pub = { pc, dc, sid, roomType: 'video', session: own }
         this.publisher = pub
         this.local.getAudioTracks().forEach((t) => pc.addTransceiver(t, { direction: 'sendonly', streams: [this.local] }))
-        this.local.getVideoTracks().forEach((t) => pc.addTransceiver(t, {
+        // the camera off: its line all the same, empty, so that turning it on needs no new offer
+        const videos = this.local.getVideoTracks()
+        ;(videos.length ? videos : this.camera ? ['video'] : []).forEach((t) => pc.addTransceiver(t, {
             direction: 'sendonly', streams: [this.local],
             sendEncodings: this.signaling.hasFeature('simulcast') ? [
                 { rid: 'h', active: true, maxBitrate: 900000 },
@@ -352,8 +437,14 @@ class Call {
         this.render()
     }
 
-    setVideo(on) {
+    async setVideo(on) {
         this.videoOn = on && this.hasVideo()
+        if (this.videoOn) {
+            this.render()
+            if (!(await this.unparkCamera())) this.videoOn = false
+        } else {
+            await this.parkCamera()
+        }
         this.applyMute()
         this.status(this.videoOn ? 'videoOn' : 'videoOff')
         this.toAll(this.videoOn ? 'unmute' : 'mute', { name: 'video' })
@@ -758,7 +849,7 @@ class Call {
             session: own, inCall: this.inCall, audio: this.audioOn, video: this.videoOn,
             hasAudio: this.hasAudio(), hasVideo: this.hasVideo(), speaking: this.speaking, hand: this.hand,
             screen: !!this.screen, published: !!(this.publisher && this.publisher.pc.connectionState === 'connected'),
-            preview: !this.signaling, blur: !!Blur.active, reconnecting: !!this.reconnecting,
+            preview: !this.signaling, blur: !!Blur.active || this.wantBlur, reconnecting: !!this.reconnecting,
             people,
         }
     }
@@ -787,6 +878,7 @@ class Call {
             break
         case 'blur':
             if (data.vision) this.config.vision = data.vision
+            if (!this.liveVideo()) { this.wantBlur = !!data.on; this.render(); break }     // when the camera is on
             Blur.set(this, data.on ? 'blur' : '', this.config.vision)
             break
         case 'connect': this.connect(data); break

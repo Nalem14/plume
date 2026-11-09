@@ -177,6 +177,11 @@ class MessageModel(QAbstractListModel):
     def indexOf(self, key):
         return self.find(key)
 
+    @Slot(int, result=int)
+    def idAt(self, i):
+        """The message id of a row (0 for a message still being sent): where the view stood, kept per conversation."""
+        return int(self.rows[i].get("id") or 0) if 0 <= i < len(self.rows) else 0
+
 
 class Library(QObject):
     changed = Signal()                # rooms, counts
@@ -253,6 +258,9 @@ class Library(QObject):
         self._last_tags = 0
         self.thread_model = MessageModel(self)
         self._counted = set()             # thread answers already counted on their first message
+        # the newest id seen per conversation, updates included (a reaction is unread in a one-to-one
+        # conversation for Talk but never a row here: read up to it, or the badge comes back for ever)
+        self._seen = {}
         self._after_create = None         # what to do once a conversation asked for exists (call it)
         self._thread = {}
         self.in_call = ""             # the conversation of our call (Calls sets it): it does not ring
@@ -304,7 +312,7 @@ class Library(QObject):
         if self._current:                # another account: nothing of the previous one stays open
             self._close_room()
         self._gen += 1
-        self._sending, self._notified, self._counted = set(), {}, set()
+        self._sending, self._notified, self._counted, self._seen = set(), {}, set(), {}
         if not account:
             self._talk, self._store = None, None
             self.presence.stop()
@@ -1009,7 +1017,7 @@ class Library(QObject):
         talk = self._talk
 
         def loop():
-            last = self._store.last_id(token) if self._store else 0
+            last = max(self._store.last_id(token) if self._store else 0, self._seen.get(token, 0))
             while gen == self._gen and talk is self._talk:
                 status, messages = talk.messages(token, last, future=True, timeout=30)
                 if gen != self._gen:
@@ -1035,8 +1043,12 @@ class Library(QObject):
         self._merge(token, messages)
         if self._active:
             me = self._talk.user if self._talk else ""
+            # a reaction of the other counts as unread in a one-to-one conversation (Talk): read too
             self._mark_read(token, force=any(not (m.get("actorType") == "users" and m.get("actorId") == me)
-                                             and m.get("systemMessage") not in UPDATES for m in messages))
+                                             and (m.get("systemMessage") not in UPDATES
+                                                  or (m.get("systemMessage") == "reaction"
+                                                      and self._room.get("type") == api.ONE_TO_ONE))
+                                             for m in messages))
         # the list shows the last message at once (the next read of the list confirms)
         shown = [m for m in messages if m.get("systemMessage") not in UPDATES]
         if shown:
@@ -1079,6 +1091,7 @@ class Library(QObject):
         """New messages and updates of older ones, into the store and the model."""
         if not messages:
             return
+        self._seen[token] = max([self._seen.get(token, 0)] + [int(m.get("id") or 0) for m in messages])
         updates = []
         new = []
         for m in messages:
@@ -1283,7 +1296,8 @@ class Library(QObject):
             return
         # thread answers are not in the chat but count as unread: the last one known, wherever it is shown
         last = max([row["id"] for row in self.model.rows if row["id"]]
-                   + [self._store.last_id(token) if self._store else 0])
+                   + [self._store.last_id(token) if self._store else 0, self._seen.get(token, 0),
+                      int((r.get("lastMessage") or {}).get("id") or 0) if isinstance(r.get("lastMessage"), dict) else 0])
         r["unreadMessages"], r["unreadMention"], r["unreadMentionDirect"] = 0, False, False
         for room in self._rooms:
             if room["token"] == token:

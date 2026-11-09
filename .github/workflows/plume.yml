@@ -44,7 +44,8 @@ jobs:
         include:
           - { os: ubuntu-22.04, label: linux }     # glibc 2.35: the AppImage runs on Ubuntu 22.04, Debian 12 and newer
           - { os: windows-2022, label: windows }
-          - { os: macos-15, label: macos }          # Apple Silicon
+          - { os: macos-15, label: macos, arch: arm64 }              # Apple Silicon
+          - { os: macos-15-intel, label: macos, arch: x86_64 }       # Intel Macs (GitHub keeps Intel runners until 08/2027)
     runs-on: ${{ matrix.os }}
     defaults:
       run: { shell: bash }
@@ -103,13 +104,14 @@ jobs:
         run: |
           APP=build/dist/Plume.app
           # no Apple account: PyInstaller signs the app and every library ad hoc (arm64 refuses unsigned code).
+          # One DMG per processor (arm64, x86_64): the updater asks for its own (arch=, ClientUpdateController::plume).
           # A valid signature is what lets « Open Anyway » work (plume.spec leaves the frameworks whole).
           # PyInstaller leaves an empty Versions/Resources beside Versions/A in Qt's frameworks: macOS then calls the
           # framework invalid. Only empty folders go; the app's own signature is made again over the result.
           find "$APP/Contents/Frameworks" -path '*.framework/Versions/*' -maxdepth 6 -type d -empty \
             ! -name A -print -delete
           # Touch ID for the lock of Passwords (passwords_core/lock.py): beside Plume, so macOS names Plume in its dialog
-          swiftc -O -target arm64-apple-macos12 plume/macos/touchid.swift -o "$APP/Contents/MacOS/plume-touchid"
+          swiftc -O -target ${{ matrix.arch }}-apple-macos12 plume/macos/touchid.swift -o "$APP/Contents/MacOS/plume-touchid"
           codesign --force --sign - "$APP/Contents/MacOS/plume-touchid"
           codesign --force --sign - "$APP"
           codesign --verify --deep --strict "$APP"
@@ -117,7 +119,7 @@ jobs:
           cp -R "$APP" build/dmg/ && ln -s /Applications build/dmg/Applications
           # the runners' disk images are sometimes still held (« Resource busy »): a few more tries
           for try in 1 2 3 4; do
-            hdiutil create -volname Plume -srcfolder build/dmg -ov -format UDZO "dist/Plume-$VERSION-macos-arm64.dmg" && break
+            hdiutil create -volname Plume -srcfolder build/dmg -ov -format UDZO "dist/Plume-$VERSION-macos-${{ matrix.arch }}.dmg" && break
             [ "$try" = 4 ] && exit 1
             sleep 15
           done

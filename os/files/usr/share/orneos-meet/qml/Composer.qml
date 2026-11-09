@@ -522,7 +522,17 @@ Rectangle {
                 implicitHeight: 40
                 hoverEnabled: true
                 onClicked: { mentions.chosen = index; mentions.pick() }
-                background: Rectangle { radius: 8; color: who.index === mentions.chosen || who.hovered ? composer.c.hover : "transparent" }
+                // the choice (arrows) in the accent's tint with its bar, the pointer lighter: both seen on the menu's card
+                background: Rectangle {
+                    radius: 8
+                    color: who.index === mentions.chosen ? composer.c.tint : who.hovered ? Qt.alpha(composer.c.tint, 0.55) : "transparent"
+                    Rectangle {
+                        visible: who.index === mentions.chosen
+                        x: 2; y: 8; width: 3; height: parent.height - 16; radius: 1.5
+                        color: composer.c.accent
+                    }
+                }
+                onHoveredChanged: if (hovered) mentions.chosen = index
                 contentItem: RowLayout {
                     spacing: 10
                     RoomAvatar { visible: mentions.mode === "mention"; Layout.leftMargin: 8; size: 26; source: who.modelData.avatar || ""; name: who.modelData.name || "" }

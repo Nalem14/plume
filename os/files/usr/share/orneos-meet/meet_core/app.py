@@ -7,6 +7,7 @@ import json
 import re
 import os
 import time
+import urllib.parse
 from datetime import date, datetime
 
 from PySide6.QtCore import QFileSystemWatcher, QObject, Property, QSize, Signal, Slot
@@ -102,7 +103,7 @@ class App(QObject):
         name = self._profile.get("name") or user
         email = self._profile.get("email") or (user if "@" in user else f"{user}@orneos.eu")
         return {"user": user, "name": name, "email": email, "initials": initials(name),
-                "avatar": f"image://meet/user/{user}"}
+                "avatar": f"image://meet/user/{urllib.parse.quote(user)}"}
 
     # ---- texts, preferences, window ----------------------------------------------------------------------
     @js_property(constant=True)

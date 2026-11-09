@@ -1,5 +1,7 @@
-// One message of the chat. Ours on the right in Klein, the others on the left on a card, with their photo and
-// name on the first of a series; a day between two days; Talk's system lines in small in the middle. A row
+// One message of the chat. In a conversation of two: ours on the right in Klein, the others on the left on a
+// card, with their photo and name on the first of a series. In a group (a workspace, like Slack or Discord):
+// no bubbles, every message on the left under its author's photo and name, the time in the margin on hover,
+// the row lit on hover and in saffron when it mentions us; a day between two days; Talk's system lines in small in the middle. A row
 // carries what answers it (the quoted message), its text, its files (images in preview), a poll, the
 // reactions, its thread; a voice message (or any sound) plays here, a GIF moves, a link shows its preview.
 // On hover, the quick reactions pinned (👍 👀 🎉 at first), « Répondre » and the rest in a menu (forward, pin,
@@ -17,6 +19,9 @@ Item {
     required property int index
     readonly property var m: model
     readonly property bool mine: m.self
+    // a group or a public conversation: the lines of a workspace, not bubbles
+    readonly property bool channel: meet.room.type === 2 || meet.room.type === 3
+    readonly property bool onRight: mine && !channel          // our bubble, on the right in Klein
     readonly property bool hovering: hover.hovered || actions.hovered || moreMenu.opened || picker.opened
     property bool compact: false
     property bool inThread: false
@@ -60,15 +65,23 @@ Item {
         y: row.m.grouped ? 1 : 6
         spacing: 4
 
-        // the day
-        Text { textFormat: Text.PlainText;
+        // the day (a group: on a line across, like a workspace)
+        RowLayout {
             visible: row.m.day !== ""
-            Layout.alignment: Qt.AlignHCenter
+            Layout.fillWidth: true
+            Layout.leftMargin: row.compact ? 8 : 16; Layout.rightMargin: row.compact ? 8 : 16
             Layout.topMargin: 10; Layout.bottomMargin: 6
-            text: row.m.day
-            font.family: "JetBrains Mono"; font.pixelSize: 11; font.weight: Font.Medium
-            font.capitalization: Font.AllUppercase; font.letterSpacing: 0.8
-            color: row.c.faint
+            spacing: 10
+            Rectangle { visible: row.channel; Layout.fillWidth: true; implicitHeight: 1; color: row.c.hairline }
+            Item { visible: !row.channel; Layout.fillWidth: true }
+            Text { textFormat: Text.PlainText;
+                text: row.m.day
+                font.family: "JetBrains Mono"; font.pixelSize: 11; font.weight: Font.Medium
+                font.capitalization: Font.AllUppercase; font.letterSpacing: 0.8
+                color: row.c.faint
+            }
+            Rectangle { visible: row.channel; Layout.fillWidth: true; implicitHeight: 1; color: row.c.hairline }
+            Item { visible: !row.channel; Layout.fillWidth: true }
         }
 
         // « Nouveaux messages »
@@ -104,38 +117,49 @@ Item {
         }
 
         RowLayout {
+            id: body
             visible: !row.m.system
             Layout.fillWidth: true
-            Layout.leftMargin: row.compact ? 8 : 16
+            Layout.leftMargin: row.compact ? 8 : (row.channel ? 20 : 16)
             Layout.rightMargin: row.compact ? 8 : 16
-            layoutDirection: row.mine ? Qt.RightToLeft : Qt.LeftToRight
-            spacing: 10
+            layoutDirection: row.onRight ? Qt.RightToLeft : Qt.LeftToRight
+            spacing: row.channel ? 12 : 10
 
             // the photo, on the first of a series (others' messages only)
             Item {
-                visible: !row.mine
+                visible: !row.onRight
                 Layout.alignment: Qt.AlignTop
-                implicitWidth: 32; implicitHeight: 32
+                implicitWidth: row.channel ? 36 : 32; implicitHeight: row.m.grouped && row.channel ? 18 : implicitWidth
                 RoomAvatar {
                     visible: !row.m.grouped
-                    size: 32
+                    size: parent.implicitWidth
                     source: row.m.avatar
                     name: row.m.name
+                }
+                // a group: the time of a message that follows another, in the margin on hover (Slack)
+                Text {
+                    visible: row.channel && row.m.grouped && row.hovering
+                    anchors.right: parent.right; anchors.top: parent.top; anchors.topMargin: 2
+                    text: app.clock(row.m.time)
+                    font.family: "JetBrains Mono"; font.pixelSize: 10
+                    color: row.c.faint
                 }
             }
 
             ColumnLayout {
                 id: bubbleColumn
-                Layout.maximumWidth: Math.min(row.width * (row.compact ? 0.86 : 0.72), 680)
-                Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
-                spacing: 3
+                Layout.maximumWidth: row.channel ? Math.min(row.width - (row.compact ? 16 : 36) - 48, 920)
+                                                 : Math.min(row.width * (row.compact ? 0.86 : 0.72), 680)
+                Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
+                spacing: row.channel ? 2 : 3
 
                 Text {
-                    visible: !row.mine && !row.m.grouped
+                    visible: !row.onRight && !row.m.grouped
                     text: row.m.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")   // a guest names himself
-                          + "  <span style='color:" + row.c.faint + ";font-weight:400'>" + app.clock(row.m.time) + "</span>"
+                          + "  <span style='color:" + row.c.faint + ";font-weight:400;font-size:" + (row.channel ? 12 : 13) + "px'>"
+                          + app.clock(row.m.time) + "</span>"
                     textFormat: Text.StyledText
-                    font.pixelSize: 13; font.weight: Font.DemiBold
+                    font.pixelSize: row.channel ? 14 : 13; font.weight: row.channel ? Font.Bold : Font.DemiBold
                     color: row.c.text
                 }
 
@@ -143,9 +167,10 @@ Item {
                 Item {
                     id: bubble
                     readonly property bool bare: row.m.emojiOnly && !row.m.parent && !row.m.files.length
-                    Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
-                    implicitWidth: Math.min(bubbleColumn.Layout.maximumWidth, Math.max(content.implicitWidth + 24, 60))
-                    implicitHeight: content.implicitHeight + (bare ? 0 : 16)
+                    readonly property bool flat: bare || row.channel        // no bubble around it
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
+                    implicitWidth: Math.min(bubbleColumn.Layout.maximumWidth, Math.max(content.implicitWidth + (flat ? 0 : 24), flat ? 1 : 60))
+                    implicitHeight: content.implicitHeight + (flat ? 0 : 16)
                     opacity: row.m.pending ? 0.65 : 1
                     // a right click: the message's menu (« Copier l'image » for the picture under the pointer)
                     TapHandler {
@@ -171,7 +196,7 @@ Item {
                     }
                     Surface {
                         anchors.fill: parent
-                        visible: !bubble.bare && !row.mine && !row.m.deleted
+                        visible: !bubble.flat && !row.mine && !row.m.deleted
                         radius: 16
                         color: row.m.mentioned ? row.c.saffronTint : row.c.card
                         Rectangle {
@@ -182,7 +207,7 @@ Item {
                     }
                     Rectangle {
                         anchors.fill: parent
-                        visible: !bubble.bare && (row.mine || row.m.deleted)
+                        visible: !bubble.flat && (row.mine || row.m.deleted)
                         radius: 16
                         color: row.m.deleted ? row.c.hover : row.c.action
                         gradient: row.mine && !row.m.deleted ? ours : null
@@ -195,9 +220,9 @@ Item {
 
                     ColumnLayout {
                         id: content
-                        x: bubble.bare ? 0 : 12
-                        y: bubble.bare ? 0 : 8
-                        width: bubble.width - (bubble.bare ? 0 : 24)
+                        x: bubble.flat ? 0 : 12
+                        y: bubble.flat ? 0 : 8
+                        width: bubble.width - (bubble.flat ? 0 : 24)
                         spacing: 6
 
                         // what it answers
@@ -208,8 +233,8 @@ Item {
                             onClicked: row.quoteClicked(row.m.parent ? row.m.parent.id : 0)
                             background: Rectangle {
                                 radius: 8
-                                color: row.mine ? Qt.alpha("white", 0.14) : row.c.hover
-                                Rectangle { width: 3; height: parent.height - 8; y: 4; x: 4; radius: 1.5; color: row.mine ? "white" : row.c.action }
+                                color: row.onRight ? Qt.alpha("white", 0.14) : row.c.hover
+                                Rectangle { width: 3; height: parent.height - 8; y: 4; x: 4; radius: 1.5; color: row.onRight ? "white" : row.c.action }
                             }
                             contentItem: ColumnLayout {
                                 id: quote
@@ -218,14 +243,14 @@ Item {
                                     Layout.fillWidth: true; Layout.leftMargin: 14; Layout.topMargin: 5
                                     text: row.m.parent ? row.m.parent.name : ""
                                     font.pixelSize: 12; font.weight: Font.DemiBold
-                                    color: row.mine ? row.c.actionText : row.c.action
+                                    color: row.onRight ? row.c.actionText : row.c.action
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     Layout.fillWidth: true; Layout.leftMargin: 14; Layout.bottomMargin: 5; Layout.rightMargin: 8
                                     text: row.m.parent ? (row.m.parent.deleted ? app.t.deleted_message : row.m.parent.text) : ""
                                     font.pixelSize: 12
-                                    color: row.mine ? Qt.alpha(row.c.actionText, 0.85) : row.c.muted
+                                    color: row.onRight ? Qt.alpha(row.c.actionText, 0.85) : row.c.muted
                                     elide: Text.ElideRight
                                     maximumLineCount: 2
                                     wrapMode: Text.Wrap
@@ -244,13 +269,13 @@ Item {
                                 enabled: voice.available
                                 onClicked: voice.play(row.m.key, row.m.files[0])
                                 Accessible.name: app.t.voice_message
-                                background: Rectangle { radius: 18; color: row.mine ? Qt.alpha("white", 0.22) : row.c.tint }
+                                background: Rectangle { radius: 18; color: row.onRight ? Qt.alpha("white", 0.22) : row.c.tint }
                                 contentItem: Item {
                                     BusyIndicator { anchors.centerIn: parent; running: voice.loading === row.m.key; visible: running; implicitWidth: 22; implicitHeight: 22 }
                                     Icon {
                                         anchors.centerIn: parent; visible: voice.loading !== row.m.key
                                         name: voice.playing === row.m.key ? "close" : "play"; size: 16
-                                        color: row.mine ? row.c.actionText : row.c.tintText
+                                        color: row.onRight ? row.c.actionText : row.c.tintText
                                     }
                                 }
                             }
@@ -270,7 +295,7 @@ Item {
                                             anchors.verticalCenter: parent.verticalCenter
                                             color: {
                                                 const done = voice.playing === row.m.key && index / 28 < voice.progress
-                                                return row.mine ? (done ? "white" : Qt.alpha("white", 0.45)) : (done ? row.c.action : row.c.accentLine)
+                                                return row.onRight ? (done ? "white" : Qt.alpha("white", 0.45)) : (done ? row.c.action : row.c.accentLine)
                                             }
                                         }
                                     }
@@ -278,7 +303,7 @@ Item {
                                 Text { textFormat: Text.PlainText;
                                     text: voice.playing === row.m.key ? app.duration(voice.position) : app.t.voice_message
                                     font.family: "JetBrains Mono"; font.pixelSize: 11
-                                    color: row.mine ? Qt.alpha(row.c.actionText, 0.85) : row.c.muted
+                                    color: row.onRight ? Qt.alpha(row.c.actionText, 0.85) : row.c.muted
                                 }
                             }
                         }
@@ -349,7 +374,7 @@ Item {
                                 required property var modelData
                                 Layout.fillWidth: true
                                 file: modelData
-                                mine: row.mine
+                                mine: row.onRight
                                 onOpened: row.openFile(modelData)
                                 onSaveWanted: row.saveFile(modelData)
                             }
@@ -359,16 +384,16 @@ Item {
                         TextEdit {
                             visible: text !== "" && row.m.html !== "" && (row.m.gif === "" || gifImage.status === AnimatedImage.Error)
                             Layout.fillWidth: true
-                            Layout.preferredWidth: Math.min(implicitWidth, bubbleColumn.Layout.maximumWidth - 24)
+                            Layout.preferredWidth: Math.min(implicitWidth, bubbleColumn.Layout.maximumWidth - (bubble.flat ? 0 : 24))
                             text: row.m.deleted ? "<i>" + app.t.deleted_message + "</i>" : row.m.html
                             textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: true
                             wrapMode: TextEdit.Wrap
-                            font.pixelSize: bubble.bare ? 34 : 14
-                            color: row.m.deleted ? row.c.muted : (row.mine ? row.c.actionText : row.c.body)
-                            selectionColor: row.mine ? Qt.alpha("white", 0.35) : row.c.tint
-                            selectedTextColor: row.mine ? row.c.actionText : row.c.text
+                            font.pixelSize: bubble.bare ? 34 : (row.channel ? 14.5 : 14)
+                            color: row.m.deleted ? row.c.muted : (row.onRight ? row.c.actionText : row.c.body)
+                            selectionColor: row.onRight ? Qt.alpha("white", 0.35) : row.c.tint
+                            selectedTextColor: row.onRight ? row.c.actionText : row.c.text
                             onLinkActivated: link => row.openLink(link)
                             HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor }
                         }
@@ -398,7 +423,7 @@ Item {
                             Layout.fillWidth: true
                             pollId: row.m.poll ? row.m.poll.id : ""
                             question: row.m.poll ? row.m.poll.question : ""
-                            mine: row.mine
+                            mine: row.onRight
                         }
                     }
                 }
@@ -413,7 +438,7 @@ Item {
                         function onPreviewReady(url) { if (url === row.m.link) linkCard.info = meet.preview(url) }
                     }
                     visible: !row.m.deleted && !!(info.title || info.text)
-                    Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
                     Layout.preferredWidth: Math.min(bubbleColumn.Layout.maximumWidth, 420)
                     implicitHeight: Math.max(linkText.implicitHeight + 20, info.image ? 84 : 0)
                     hoverEnabled: true
@@ -450,7 +475,7 @@ Item {
                 AbstractButton {
                     id: threadChip
                     visible: !row.inThread && row.m.thread > 0
-                    Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
                     implicitHeight: 28
                     implicitWidth: threadRow.implicitWidth + 20
                     hoverEnabled: true
@@ -472,7 +497,7 @@ Item {
                 // Ornis's translation
                 Rectangle {
                     visible: row.translateRequest >= 0
-                    Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
                     Layout.maximumWidth: bubbleColumn.Layout.maximumWidth
                     implicitWidth: Math.min(bubbleColumn.Layout.maximumWidth, translated.implicitWidth + 24)
                     implicitHeight: translated.implicitHeight + 34
@@ -497,18 +522,35 @@ Item {
                 }
 
                 // reactions
+                // side by side: a Flow has no width of its own in a layout (each went under the other), so
+                // it gets the width of its pills, up to the column's
                 Flow {
+                    id: reactionFlow
                     visible: row.m.reactions.length > 0
-                    Layout.alignment: row.mine ? Qt.AlignRight : Qt.AlignLeft
-                    Layout.maximumWidth: bubbleColumn.Layout.maximumWidth
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
+                    Layout.preferredWidth: Math.min(natural, bubbleColumn.Layout.maximumWidth)
+                    layoutDirection: row.onRight ? Qt.RightToLeft : Qt.LeftToRight
                     spacing: 4
+                    property real natural: 0
+                    function measure() {
+                        let w = 0
+                        for (let i = 0; i < reactionPills.count; i++) {
+                            const it = reactionPills.itemAt(i)
+                            if (it) w += it.implicitWidth + (w > 0 ? spacing : 0)
+                        }
+                        natural = w
+                    }
                     Repeater {
+                        id: reactionPills
                         model: row.m.reactions
+                        onItemAdded: Qt.callLater(reactionFlow.measure)
+                        onItemRemoved: Qt.callLater(reactionFlow.measure)
                         AbstractButton {
                             id: reaction
                             required property var modelData
                             implicitHeight: 26
                             implicitWidth: reactionText.implicitWidth + 16
+                            onImplicitWidthChanged: Qt.callLater(reactionFlow.measure)
                             hoverEnabled: true
                             onClicked: meet.react(row.m.id, modelData.emoji)
                             onHoveredChanged: if (hovered) meet.loadReactors(row.m.id)
@@ -540,7 +582,7 @@ Item {
                 // ours: sent / pending / read / not sent
                 Row {
                     visible: row.mine && (row.m.failed || row.m.pending || row.m.edited || row.isLastMine)
-                    Layout.alignment: Qt.AlignRight
+                    Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
                     spacing: 6
                     Text {
                         visible: row.m.edited && !row.m.deleted
@@ -576,6 +618,22 @@ Item {
         }
     }
 
+    // a group: the row lit on hover, in saffron with its bar when it mentions us (behind the message)
+    Rectangle {
+        visible: row.channel && !row.m.system && !row.m.inAlbum && (row.hovering || row.m.mentioned || row.m.pinned)
+        z: -1
+        x: 0; width: row.width
+        y: column.y + body.y - (row.m.grouped ? 1 : 4)
+        height: body.height + (row.m.grouped ? 2 : 8)
+        color: row.m.mentioned ? Qt.alpha(row.c.saffron, row.hovering ? 0.16 : 0.1)
+                               : row.m.pinned && !row.hovering ? Qt.alpha(row.c.saffron, 0.05) : row.c.hover
+        Rectangle {
+            visible: row.m.mentioned || row.m.pinned
+            width: 3; height: parent.height
+            color: row.m.mentioned ? row.c.saffron : Qt.alpha(row.c.saffron, 0.6)
+        }
+    }
+
     readonly property bool isLastMine: {
         const v = ListView.view
         if (!v || !mine) return false
@@ -591,7 +649,8 @@ Item {
         HoverHandler { id: actionsHover }
         anchors.top: parent.top
         anchors.topMargin: (row.m.day !== "" ? 34 : -6) + (row.unreadLine ? 28 : 0)
-        x: row.mine ? Math.max(8, parent.width - bubble.width - width - 30) : Math.min(parent.width - width - 8, bubble.width + 66)
+        x: row.channel ? parent.width - width - 16
+                       : row.onRight ? Math.max(8, parent.width - bubble.width - width - 30) : Math.min(parent.width - width - 8, bubble.width + 66)
         width: actionsRow.implicitWidth + 8
         height: 34
         radius: 10
@@ -614,6 +673,11 @@ Item {
             }
             OButton { kind: "quiet"; iconName: "smile"; height_: 30; tip: app.t.react; onClicked: picker.popupAt(actions, true) }
             OButton { kind: "quiet"; iconName: "reply"; height_: 30; tip: app.t.reply; visible: row.m.replyable; onClicked: row.replyWanted(row.m) }
+            // a group: answer in a thread straight from the bar (Slack), or open the one it starts
+            OButton { kind: "quiet"; iconName: "chat"; height_: 30
+                      tip: row.m.thread > 0 ? app.plural("replies_count", row.m.threadReplies) : app.t.thread_from
+                      visible: !!(row.channel && !row.inThread && (row.m.thread > 0 || (meet.room.threads && row.m.replyable)))
+                      onClicked: row.m.thread > 0 ? meet.openThread(row.m.thread, row.m.threadTitle || row.m.plain.slice(0, 60)) : row.threadWanted(row.m) }
             OButton { kind: "quiet"; iconName: "more"; height_: 30; tip: app.t.more; onClicked: { row.menuFile = null; moreMenu.popupAt(actions, true) } }
         }
     }

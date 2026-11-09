@@ -15,7 +15,10 @@ Rectangle {
     readonly property bool typing: composer.typing
     property bool compact: false
     property bool infoOpen: false
+    property string infoTab: ""          // the Details panel's tab (people, shared) while it is open
+    readonly property bool channel: room.type === 2 || room.type === 3
     signal infoWanted()
+    signal panelWanted(string tab)       // a tab of the head: the Details panel on it (again: closed)
     signal callWanted(bool video)
     signal newConversation()
     signal planWanted()
@@ -188,6 +191,73 @@ Rectangle {
                 OButton { kind: "quiet"; iconName: "search"; tip: app.t.search_in_conversation + " (Ctrl+F)"; onClicked: pane.openSearch(); visible: !pane.compact }
                 OButton { kind: pane.infoOpen ? "secondary" : "quiet"; iconName: "info"; tip: app.t.details + " (Ctrl+I)"; onClicked: pane.infoWanted(); visible: !pane.compact }
                 OButton { id: moreButton; kind: "quiet"; iconName: "more"; tip: app.t.more; visible: !pane.compact; onClicked: moreMenu.popupAt(moreButton, true) }
+            }
+        }
+
+        // a group: its tabs under the head, like a workspace (Slack): the chat, the threads, the files, the people
+        Rectangle {
+            visible: pane.channel && !pane.compact
+            Layout.fillWidth: true
+            implicitHeight: 40
+            color: pane.c.chrome
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: pane.c.hairline }
+            Row {
+                id: tabs
+                x: 14
+                height: parent.height
+                spacing: 2
+                readonly property string current: pane.infoOpen && (pane.infoTab === "shared" || pane.infoTab === "people") ? pane.infoTab : "chat"
+                Repeater {
+                    model: [{ id: "chat", icon: "chat", text: app.t.tab_chat },
+                            { id: "threads", icon: "reply", text: app.t.tab_threads + ((pane.extras.threads || []).length ? " · " + pane.extras.threads.length : ""),
+                              hidden: !(pane.extras.threads || []).length },
+                            { id: "shared", icon: "folder", text: app.t.tab_files },
+                            { id: "people", icon: "people", text: app.t.rs_tab_people + " · " + meet.participants.length }]
+                    AbstractButton {
+                        id: tab
+                        required property var modelData
+                        readonly property bool current: tabs.current === modelData.id
+                        visible: !modelData.hidden
+                        height: tabs.height
+                        implicitWidth: tabRow.implicitWidth + 20
+                        hoverEnabled: true
+                        Accessible.name: modelData.text
+                        onClicked: {
+                            if (modelData.id === "chat") { if (pane.infoOpen) pane.infoWanted(); list.forceActiveFocus() }
+                            else if (modelData.id === "threads") threadsMenu.popupAt(tab, true)
+                            else pane.panelWanted(modelData.id)
+                        }
+                        background: Item {
+                            Rectangle {
+                                anchors.fill: parent; anchors.topMargin: 5; anchors.bottomMargin: 5
+                                radius: 8
+                                color: tab.hovered && !tab.current ? pane.c.hover : "transparent"
+                            }
+                            Rectangle {
+                                visible: tab.current
+                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                width: parent.width - 12; height: 2; radius: 1
+                                color: pane.c.famCommunicate
+                            }
+                        }
+                        contentItem: Item {
+                            Row {
+                                id: tabRow
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Icon { anchors.verticalCenter: parent.verticalCenter; name: tab.modelData.icon; size: 14
+                                       color: tab.current ? pane.c.text : pane.c.muted }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    textFormat: Text.PlainText
+                                    text: tab.modelData.text
+                                    font.pixelSize: 13; font.weight: tab.current ? Font.DemiBold : Font.Normal
+                                    color: tab.current ? pane.c.text : pane.c.muted
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -473,7 +543,52 @@ Rectangle {
             // messages of others that came while reading higher up: counted on « Aller aux derniers messages »
             property int unseen: 0
             onAtYEndChanged: if (atYEnd && !meet.detached) unseen = 0
-            onContentYChanged: if (contentY - originY < 400 && count > 0 && meet.current) meet.loadOlder()
+            onContentYChanged: {
+                if (contentY - originY < 400 && count > 0 && meet.current) meet.loadOlder()
+                remember.restart()
+            }
+            // where each conversation was read: found again when it is opened again (this session)
+            property var places: ({})
+            Timer {
+                id: remember
+                interval: 400
+                onTriggered: {
+                    const room = list.shownRoom
+                    if (!room || room !== meet.current || list.restoring) return
+                    if (list.stick || meet.detached) { delete list.places[room]; return }
+                    const i = list.indexAt(list.width / 2, list.contentY + list.topMargin + 1)
+                    const item = i >= 0 ? list.itemAtIndex(i) : null
+                    const id = i >= 0 ? meet.messages.idAt(i) : 0
+                    if (!id || !item) return
+                    list.places[room] = {id: id, offset: item.y - list.contentY}
+                }
+            }
+            property bool restoring: false
+            function restore() {
+                const place = places[meet.current]
+                if (!place) return false
+                const i = meet.messages.indexOf(String(place.id))
+                stick = false
+                if (i < 0) { meet.jumpTo(place.id); return true }     // older than what is kept: loaded around it
+                restoring = true
+                const go = () => {
+                    const j = meet.messages.indexOf(String(place.id))
+                    if (j < 0) return
+                    positionViewAtIndex(j, ListView.Beginning)
+                    const item = itemAtIndex(j)
+                    if (item) contentY = Math.max(originY - topMargin, item.y - place.offset)
+                }
+                Qt.callLater(go)
+                restoreSettle.go = go
+                restoreSettle.restart()
+                return true
+            }
+            Timer {
+                id: restoreSettle
+                property var go: null
+                interval: 160
+                onTriggered: { if (go && !list.stick) go(); list.restoring = false }
+            }
             onCountChanged: if (stick) toEnd()
             // a row that grows at the end (the line « Nouveaux messages », a preview): still the very end
             onContentHeightChanged: if (stick && !atYEnd) toEnd()
@@ -490,7 +605,12 @@ Rectangle {
             Timer { id: settle; interval: 120; onTriggered: if (list.stick) list.contentY = Math.max(list.originY - list.topMargin, list.originY + list.contentHeight + list.bottomMargin - list.height) }
             Connections {
                 target: meet
-                function onRoomChanged() { if (meet.current !== list.shownRoom) { list.shownRoom = meet.current; list.unseen = 0; list.stick = true; list.toEnd() } }
+                function onRoomChanged() {
+                    if (meet.current === list.shownRoom) return
+                    list.shownRoom = meet.current
+                    list.unseen = 0
+                    if (!list.restore()) { list.stick = true; list.toEnd() }
+                }
                 function onJumped(id) {
                     const i = meet.messages.indexOf(String(id))
                     if (i >= 0) { list.stick = false; list.positionViewAtIndex(i, ListView.Center); list.currentIndex = i }
@@ -499,7 +619,7 @@ Rectangle {
                 // unless they all fit with the newest
                 function onUnreadAt(id) {
                     list.unreadIndex = meet.messages.indexOf(String(id))
-                    if (list.unreadIndex < 0) return
+                    if (list.unreadIndex < 0 || list.places[meet.current]) return     // back where it was read
                     list.stick = false
                     Qt.callLater(list.toUnread)
                     unreadSettle.restart()

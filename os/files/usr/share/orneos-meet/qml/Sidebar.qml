@@ -448,6 +448,7 @@ Rectangle {
             name: app.profile.name || ""
             email: app.profile.email || ""
             initials: app.profile.initials || ""
+            avatar: app.profile.avatar ? app.profile.avatar + (theme.dark ? "/dark" : "") : ""
             onSettingsRequested: side.settingsRequested()
             // our status, as the others see it: chosen here, its message beside
             readonly property var mine: meet.myStatus
