@@ -148,7 +148,14 @@ Item {
     }
 
     // Routines float over the conversation (chip / retractable sheet); they never shrink the column
-    onBenchTabChanged: if (benchTab !== "") routinesPanel.close()
+    // Leaving a bot closes the Routines bench tab (it has no meaning on a project session).
+    Connections {
+        target: code
+        function onChanged() {
+            if (code.bot === "" && view.benchTab === "routines")
+                app.setPref("bench_tab", "")
+        }
+    }
 
     ColumnLayout {
         anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
@@ -230,46 +237,24 @@ Item {
                         Item { Layout.fillWidth: !code.git.branch }
                     }
                 }
-                // bot: open/close the floating Routines sheet (before Fichiers / Diff / …)
-                AbstractButton {
-                    id: routinesHead
-                    visible: code.bot !== ""
-                    width: Math.max(34, routinesHeadRow.implicitWidth + 16); height: 32
-                    hoverEnabled: true
-                    onClicked: routinesPanel.toggle()
-                    Accessible.name: view.routinesOpen ? app.t.bots_routines_close : app.t.bots_routines_open
-                    ToolTip.visible: hovered; ToolTip.delay: 450; ToolTip.text: Accessible.name
-                    background: Rectangle {
-                        radius: 9
-                        color: view.routinesOpen ? view.c.tint : routinesHead.hovered ? view.c.hover : "transparent"
-                    }
-                    contentItem: Row {
-                        id: routinesHeadRow
-                        anchors.centerIn: parent
-                        spacing: 5
-                        Icon { name: "clock"; size: 15
-                               color: view.routinesOpen ? view.c.tintText : view.c.muted
-                               anchors.verticalCenter: parent.verticalCenter }
-                        Text {
-                            visible: routinesPanel.count > 0
-                            text: String(routinesPanel.count)
-                            font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
-                            color: view.routinesOpen ? view.c.tintText : view.c.muted
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
-                }
-                // the panel's tabs, as Cursor's and Claude's: Fichiers, Modifications, Plan, Terminal
+                // the panel's tabs: Routines (bots), Fichiers, Modifications, Plan, Terminal
                 Row {
                     spacing: 2
                     Repeater {
-                        model: [
-                            { key: "files", icon: "folder", tip: app.t.bench_files, keys: "Ctrl+Shift+E", badge: 0, dot: false },
-                            { key: "changes", icon: "history", tip: app.t.bench_changes, keys: "Ctrl+Shift+G",
-                              badge: code.bench.status.length || (code.bench.turn.files || []).length, dot: false },
-                            { key: "plan", icon: "list", tip: app.t.bench_plan, keys: "", badge: 0, dot: code.planReady },
-                            { key: "terminal", icon: "terminal", tip: app.t.bench_terminal, keys: "Ctrl+`", badge: 0, dot: false }
-                        ]
+                        model: {
+                            const rows = []
+                            if (code.bot !== "")
+                                rows.push({ key: "routines", icon: "clock", tip: app.t.bots_routines,
+                                            keys: "", badge: cron.botRoutines(code.bot).length, dot: false })
+                            rows.push(
+                                { key: "files", icon: "folder", tip: app.t.bench_files, keys: "Ctrl+Shift+E", badge: 0, dot: false },
+                                { key: "changes", icon: "history", tip: app.t.bench_changes, keys: "Ctrl+Shift+G",
+                                  badge: code.bench.status.length || (code.bench.turn.files || []).length, dot: false },
+                                { key: "plan", icon: "list", tip: app.t.bench_plan, keys: "", badge: 0, dot: code.planReady },
+                                { key: "terminal", icon: "terminal", tip: app.t.bench_terminal, keys: "Ctrl+`", badge: 0, dot: false }
+                            )
+                            return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
+                        }
                         AbstractButton {
                             id: benchBtn
                             required property var modelData
@@ -455,12 +440,25 @@ Item {
                     }
                 }
                 RowLayout {
+                    visible: code.bot === ""
                     spacing: 8
                     Icon { name: code.sandbox ? "shieldCheck" : "shield"; size: 14; color: code.sandbox ? view.c.okInk : view.c.saffronInk }
                     Text {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                         text: (code.sandbox ? app.t.code_sandbox : app.t.code_no_sandbox) + " · " + app.t.code_local
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                        color: view.c.muted
+                    }
+                }
+                RowLayout {
+                    visible: code.bot !== ""
+                    spacing: 8
+                    Icon { name: "shieldCheck"; size: 14; color: view.c.okInk }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                        text: (app.t.bots_autonome_note || "") + " · " + app.t.code_local
                         font.family: "Schibsted Grotesk"; font.pixelSize: 12
                         color: view.c.muted
                     }
@@ -485,7 +483,9 @@ Item {
                     role: "kind"
                     DelegateChoice { roleValue: "tool"; delegate: Item {
                         id: d1; required property var item; required property int index
-                        width: list.width; height: c1.implicitHeight
+                        // Bot chat: tools stay invisible — only the typing bubble and the answer
+                        width: list.width; height: code.bot !== "" ? 0 : c1.implicitHeight
+                        visible: code.bot === ""
                         ToolCard { id: c1; x: (list.width - view.column) / 2 + 44; width: view.column - 44;   // in the answer's column, as the steps of the Discussions
                                    entry: d1.item; rowIndex: d1.index }
                     } }
@@ -496,13 +496,13 @@ Item {
                     } }
                     DelegateChoice { roleValue: "planready"; delegate: Item {
                         id: d6; required property var item
-                        width: list.width; height: c6.implicitHeight
+                        width: list.width; height: code.bot !== "" || d6.item.done ? 0 : c6.implicitHeight
+                        visible: code.bot === "" && !d6.item.done
                         Rectangle {
                             id: c6
                             x: (list.width - view.column) / 2; width: view.column
                             implicitHeight: 48
                             radius: 10
-                            visible: !d6.item.done
                             color: view.c.saffronTint
                             border.color: view.c.saffron
                             RowLayout {
@@ -518,7 +518,8 @@ Item {
                     } }
                     DelegateChoice { roleValue: "changes"; delegate: Item {
                         id: d5; required property var item
-                        width: list.width; height: c5.implicitHeight
+                        width: list.width; height: code.bot !== "" ? 0 : c5.implicitHeight
+                        visible: code.bot === ""
                         ChangesCard { id: c5; x: (list.width - view.column) / 2; width: view.column; entry: d5.item }
                     } }
                     DelegateChoice { roleValue: "notice"; delegate: Item {    // the turn went on by itself
@@ -602,7 +603,8 @@ Item {
                     // going by while it thinks), in the answer's column
                     DelegateChoice { roleValue: "thought"; delegate: Item {
                         id: d3; required property var item; required property int index
-                        width: list.width; height: c3.visible ? c3.implicitHeight : 0
+                        width: list.width; height: code.bot !== "" || !c3.visible ? 0 : c3.implicitHeight
+                        visible: code.bot === ""
                         ReasoningBlock { id: c3; x: (list.width - view.column) / 2 + 44; width: view.column - 44
                                          text: String(d3.item.content || "")
                                          autoLive: true
@@ -610,13 +612,19 @@ Item {
                     } }
                     DelegateChoice { delegate: Item {
                         id: d4; required property var item; required property int index
-                        width: list.width; height: c4.implicitHeight
+                        // Bot chat: an answer with no text yet (only tools behind it) is no empty bubble
+                        readonly property bool blank: code.bot !== "" && d4.item.kind === "agent"
+                                                      && String(d4.item.content || "").trim() === ""
+                        width: list.width; height: blank ? 0 : c4.implicitHeight
+                        visible: !blank
                         Message { id: c4; x: (list.width - view.column) / 2; width: view.column; message: d4.item
                                   lastMine: d4.index === code.lastUser
                                   localFiles: true
+                                  chatOnly: code.bot !== ""
                                   onFileRequested: path => view.openInBench(path)
                                   editable: d4.index === code.lastUser && !code.busy
                                   onEditRequested: { const t = code.editLast(); if (t) { input.text = t; input.cursorPosition = input.length; input.forceActiveFocus() } }
+                                  // Bot: the live status is the bubble above the box; the answer streams once it has text
                                   streaming: code.busy && d4.index === list.count - 1 && d4.item.kind === "agent" }
                     } }
                 }
@@ -735,9 +743,17 @@ Item {
             onEditRequested: i => code.editLater(i)
             onDropRequested: i => code.dropLater(i)
         }
-        // Ornis is working: one line above the box, the same as in the Discussions
+        // Bot: live status bubble (réfléchit / écrit un fichier / appelle un outil…) — not part of the history
+        BotStatusBubble {
+            active: code.chatTyping && !codePerm.visible && !codeQuestions.visible
+            text: code.botStatus
+            Layout.alignment: Qt.AlignHCenter
+            Layout.preferredWidth: view.column
+            Layout.topMargin: active ? 8 : 0
+        }
+        // Ornis is working: one line above the box (project sessions only)
         WorkingLine {
-            busy: code.busy && code.folder !== "" && !codePerm.visible && !codeQuestions.visible
+            busy: code.bot === "" && code.busy && code.folder !== "" && !codePerm.visible && !codeQuestions.visible
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: view.column
             Layout.preferredHeight: implicitHeight
@@ -823,7 +839,9 @@ Item {
                     TextArea {
                         id: input
                         // always writable: sending starts the agent again if it stopped (idle, error)
-                        placeholderText: code.waiting ? app.t.code_asks : app.t.code_placeholder
+                        placeholderText: code.waiting ? app.t.code_asks
+                                         : code.bot !== "" ? app.t.bots_placeholder.replace("%1", code.folderName)
+                                         : app.t.code_placeholder
                         wrapMode: TextArea.Wrap
                         background: null
                         font.family: "Schibsted Grotesk"; font.pixelSize: app.textSize
@@ -866,7 +884,7 @@ Item {
                         }
                         // Maj+Tab, as in Claude Code: Demander → Modifier → Autonome → Plan → Demander
                         Keys.onBacktabPressed: event => {
-                            if (code.busy) { event.accepted = true; return }
+                            if (code.bot !== "" || code.busy) { event.accepted = true; return }
                             if (code.planMode) { code.setPlanMode(false); code.setMode("ask") }
                             else if (code.mode === "auto") code.setPlanMode(true)
                             else code.setMode(code.mode === "ask" ? "edits" : "auto")
@@ -886,8 +904,9 @@ Item {
                         enabled: code.state === "ready"
                         onClicked: attachDialog.open()
                     }
-                    AbstractButton {             // "@": a file of the project
+                    AbstractButton {             // "@": a file of the project (sessions only — bots stay a plain chat)
                         id: atBtn
+                        visible: code.bot === ""
                         Layout.alignment: Qt.AlignVCenter
                         implicitWidth: 30; implicitHeight: 32
                         hoverEnabled: true
@@ -899,8 +918,9 @@ Item {
                                             font.family: "JetBrains Mono"; font.pixelSize: 15; font.weight: Font.DemiBold
                                             color: atBtn.hovered ? view.c.text : view.c.muted }
                     }
-                    AbstractButton {             // "/": an action (a command)
+                    AbstractButton {             // "/": an action (a command) — hidden on bots
                         id: slashBtn
+                        visible: code.bot === ""
                         Layout.alignment: Qt.AlignVCenter
                         implicitWidth: 30; implicitHeight: 32
                         hoverEnabled: true
@@ -914,6 +934,7 @@ Item {
                     }
                     AbstractButton {             // the mode: Agent or Plan (Objectif and Recherche are the Discussion's)
                         id: modeBtn
+                        visible: code.bot === ""     // bots: always classic Agent
                         enabled: !code.busy
                         Layout.alignment: Qt.AlignVCenter
                         Layout.leftMargin: 4
@@ -941,6 +962,7 @@ Item {
                     }
                     AbstractButton {             // what Ornis does without asking (as « Demander » in the Discussion mode)
                         id: autoBtn
+                        visible: code.bot === ""     // bots: Autonome is forced, no rights picker
                         enabled: !code.busy
                         Layout.alignment: Qt.AlignVCenter
                         implicitWidth: autoRow.implicitWidth + 18; implicitHeight: 28
@@ -1032,15 +1054,9 @@ Item {
             }
         }
     }
-    property alias routinesOpen: routinesPanel.open
-    function openRoutines() { routinesPanel.open = true }
-    function closeRoutines() { routinesPanel.close() }
-    RoutinesPanel {
-        id: routinesPanel
-        z: 8
-        botId: code.bot !== "" && view.benchTab === "" ? code.bot : ""
-        anchors.fill: parent
-    }
+    readonly property bool routinesOpen: view.benchTab === "routines"
+    function openRoutines() { view.toggleBench("routines") }
+    function closeRoutines() { if (view.benchTab === "routines") app.setPref("bench_tab", "") }
 
     Popup {
         id: peerPopup

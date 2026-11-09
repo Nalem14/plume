@@ -9,7 +9,7 @@ import "components"
 
 Rectangle {
     id: bench
-    property string tab: "files"            // files | changes | plan | terminal
+    property string tab: "files"            // routines | files | changes | plan | terminal
     property bool maximized: false
     signal closeRequested()
     signal maximizeRequested()
@@ -19,10 +19,23 @@ Rectangle {
     readonly property var b: code.bench
     readonly property bool narrow: width < 360
     readonly property bool compact: width < 600            // the tabs not chosen: their icon only
+    // StackLayout order is fixed; the Routines tab button only appears for bots.
+    readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal"]
     color: c.chrome
     clip: true
 
-    function show(name) { tab = name; if (name === "terminal") termPane.ensure() }
+    // Routines only on a bot; Plan never on a bot (always the classic Agent): both fall back on Fichiers
+    function allowed(name) { return code.bot === "" ? name !== "routines" : name !== "plan" }
+    function show(name) {
+        if (!allowed(name)) name = "files"
+        tab = name
+        if (name === "terminal") termPane.ensure()
+    }
+    onTabChanged: if (!allowed(tab)) show("files")
+    Connections {
+        target: code
+        function onChanged() { if (!bench.allowed(bench.tab)) bench.show("files") }
+    }
     // from the conversation: a file to read, or what changed in it (a turn's card, a tool's card)
     function openFile(path) { show("files"); filesPane.open(path) }
     function openDiff(scope, ref, path) { show("changes"); changesPane.scope = scope === "turn" ? 0 : scope === "work" ? 1 : 2; changesPane.openDiff(scope, ref, path) }
@@ -48,12 +61,20 @@ Rectangle {
                 anchors.leftMargin: 10; anchors.rightMargin: 8
                 spacing: 2
                 Repeater {
-                    model: [
-                        { key: "files", label: app.t.bench_files, icon: "folder", badge: 0, dot: false },
-                        { key: "changes", label: app.t.bench_changes, icon: "history", badge: bench.b.status.length || (bench.b.turn.files || []).length, dot: false },
-                        { key: "plan", label: app.t.bench_plan, icon: "list", badge: 0, dot: code.planReady },
-                        { key: "terminal", label: app.t.bench_terminal, icon: "terminal", badge: 0, dot: false }
-                    ]
+                    model: {
+                        const rows = []
+                        if (code.bot !== "")
+                            rows.push({ key: "routines", label: app.t.bots_routines, icon: "clock",
+                                        badge: routinesPane.count, dot: false })
+                        rows.push(
+                            { key: "files", label: app.t.bench_files, icon: "folder", badge: 0, dot: false },
+                            { key: "changes", label: app.t.bench_changes, icon: "history",
+                              badge: bench.b.status.length || (bench.b.turn.files || []).length, dot: false },
+                            { key: "plan", label: app.t.bench_plan, icon: "list", badge: 0, dot: code.planReady },
+                            { key: "terminal", label: app.t.bench_terminal, icon: "terminal", badge: 0, dot: false }
+                        )
+                        return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
+                    }
                     AbstractButton {
                         id: tabBtn
                         required property var modelData
@@ -127,7 +148,13 @@ Rectangle {
         StackLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            currentIndex: ["files", "changes", "plan", "terminal"].indexOf(bench.tab)
+            currentIndex: Math.max(0, bench.tabKeys.indexOf(bench.tab))
+
+            // ---- Routines (bots only) -------------------------------------------------------------------------------
+            RoutinesPanel {
+                id: routinesPane
+                botId: code.bot
+            }
 
             // ---- Fichiers -------------------------------------------------------------------------------------------
             Item {

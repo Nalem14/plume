@@ -215,6 +215,7 @@ def get(bot_id: str) -> dict | None:
     data.setdefault("created", 0)
     data.setdefault("enabled_skills", [])
     data.setdefault("exchange_seen", {})
+    data.setdefault("approvals", [])
     return data
 
 
@@ -309,7 +310,8 @@ def update(bot_id: str, fields: dict) -> dict:
     fields = dict(fields)
     if "folder" in fields:
         fields["folder"] = _folder_value(fields["folder"])
-    for key in ("title", "description", "folder", "session", "preview", "hidden", "enabled_skills", "exchange_seen", "peer_depth", "human_turn"):
+    for key in ("title", "description", "folder", "session", "preview", "hidden", "enabled_skills",
+                "exchange_seen", "peer_depth", "human_turn", "approvals"):
         if key in fields and fields[key] is not None:
             profile[key] = fields[key]
     if "face" in fields and isinstance(fields["face"], dict):
@@ -686,3 +688,32 @@ def roster_for_prompt() -> list[dict]:
     return [{"id": b["id"], "title": b.get("title") or b["id"],
              "description": b.get("description") or "", "hidden": bool(b.get("hidden"))}
             for b in list_bots(include_hidden=True)]
+
+
+def has_approval(bot_id: str, key: str) -> bool:
+    """Whether this bot was already allowed to do this kind of action once."""
+    key = str(key or "").strip()
+    if not key:
+        return False
+    profile = get(bot_id)
+    if not profile:
+        return False
+    return key in list(profile.get("approvals") or [])
+
+
+@_transaction
+def remember_approval(bot_id: str, key: str) -> bool:
+    """Keep one « Autoriser » so the bot can work alone next time (and while you are away)."""
+    key = str(key or "").strip()[:240]
+    if not key:
+        return False
+    profile = get(bot_id)
+    if not profile:
+        return False
+    kept = [str(x) for x in (profile.get("approvals") or []) if x]
+    if key in kept:
+        return True
+    kept.append(key)
+    profile["approvals"] = kept[-80:]
+    _write_profile(bot_id, profile)
+    return True

@@ -22,6 +22,8 @@ Item {
     readonly property string answer: olderShown ? String(versions[version].content || "") : String(message.content || "")
     onVersionsChanged: version = -1
     property bool streaming
+    // Bot chat: only the « is typing » pose — no tools, thoughts or computer cards
+    property bool chatOnly: false
     signal editRequested()
     signal imageRequested(var images, int index)
     property bool localFiles: false      // Code: the files are on this computer, a click asks for them (fileRequested)
@@ -217,7 +219,8 @@ Item {
             // only what it does for real (« Consulte votre agenda… »): « Ornis réfléchit » is the line above the box
             OrnisThinking {
                 Layout.alignment: Qt.AlignLeft
-                visible: msg.streaming && chat.working !== app.t.ornis_working
+                // bot chat: its status bubble above the box says what it does, nothing here
+                visible: !msg.chatOnly && msg.streaming && chat.working !== app.t.ornis_working
                          && !(reasoning.live && reasoning.visible && (chat.workingTools || []).length === 0 && !(chat.computer.phase || ""))
                 text: chat.working
                 showMascot: false
@@ -226,6 +229,7 @@ Item {
             ReasoningBlock {
                 id: reasoning
                 Layout.fillWidth: true
+                visible: !msg.chatOnly
                 text: msg.streaming ? chat.streamReasoning : String(msg.message.reasoning || "")
                 live: msg.streaming && (msg.message.content || "") === ""
                 steps: stepsBlock
@@ -238,12 +242,13 @@ Item {
                 message: msg.message
                 streaming: msg.streaming
                 headless: reasoning.joined
-                visible: ((msg.message.tools || []).length > 0 || (msg.streaming && chat.liveSteps.length > 0))
+                visible: !msg.chatOnly
+                         && ((msg.message.tools || []).length > 0 || (msg.streaming && chat.liveSteps.length > 0))
                          && (msg.streaming || app.prefs.show_tools !== false)
             }
             // a command or action Ornis runs, or asks to run, on this computer (with live output + Stop)
             Rectangle {
-                visible: msg.streaming && ((chat.computer.command || "") !== "" || (chat.computer.summary || "") !== "")
+                visible: !msg.chatOnly && msg.streaming && ((chat.computer.command || "") !== "" || (chat.computer.summary || "") !== "")
                 Layout.fillWidth: true
                 implicitHeight: computerBox.implicitHeight + 20
                 radius: 8

@@ -886,14 +886,52 @@ def always_ask(tool: dict, folder: str = "", reusable: bool = True) -> bool:
     return False
 
 
+def approval_key(tool: dict, folder: str = "") -> str:
+    """Stable key so a bot can remember one « Autoriser » for the same kind of action."""
+    kind = str(tool.get("kind") or "")
+    raw = tool.get("rawInput") if isinstance(tool.get("rawInput"), dict) else {}
+    command = str(raw.get("command") or "") if kind == "execute" or "command" in raw else ""
+    if command:
+        # What still asks a bot is a secret, sudo or « curl | sh »: only this very command is remembered, never its
+        # program (one « cat .env » allowed must not open « cat ~/.ssh/id_rsa », one sudo every sudo).
+        return "cmd:exact:" + " ".join(command.split())
+    found = set()
+    for p in file_paths(tool):
+        if not p:
+            continue
+        try:
+            path = Path(p.replace("\\", "/")).expanduser()
+            if not path.is_absolute() and folder:
+                path = Path(folder) / path          # relative to the bot's folder, not to Plume's cwd
+            found.add(str(path.resolve()).replace("\\", "/"))
+        except (OSError, RuntimeError, ValueError):
+            found.add(p.replace("\\", "/"))
+    if found:
+        return f"{kind}:{sorted(found)[0]}"
+    title = str(tool.get("title") or "").strip()[:80]
+    return f"{kind}:{title}" if kind and title else ""
+
+
+def _bot_remembers(bot: str, tool: dict, folder: str = "") -> bool:
+    if not bot:
+        return False
+    try:
+        import ornis_bots
+        return ornis_bots.has_approval(bot, approval_key(tool, folder))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "", bot: str = "") -> str:
     """What to do with a permission the agent asks: 'allow', 'ask' (the user chooses) or 'reject'.
     tool: the tool call as the agent described it (kind, rawInput, title). In the default mode (« edits »), an
     ordinary command (tests, a build) runs without asking when the agent is in the sandbox: it can only write in
-    the project; without one, only the commands that read."""
+    the project; without one, only the commands that read.
+    A bot in Autonome works alone: only secrets / admin / remote scripts ask once, then the answer is remembered."""
     kind = str(tool.get("kind") or "")
     raw = tool.get("rawInput") if isinstance(tool.get("rawInput"), dict) else {}
     command = str(raw.get("command") or "") if kind == "execute" or "command" in raw else ""
+    remembered = _bot_remembers(bot, tool, folder)
     if _against_itself(command, raw if kind not in ("read", "search", "think", "fetch") else {}):
         return "reject"                              # never in any mode: Ornis would stop itself or loosen its rules
     if command:
@@ -901,6 +939,8 @@ def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "", bot
         if ornis_shell.classify(command).get("blocked"):
             return "reject"
     if always_ask(tool, folder, reusable=False):
+        if remembered:
+            return "allow"
         return "reject" if mode == "plan" and kind not in ("read", "search", "think", "fetch") else "ask"
     if kind in ("edit", "delete") and in_notebook(folder, raw, bot):
         return "allow"                               # its own notebook (memory, plans, tmp): in every mode, Plan too
@@ -915,6 +955,22 @@ def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "", bot
                 return "reject"
             return "allow" if info.get("read_only") and not info.get("sensitive") and not info.get("blocked") else "reject"
         return "reject"
+    # Bot Autonome: act alone. Only true secrets (above), admin elevation and « curl | sh » ask once.
+    if bot and mode == "auto":
+        if command:
+            try:
+                import ornis_shell
+                info = ornis_shell.classify(command)
+            except Exception:  # noqa: BLE001
+                info = {"level": "change", "sensitive": True, "blocked": ""}
+            if info.get("blocked"):
+                return "reject"
+            risky = info.get("level") == "admin" or (
+                info.get("sensitive") and ornis_shell.REMOTE_SCRIPT.search(command))
+            if risky:
+                return "allow" if remembered else "ask"
+            return "allow"
+        return "allow"
     if command:
         try:
             import ornis_shell

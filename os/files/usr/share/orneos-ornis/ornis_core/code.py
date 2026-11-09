@@ -173,6 +173,7 @@ def diff_lines(path: str, old: str | None, new: str) -> list[dict]:
 
 class CodeChat(QObject):
     changed = Signal()             # folder, conversation, state, mode, sessions
+    statusChanged = Signal()       # bot: its live status (« Orla écrit un fichier… »)
     usageChanged = Signal()
     planChanged = Signal()
     problem = Signal(str)          # a message for the toast
@@ -246,6 +247,8 @@ class CodeChat(QObject):
         self._retract = False                    # the last message was taken back to be edited: the agent hears it
         self._git = {}
         self._cron_job = None            # {task_id, title, prev_mode} while a scheduled Code task runs here
+        self._last_status = None         # bot: what its status bubble shows (_status_tick)
+        self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
         try:
             self._history = json.loads(HISTORY.read_text())
         except (OSError, ValueError):
@@ -362,7 +365,77 @@ class CodeChat(QObject):
 
     @Property(str, notify=changed)
     def mode(self):
-        return self._mode
+        # Bots always run Autonome (no rights picker in the UI).
+        return "auto" if self._bot else self._mode
+
+    @Property(bool, notify=changed)
+    def chatTyping(self):
+        """Bot chat: the live status bubble above the box (never written into the history)."""
+        return bool(self._bot and self._busy)
+
+    @Property(str, notify=statusChanged)
+    def botStatus(self):
+        """What the open bot is doing right now: « Orla réfléchit… », « Orla écrit un fichier… », …"""
+        if not self._bot or not self._busy:
+            return ""
+        name = self.folderName or self._bot
+        key, detail = self._bot_activity()
+        tip = self._app._t.get(f"bots_status_{key}", "")
+        if not tip:
+            tip = self._app._t.get("bots_status_working", "%1 travaille…")
+        text = tip.replace("%1", name)
+        if detail and "%2" in text:
+            text = text.replace("%2", detail)
+        elif "%2" in text:
+            text = text.replace(" %2", "").replace("%2", "")
+        return text
+
+    def _status_tick(self):
+        """Refresh the bot's status bubble only when what it does changes (not at each streamed word: `changed`
+        re-reads every binding of the view)."""
+        if not self._bot:
+            return
+        now = self._bot_activity() if self._busy else None
+        if now != self._last_status:
+            self._last_status = now
+            self.statusChanged.emit()
+
+    def _bot_activity(self) -> tuple[str, str]:
+        """(status_key, optional short detail) from the latest thing the bot did in this turn."""
+        for at in sorted(self._pending_text, reverse=True):     # words not flushed yet: the newest first
+            if self._pending_text[at] and 0 <= at < len(self._items.rows):
+                kind = self._items.rows[at].get("kind")
+                if kind == "agent":
+                    return "writing", ""
+                if kind == "thought":
+                    return "thinking", ""
+        for row in reversed(self._items.rows):
+            kind = row.get("kind")
+            if kind in ("agent", "thought"):
+                if not str(row.get("content") or "").strip():
+                    continue
+                return ("writing" if kind == "agent" else "thinking"), ""
+            if kind == "tool":
+                if str(row.get("status") or "pending") in ("completed", "failed", "cancelled"):
+                    return "working", ""                 # between two steps: the next one is not known yet
+                tool = str(row.get("tool") or "other")
+                short = Path(str(row.get("short") or row.get("path") or "")).name.strip()
+                if tool in ("edit", "delete", "move"):
+                    return ("write_file_named", short) if short else ("write_file", "")
+                if tool == "read":
+                    return ("read_named", short) if short else ("read", "")
+                if tool == "search":
+                    return "search", ""
+                if tool == "execute":
+                    return "command", ""
+                if tool == "fetch":
+                    return "fetch", ""
+                if tool == "think":
+                    return "thinking", ""
+                return "tool", ""
+            if kind in ("user", "peer"):
+                break
+        return "working", ""
 
     @Property(str, constant=True)
     def sandbox(self):
@@ -834,6 +907,8 @@ class CodeChat(QObject):
         session_id = str(session_id or "").strip()
         self._bot = bot_id
         self._bot_brief = True
+        self._mode = "auto"                        # bots: Autonome, Agent classique (no Plan)
+        self._plan_mode = False
         if not folder:
             try:
                 import ornis_bots  # noqa: PLC0415
@@ -850,6 +925,9 @@ class CodeChat(QObject):
                     self.changed.emit()
             except Exception:  # noqa: BLE001
                 pass
+            if self._agent and self._session and hasattr(self._agent, "set_mode"):
+                agent, sid = self._agent, self._session
+                threading.Thread(target=lambda: agent.set_mode(sid, "auto"), daemon=True).start()
 
     @Slot()
     def clearBot(self):
@@ -858,6 +936,9 @@ class CodeChat(QObject):
         self._busy, self._queued, self._state = False, "", "idle"
         self._bot, self._bot_brief = "", False
         self._session, self._title, self._folder = "", "", ""
+        pref = self._app.pref("code_mode")
+        self._mode = pref if pref in ornis_code.MODES else "ask"
+        self._plan_mode = False
         self._items.reset()
         self.changed.emit()
 
@@ -1077,7 +1158,7 @@ class CodeChat(QObject):
         def work():
             try:
                 agent.load_session(sid)
-                agent.set_mode(sid, self._mode)
+                agent.set_mode(sid, "auto" if self._bot else self._mode)
                 self._done.emit(sid, {"loaded": True})
             except Exception as error:  # noqa: BLE001
                 self._done.emit(sid, {"error": str(error), "loaded": True})
@@ -1192,7 +1273,7 @@ class CodeChat(QObject):
         agent = self._agent
         if not (self._items.rows and self._items.rows[-1].get("kind") == "user" and self._items.rows[-1].get("content") in (text, shown)):
             self._items.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
-        if self._plan_mode and not text.startswith("/"):
+        if self._plan_mode and not self._bot and not text.startswith("/"):
             self._items.rows[-1]["plan"] = True
             self._items.touch(len(self._items.rows) - 1)
         self._compacting = text == "/compact"
@@ -1208,7 +1289,7 @@ class CodeChat(QObject):
         self._continued, self._turn_start = 0, len(self._items.rows) - 1
         self.changed.emit()
         sid = self._session
-        mode = self._mode
+        mode = "auto" if self._bot else self._mode
         note = self._note(text)
         attachments = list(self._attachments)
         first = not self._session and not text.startswith("/")
@@ -1420,6 +1501,8 @@ class CodeChat(QObject):
 
     @Slot(str)
     def setMode(self, mode):
+        if self._bot:
+            return                                 # bots stay Autonome; do not rewrite the session prefs
         if self._busy or mode not in ornis_code.MODES or mode == self._mode:
             return
         self._mode = mode
@@ -1431,11 +1514,13 @@ class CodeChat(QObject):
 
     @Property(bool, notify=changed)
     def planMode(self):
-        return self._plan_mode
+        return False if self._bot else self._plan_mode
 
     @Slot(bool)
     def setPlanMode(self, on):
         """Plan: Ornis explores and proposes, nothing is changed (every edit and command that writes is refused)."""
+        if self._bot:
+            return                                 # bots stay in classic Agent + Autonome
         on = bool(on)
         if self._busy or on == self._plan_mode:
             return
@@ -1468,12 +1553,19 @@ class CodeChat(QObject):
             return
         choice = next(o for o in asked["options"] if o["id"] == option_id)
         item.pop("permission", None)
-        approved = choice.get("kind") == "allow_once"
+        approved = str(choice.get("kind") or "").startswith("allow")
+        if approved and self._bot and asked.get("key"):
+            try:
+                import ornis_bots  # noqa: PLC0415
+                # the key of the very call decide() saw (same locations): the next one is allowed alone
+                ornis_bots.remember_approval(self._bot, asked["key"])
+            except Exception:  # noqa: BLE001
+                pass
         if asked.get("host") and approved:
             self._begin_host(row, asked)
         elif asked.get("request") is not None:
             self._agent.answer(asked["request"], {"outcome": {"outcome": "selected", "optionId": option_id}})
-        item["answer"] = "allowed" if choice.get("kind", "").startswith("allow") else "rejected"
+        item["answer"] = "allowed" if approved else "rejected"
         self._items.touch(row)
         self.changed.emit()
 
@@ -1594,6 +1686,8 @@ class CodeChat(QObject):
             else:
                 at = len(self._items.rows) - 1
             self._pending_text.setdefault(at, []).append(text)
+            if self._bot and role in ("agent", "thought") and not self._replaying:
+                self._status_tick()                   # « écrit… » / « réfléchit… » without waiting for the flush
             if self._replaying:
                 pass                                  # written when the row changes, and at the end of the replay
             elif not self._flush.isActive():
@@ -1709,6 +1803,7 @@ class CodeChat(QObject):
                         self._agent.cancel(self._session)
                 self._items.touch(at)
         self._pending_text.clear()
+        self._status_tick()
 
     def _tool(self, update):
         tid = str(update.get("toolCallId") or "")
@@ -1778,6 +1873,7 @@ class CodeChat(QObject):
             except ValueError:
                 row["short"] = row["path"]
         self._items.touch(at)
+        self._status_tick()                          # bot: refresh its live status bubble
 
     def _on_permission(self, request_id, sid, tool, options):
         tid = str((tool or {}).get("toolCallId") or "")
@@ -1788,11 +1884,13 @@ class CodeChat(QObject):
         call = {"kind": row.get("tool"), "rawInput": row.get("raw") or {}, "title": row.get("title"),
                 "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
                 "content": (tool or {}).get("content") or []}
-        verdict = ornis_code.decide("plan" if self._plan_mode else self._mode, call, sandboxed=bool(ornis_code.sandbox_kind()),
+        # Bots always decide as Autonome (even if a leftover prefs mode remains on _mode).
+        mode = "plan" if (self._plan_mode and not self._bot) else ("auto" if self._bot else self._mode)
+        verdict = ornis_code.decide(mode, call, sandboxed=bool(ornis_code.sandbox_kind()),
                                     folder=self._folder, bot=self._bot)
         if at < 0 or sid != self._session or self._host is not None:
             verdict = "reject"
-        if self._cron_job and verdict == "ask":   # scheduled run: nobody to answer — as the background runs, refuse
+        if self._cron_job and verdict == "ask":   # unattended: refuse what still needs a human
             verdict = "reject"
         opts = [o for o in options or [] if isinstance(o, dict)]
         if verdict in ("allow", "reject") or at < 0 or sid != self._session:
@@ -1820,6 +1918,8 @@ class CodeChat(QObject):
         admin = row.get("tool") == "execute" and ornis_shell.classify(row.get("command", "")).get("level") == "admin"
         reject = next((o.get("optionId") for o in opts if o.get("kind") == "reject_once"), None)
         row["permission"] = {"request": request_id, "options": choices, "host": admin, "reject": reject, "title": self._app._t.get("code_admin", "Administration") if admin else ""}
+        if self._bot:
+            row["permission"]["key"] = ornis_code.approval_key(call, self._folder)   # remembered on « Autoriser »
         row["admin"] = admin
         if admin:
             row["title"] = self._app._t.get("code_admin", "Administration")

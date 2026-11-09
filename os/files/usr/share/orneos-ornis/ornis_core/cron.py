@@ -772,7 +772,9 @@ class Cron(QObject):
                 def on_permission(rid, sid, tool, opts):
                     kind = str((tool or {}).get("kind") or "")
                     raw = (tool or {}).get("rawInput") if isinstance((tool or {}).get("rawInput"), dict) else {}
-                    verdict = ornis_code.decide("auto", {"kind": kind, "rawInput": raw or {}},
+                    verdict = ornis_code.decide("auto", {"kind": kind, "rawInput": raw or {},
+                                                         "locations": (tool or {}).get("locations") or [],
+                                                         "content": (tool or {}).get("content") or []},
                                                 sandboxed=bool(ornis_code.sandbox_kind()), folder=str(folder), bot=bot)
                     if verdict == "ask":
                         verdict = "reject"
