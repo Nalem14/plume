@@ -176,6 +176,37 @@ def diff_lines(path: str, old: str | None, new: str) -> list[dict]:
     return out
 
 
+def _bot_turn_note(bot: str) -> str:
+    """The hidden memory line of a bot's turn (ornis_bots.turn_note); never a reason for a turn to fail."""
+    try:
+        import ornis_bots  # noqa: PLC0415
+        return ornis_bots.turn_note(bot, ornis_code.COMPACT_AT)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _bot_usage(bot: str, used: int):
+    try:
+        import ornis_bots  # noqa: PLC0415
+        ornis_bots.note_usage(bot, used)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _bot_record(bot: str, asked: str, answer: str):
+    """A finished turn into the bot's searchable history (off the window's thread: a file append)."""
+    if not bot:
+        return
+
+    def work():
+        try:
+            import ornis_bots  # noqa: PLC0415
+            ornis_bots.record_turn(bot, asked, answer)
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=work, daemon=True, name="ornis-bot-history").start()
+
+
 def _group_title(text: str) -> str:
     """« [Group message in « Title » (group id …)] » → Title (the pill in the bot's own thread)."""
     m = re.match(r"\[Group message in « (.*?) »", str(text or ""))
@@ -255,6 +286,7 @@ class CodeChat(QObject):
         self._opening = 0                        # +1 at each opening: late work of a previous one is dropped
         self._continued = 0                      # turns gone on by themselves since my last message
         self._turn_start = 0                     # the row where the turn running began
+        self._turn_asked = ""
         self._later: list[str] = []              # messages written while Ornis works: sent one by one after the turn
         self._forced = None                      # « Envoyer maintenant »: sent once the stopped turn is over
         self._retract = False                    # the last message was taken back to be edited: the agent hears it
@@ -883,6 +915,8 @@ class CodeChat(QObject):
                 except Exception:  # noqa: BLE001
                     pass
             self._bot_brief = False
+        if self._bot and not text.startswith("/"):
+            head += _bot_turn_note(self._bot)    # keep memory as it goes; save it before a summary
         blocks = [ornis_code.text_block(note + head + text)]
         seen = set()
         for a in attachments:
@@ -1391,6 +1425,8 @@ class CodeChat(QObject):
                         head += ornis_bots.identity_block(bot, bots_cli=bots_cli)
                     except Exception:  # noqa: BLE001
                         pass
+                if bot and not text.startswith("/"):
+                    head += _bot_turn_note(bot)
                 blocks = [ornis_code.text_block(head + text)]
                 if not session:
                     created = agent.new_session()
@@ -1563,6 +1599,7 @@ class CodeChat(QObject):
         self._busy = True
         self._failures, self._looped, self._repeats = {}, False, {}
         self._continued, self._turn_start = 0, len(self._items.rows) - 1
+        self._turn_asked = shown                 # the bot's history keeps what was asked (a routine, a group…)
         if self._plan and all(p.get("status") == "completed" for p in self._plan):
             self._plan = []                      # a finished to-do list is the last turn's, not this one's
             self.planChanged.emit()
@@ -1636,6 +1673,12 @@ class CodeChat(QObject):
                 self.changed.emit()
                 return
             bg["busy"] = False
+            if not result.get("error"):
+                rows = bg.get("rows") or []
+                ask_at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("kind") == "user"), -1)
+                answer = next((str(r.get("content") or "") for r in reversed(rows[ask_at + 1:])
+                               if r.get("kind") == "agent" and str(r.get("content") or "").strip()), "")
+                _bot_record(bg["bot"], str(rows[ask_at].get("content") or "") if ask_at >= 0 else "", answer)
             self._remember_for(bg["folder"], bg.get("session") or session, bg.get("title") or "", bg["bot"], touch=True)
             if bg.get("later") and not result.get("error"):
                 text = bg["later"].pop(0)
@@ -1717,6 +1760,7 @@ class CodeChat(QObject):
         self._remember(self._session, self._title)
         if self._bot and not error:
             self._bot_preview()
+            _bot_record(self._bot, self._turn_asked, self._last_answer())
         if self._plan_mode and not error and result.get("stopReason") != "cancelled":
             self._items.append({"kind": "planready", "done": False})
         self.changed.emit()
@@ -2067,6 +2111,8 @@ class CodeChat(QObject):
                 row["icon"] = KINDS.get(row["tool"], KINDS["other"])
             if update.get("status"):
                 row["status"] = str(update["status"])
+        elif kind == "usage_update":
+            _bot_usage(str(bg.get("bot") or ""), int(update.get("used") or 0))
         elif kind == "session_info_update":
             title = str(update.get("title") or "")
             if title:
@@ -2110,6 +2156,8 @@ class CodeChat(QObject):
         elif kind == "usage_update":
             previous = int(self._usage.get("used") or 0)
             self._usage = {"used": int(update.get("used") or 0), "size": int(update.get("size") or 0)}
+            if self._bot:
+                _bot_usage(self._bot, self._usage["used"])
             if self._compacting or int(self._usage["used"]) < previous * .7:
                 self._invalidate_parts()
                 if self._bot:
@@ -2174,7 +2222,7 @@ class CodeChat(QObject):
         if row.get("kind") == "user":
             for _ in range(6):
                 body = row["content"]
-                if body.startswith(("[Project notebook", "[Bot identity for")):
+                if body.startswith(("[Project notebook", "[Bot identity for", "[Bot memory note")):
                     cut = body.find("\n]\n\n")
                     if cut < 0:
                         break

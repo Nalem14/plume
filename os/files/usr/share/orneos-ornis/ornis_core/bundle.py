@@ -45,6 +45,30 @@ def build(qt):
     projects = Projects(app, chat)          # the Work mode's projects (instructions, folder, conversations)
     chat.projects = projects
     app.project_folder = lambda sid: projects.local_folder(sid)
+
+    def path_bases():
+        """Where a path named in a message is looked for: the open group's shared folder and its members' folders,
+        the Code folder (a bot's working folder), the bot's profile (memory/, skills/), the Work project's folder."""
+        out = []
+        try:
+            import ornis_bots  # noqa: PLC0415
+            if bots._group:
+                out.append(ornis_bots.group_folder(bots._group))
+                g = ornis_bots.get_group(bots._group) or {}
+                out += [ornis_bots.working_folder(m) for m in g.get("members") or []]
+            if code._folder:
+                out.append(code._folder)
+            if code._bot:
+                out.append(str(ornis_bots.bot_dir(code._bot)))
+        except Exception:  # noqa: BLE001
+            if code._folder:
+                out.append(code._folder)
+        try:
+            out.append(projects.local_folder(chat.current) or "")
+        except Exception:  # noqa: BLE001
+            pass
+        return [b for b in out if b]
+    app.path_bases = path_bases
     projects.toast.connect(app.toast)
     cron.toast.connect(app.toast)
     bots.toast.connect(app.toast)

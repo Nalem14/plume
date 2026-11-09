@@ -201,6 +201,42 @@ def artifact_page(kind: str, code: str, dark: bool, lang: str) -> str:
     return base + f"</head><body>{code}</body></html>"
 
 
+_PATH_EXT = re.compile(r"\.[A-Za-z0-9]{1,6}$")
+
+
+def _looks_like_path(text: str) -> bool:
+    """`dossier/fichier.md`, `./src/`, `~/Notes`, `rapport.pdf`: what a message names as a file or folder (not a
+    command, code, an address or a sentence)."""
+    t = text.strip()
+    if not t or len(t) > 260 or t != text.strip("`") or any(c in t for c in "\n\t\"'<>|*?;=(){}[]$`"):
+        return False
+    if re.match(r"^[a-z][a-z0-9+.-]*://", t, re.I) or t.startswith(("-", "@", "#")) or " " in t.strip():
+        return False
+    t = re.sub(r":\d+(?::\d+)?$", "", t)      # src/app.py:42
+    if "/" in t or "\\" in t or t.startswith("~"):
+        return bool(re.search(r"[\w.-]", t)) and not re.fullmatch(r"[\d/.:-]+", t)   # not a date, a ratio
+    return bool(_PATH_EXT.search(t)) and not re.fullmatch(r"[\d.]+", t) \
+        and bool(re.search(r"\.(md|txt|pdf|csv|json|ya?ml|toml|py|js|ts|tsx|jsx|html?|css|sh|png|jpe?g|gif|svg|webp|"
+                           r"docx?|xlsx?|pptx?|odt|ods|zip|log|ini|cfg|conf|xml|sql|php|rb|go|rs|java|kt|swift|c|h|cpp|qml)$",
+                           t, re.I))
+
+
+def _resolve_local(ref: str, bases) -> Path | None:
+    """The file or folder a message names: absolute, ~, or relative to one of the conversation's folders."""
+    raw = re.sub(r":\d+(?::\d+)?$", "", str(ref or "").strip().strip("`"))
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    tries = [path] if path.is_absolute() else [Path(b) / path for b in bases if b] + [Path.home() / path]
+    for candidate in tries:
+        try:
+            if candidate.exists():
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
+
+
 class App(QObject):
     accountChanged = Signal()
     notificationClicked = Signal(str)       # the conversation of a notification the user clicked
@@ -218,6 +254,7 @@ class App(QObject):
         super().__init__()
         self._t = strings()
         self.project_folder = None       # session id → the folder of its project here (Projects.local_folder, bundle.py)
+        self.path_bases = lambda: []     # the folders a relative path of a message is read from (bundle.py)
         self._html = {}                  # markdown() cache: (text, colours, size) → HTML
         self._blocks = {}                # messageBlocks() cache: text → blocks
         self._lang = language()
@@ -630,12 +667,31 @@ class App(QObject):
             return
         if url.startswith("ornis-copy:"):
             self.copy(unquote(url[len("ornis-copy:"):]))
+        elif url.startswith("ornis-path:"):
+            self.openLocal(unquote(url[len("ornis-path:"):]))
+        elif url.startswith("file://"):
+            self.openLocal(QUrl(url).toLocalFile())
         elif links.is_link(url):
             links.open_link(url)
         elif url.startswith(cloud.CLOUD):
             cloud.open_url(cloud.cloud_link(url))
         elif url.startswith(("https://", "http://", "mailto:")):
             cloud.open_url(url)
+
+    @Slot(str)
+    def openLocal(self, ref):
+        """A file or folder named in a message: a file in the system's preview (Quick Look on a Mac; elsewhere the app
+        that opens it), a folder in the file manager. A relative path is read from the conversation's folders
+        (the project, the bot's folder and profile, the group's shared folder: `path_bases`, set by the bundle)."""
+        found = _resolve_local(ref, self.path_bases())
+        if found is None:
+            self.toast.emit(self._t["path_missing"].replace("%1", str(ref)))
+            return
+        if found.is_file() and system.MACOS and Path("/usr/bin/qlmanage").exists():
+            subprocess.Popen(["/usr/bin/qlmanage", "-p", str(found)], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            return
+        system.open_url(str(found))
 
     @Slot(str)
     def openCloud(self, path):
@@ -732,7 +788,17 @@ class App(QObject):
             it = block.begin()
             while not it.atEnd():
                 frag = it.fragment()
-                if frag.isValid() and frag.charFormat().isAnchor():
+                if (frag.isValid() and not code and not frag.charFormat().isAnchor()
+                        and frag.charFormat().fontFixedPitch() and _looks_like_path(frag.text())):
+                    # `workspace/notes.md`, `.ornis/plans/`: a link that opens it (a preview, or the folder)
+                    ref = QTextCharFormat()
+                    ref.setAnchor(True)
+                    ref.setAnchorHref("ornis-path:" + quote(frag.text().strip()))
+                    ref.setForeground(QColor(link_color))
+                    cursor.setPosition(frag.position())
+                    cursor.setPosition(frag.position() + frag.length(), QTextCursor.MoveMode.KeepAnchor)
+                    cursor.mergeCharFormat(ref)
+                elif frag.isValid() and frag.charFormat().isAnchor():
                     link = QTextCharFormat()
                     link.setForeground(QColor(link_color))
                     link.setFontUnderline(False)

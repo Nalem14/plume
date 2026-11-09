@@ -29,6 +29,7 @@ commands:
   notify   '{"title":"…","message":"…"}'
   groups
   group-read '{"group":"…"}'
+  history '{"query":"…"}'          (your thread before its summaries)
   group-post '{"group":"…","message":"…"}'
   group-create '{"title":"…","members":["…","…"]}'
   delete   '{"id":"…","confirm":true}'
@@ -44,6 +45,7 @@ CMD_MAP = {
     "exchange": "bot_exchange",
     "notify": "notify_user",
     "groups": "group_list",
+    "history": "history_search",
     "group-read": "group_read",
     "group-post": "group_post",
     "group-create": "group_create",

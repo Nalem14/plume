@@ -132,6 +132,20 @@ TOOLS = [
         },
     },
     {
+        "name": "history_search",
+        "description": (
+            "Search what was said in your own thread, including what its summaries dropped (the person's requests, "
+            "your answers, routines, group turns). Use it before saying you do not remember. Returns dated excerpts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {"query": {"type": "string", "description": "Words to find (accents and case ignored)"},
+                           "limit": {"type": "integer", "description": "At most 20 (default 8)"}},
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "group_list",
         "description": "List the groups (rooms shared by several bots and the person) with their members and lead.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -299,6 +313,11 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 raise ValueError("notify_user is for bots: this session is not a bot")
             row = ornis_bots.push_notice(actor, args.get("title") or "", args.get("message") or "")
             return _ok({"notified": True, "id": row["id"]})
+        if name == "history_search":
+            if not actor:
+                raise ValueError("history_search is for bots: this session is not a bot")
+            rows = ornis_bots.search_history(actor, str(args.get("query") or ""), int(args.get("limit") or 8))
+            return _ok({"results": rows, "note": "" if rows else "nothing found: try other words"})
         if name == "group_list":
             return _ok({"groups": [{"id": g["id"], "title": g["title"], "description": g["description"],
                                     "members": g["members"], "lead": g["lead"], "reply": g["reply"],

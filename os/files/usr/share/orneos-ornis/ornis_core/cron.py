@@ -811,10 +811,21 @@ class Cron(QObject):
                         agent.answer(rid, {"action": "decline"})
 
                 last_beat = [0.0]
+                said = []                        # the routine's answer, for the bot's searchable history
 
                 def on_update(sid, update):
                     if not isinstance(update, dict):
                         return
+                    kind_ = str(update.get("sessionUpdate") or "")
+                    if bot and kind_ == "agent_message_chunk":
+                        content = update.get("content")
+                        said.append(str(content.get("text") or "") if isinstance(content, dict) else "")
+                    elif bot and kind_ == "usage_update":
+                        try:
+                            import ornis_bots  # noqa: PLC0415
+                            ornis_bots.note_usage(bot, int(update.get("used") or 0))
+                        except Exception:  # noqa: BLE001
+                            pass
                     now = time.time()
                     if now - last_beat[0] < 2.0:
                         return
@@ -861,12 +872,21 @@ class Cron(QObject):
                     try:
                         import ornis_bots  # noqa: PLC0415
                         bots_cli = str((ornis_code.ROOT / "bin" / "ornis-bots").resolve())
-                        body = ornis_bots.identity_block(bot, bots_cli=bots_cli) + prompt
+                        body = (ornis_bots.identity_block(bot, bots_cli=bots_cli)
+                                + ornis_bots.turn_note(bot, ornis_code.COMPACT_AT) + prompt)
                     except Exception:  # noqa: BLE001
                         pass
+                said.clear()                     # a resumed thread replays its past: only this turn's answer
                 result = agent.prompt(session, [{"type": "text", "text": body}])
                 stop = str((result or {}).get("stopReason") or "")
                 status = "ok" if stop in ("end_turn", "max_tokens", "") else "error"
+                if bot and status == "ok":
+                    try:
+                        import ornis_bots  # noqa: PLC0415
+                        ornis_bots.record_turn(bot, f"[Scheduled Code task: {title}] " + str(task.get("prompt") or ""),
+                                               "".join(said))
+                    except Exception:  # noqa: BLE001
+                        pass
                 summary = self._t("cron_done", "Terminé") if status == "ok" else (stop or summary)
             except ornis_code.Unavailable as err:
                 code = err.args[0] if err.args else "failed"

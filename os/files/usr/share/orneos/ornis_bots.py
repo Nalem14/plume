@@ -895,6 +895,130 @@ def memory_index(bot_id: str) -> str:
         return ""
 
 
+def memory_files(bot_id: str, limit: int = 40) -> list[dict]:
+    """The bot's memory notes (memory/*.md but the index), newest first: name, first line, size. Recalled at every
+    brief even when the bot did not index them (09/11: Orla wrote five notes, MEMORY.md stayed empty, and after a
+    summary she no longer knew they existed)."""
+    root = bot_dir(bot_id) / "memory"
+    rows = []
+    try:
+        paths = [p for p in root.rglob("*.md") if p.is_file() and p.name != "MEMORY.md"]
+    except OSError:
+        return []
+    for path in paths:
+        try:
+            stat = path.stat()
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                head = next((ln.strip().lstrip("#").strip() for ln in handle.read(2000).splitlines() if ln.strip()), "")
+        except OSError:
+            continue
+        rows.append({"name": str(path.relative_to(root)), "line": head[:120], "size": stat.st_size,
+                     "updated": stat.st_mtime})
+    rows.sort(key=lambda r: r["updated"], reverse=True)
+    return rows[:limit]
+
+
+# ---- its thread, kept by Ornis: searchable after the agent summarised it (Hermes' session_search) -----------------
+HISTORY_MAX = 4 * 1024 * 1024      # past this, the oldest half goes (a few years of daily turns)
+
+
+def history_file(bot_id: str) -> Path:
+    return bot_dir(bot_id) / "history.jsonl"
+
+
+def turn_source(text: str) -> str:
+    """Who asked: the person, a routine, another bot or a group."""
+    if text.startswith("[Scheduled Code task:"):
+        return "routine"
+    if text.startswith("[Bot message from"):
+        return "bot"
+    if text.startswith("[Group message in"):
+        return "group"
+    return "person"
+
+
+def record_turn(bot_id: str, asked: str, answer: str) -> None:
+    """One finished turn of the bot's thread, on this computer only (as the conversation itself)."""
+    asked = str(asked or "").strip()
+    answer = str(answer or "").replace("[SILENT]", "").strip()
+    if not get(bot_id) or not (asked or answer) or asked.startswith("/"):
+        return
+    row = {"at": time.time(), "source": turn_source(asked), "asked": asked[:4000], "answer": answer[:8000]}
+    path = history_file(bot_id)
+    try:
+        with _locked():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as out:
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+            if path.stat().st_size > HISTORY_MAX:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                system.private_write(path, "\n".join(lines[len(lines) // 2:]) + "\n")
+    except OSError:
+        pass
+
+
+def _fold(text: str) -> str:
+    import unicodedata  # noqa: PLC0415
+    return "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+
+
+def search_history(bot_id: str, query: str, limit: int = 8) -> list[dict]:
+    """Past turns of this bot that hold the words of the query (accents and case ignored), best then newest."""
+    words = [w for w in re.findall(r"\w+", _fold(str(query or ""))) if len(w) > 1]
+    if not words:
+        return []
+    try:
+        lines = history_file(bot_id).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    found = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        both = _fold(str(row.get("asked") or "") + "\n" + str(row.get("answer") or ""))
+        hits = sum(1 for w in words if w in both)
+        if hits:
+            found.append((hits, float(row.get("at") or 0), row, both))
+    found.sort(key=lambda f: (f[0], f[1]), reverse=True)
+    out = []
+    for hits, at, row, both in found[:max(1, min(int(limit or 8), 20))]:
+        def cut(text: str) -> str:
+            low = _fold(text)
+            at_ = min((low.find(w) for w in words if w in low), default=0)
+            start = max(0, at_ - 200)
+            return ("…" if start else "") + text[start:start + 600] + ("…" if len(text) > start + 600 else "")
+        out.append({"date": time.strftime("%Y-%m-%d %H:%M", time.localtime(at)), "source": row.get("source") or "",
+                    "asked": cut(str(row.get("asked") or "")), "answer": cut(str(row.get("answer") or "")),
+                    "matched": f"{hits}/{len(words)}"})
+    return out
+
+
+# ---- what a bot is reminded of at each turn: keep memory as it goes, save it before a summary ---------------------
+_USED: dict[str, int] = {}          # context the bot's thread carries now (the agent's usage), per bot
+
+
+def note_usage(bot_id: str, used: int) -> None:
+    if bot_id:
+        _USED[bot_id] = int(used or 0)
+
+
+def turn_note(bot_id: str, threshold: int) -> str:
+    """Hidden block joined to every turn of a bot (stripped from the bubbles like its identity). Hermes' bots
+    recall and retain memory at each message; here, without a model call more: a line to keep what lasts, and
+    near the summary (OpenClaw's « memory flush »), the order to save the details first."""
+    used = _USED.get(bot_id, 0)
+    if threshold and used >= threshold * 0.75:
+        return ("[Bot memory note: this thread will be summarised soon (" + f"{used // 1000} k of {threshold // 1000} k"
+                ") and its details lost. BEFORE answering, write to memory/ what must survive: decisions, open tasks, "
+                "files you produced and where, what waits for the person's approval, preferences learnt; index each "
+                "note in memory/MEMORY.md. Then answer.\n]\n\n")
+    return ("[Bot memory note: if this turn teaches something lasting (a decision, a preference, a file made, "
+            "something waiting for the person), save it in memory/ and index it in MEMORY.md. Past turns: "
+            "`history_search`.\n]\n\n")
+
+
 def list_skills(bot_id: str) -> list[dict]:
     """Skills owned by this bot (skills/<name>/SKILL.md)."""
     out = []
@@ -1155,6 +1279,10 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         if len(mem) > 6000:
             mem = mem[:6000].rsplit("\n", 1)[0] + "\n[…]"
         parts.append(f"## memory/MEMORY.md\n{mem}\n\n")
+    notes = memory_files(bot_id)
+    if notes:
+        parts.append(f"## Your memory notes ({bot_dir(bot_id) / 'memory'}; read the one you need)\n" + "\n".join(
+            f"- {n['name']}" + (f" — {n['line']}" if n["line"] else "") for n in notes) + "\n\n")
     own = list_skills(bot_id)
     if own:
         parts.append("## Your skills (load when useful)\n" +
@@ -1185,6 +1313,8 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         "fits each recurring job, a prompt that says exactly what to do and where to write), then list them; never "
         "answer that you will remember. Preparing content is not publishing: a routine may draft and report, and "
         "anything public waits for the person's go.\n"
+        "- `history_search` finds what was said in this thread before it was summarised (dates, words); "
+        "use it before saying you do not remember.\n"
         "- Message another bot with `bot_message` (or the CLI below). Delivery is queued; "
         "do not wait for a reply in the same tool call.\n"
         "- Groups: `group_list`, `group_read`, `group_post` (a room shared with other bots and the person; "
@@ -1197,6 +1327,7 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         f"  `{bots_cli}` message '{{\"target\":\"…\",\"message\":\"…\"}}'\n"
         f"  `{bots_cli}` group-post '{{\"group\":\"…\",\"message\":\"…\"}}'   (also: groups, group-read, group-create)\n"
         f"  `{bots_cli}` notify '{{\"message\":\"…\"}}'   (also: exchange '{{\"peer\":\"…\"}}')\n"
+        f"  `{bots_cli}` history '{{\"query\":\"…\"}}'   (this thread before its summaries)\n"
         f"  `{bots_cli}` soul / update / skills / delete — same JSON as the MCP tools.\n"
         "- Edit only your SOUL.md, memory/ and skills/ directly; use tools or CLI for profiles and messages.\n"
         "- End with `[SILENT]` when a peer message needs no visible reply.\n"
