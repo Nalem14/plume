@@ -380,6 +380,10 @@ TEXT = {
         "update_restart": "Redémarrer pour mettre à jour", "update_install": "Installer la mise à jour", "update_downloading": "Téléchargement de Plume %1…",
         "update_auto": "Plume se met à jour tout seul. Une nouvelle version s'installe quand vous le quittez.",
         "update_unstable": "Recevoir les versions de test",
+        "update_now": "Mettre à jour", "update_restart_hint": "Plume se ferme, s'installe et se rouvre en quelques secondes.",
+        "update_title": "Mise à jour de Plume", "update_restarting": "Plume redémarre…", "update_installing_short": "Installation de la version %1",
+        "update_check": "Rechercher les mises à jour", "update_checking": "Recherche en cours…", "update_uptodate": "Plume est à jour.",
+        "update_failed": "La recherche n'a pas abouti. Réessayez dans un moment.", "update_downloading_pct": "Téléchargement de Plume %1… %2 %",
         "settings_startup": "DÉMARRAGE", "pref_autostart_hint": "Plume s'ouvre discrètement avec votre session, sans fenêtre : vos rappels et vos nouveaux messages arrivent sans que vous ayez à l'ouvrir.",
         "welcome_title": "Connectez d'abord cet ordinateur",
         "welcome_lead": "Plume utilise le compte Orneos de cet ordinateur. Connectez-vous une fois avec Orneos Connect : "
@@ -1001,6 +1005,10 @@ TEXT = {
         "update_restart": "Restart to update", "update_install": "Install the update", "update_downloading": "Downloading Plume %1…",
         "update_auto": "Plume updates itself. A new version is installed when you quit it.",
         "update_unstable": "Get test versions",
+        "update_now": "Update now", "update_restart_hint": "Plume closes, installs and opens again in a few seconds.",
+        "update_title": "Updating Plume", "update_restarting": "Plume is restarting…", "update_installing_short": "Installing version %1",
+        "update_check": "Check for updates", "update_checking": "Checking…", "update_uptodate": "Plume is up to date.",
+        "update_failed": "The check did not go through. Try again in a moment.", "update_downloading_pct": "Downloading Plume %1… %2%",
         "settings_startup": "STARTUP", "pref_autostart_hint": "Plume opens quietly with your session, without a window: your reminders and new messages come in without you having to open it.",
         "welcome_title": "Connect this computer first",
         "welcome_lead": "Plume uses this computer's Orneos account. Sign in once with Orneos Connect: "
@@ -1622,6 +1630,10 @@ TEXT = {
         "update_restart": "Neu starten und aktualisieren", "update_install": "Update installieren", "update_downloading": "Plume %1 wird geladen…",
         "update_auto": "Plume aktualisiert sich selbst. Eine neue Version wird beim Beenden installiert.",
         "update_unstable": "Testversionen erhalten",
+        "update_now": "Jetzt aktualisieren", "update_restart_hint": "Plume schließt sich, installiert sich und öffnet sich in wenigen Sekunden wieder.",
+        "update_title": "Plume wird aktualisiert", "update_restarting": "Plume startet neu…", "update_installing_short": "Version %1 wird installiert",
+        "update_check": "Nach Updates suchen", "update_checking": "Suche läuft…", "update_uptodate": "Plume ist auf dem neuesten Stand.",
+        "update_failed": "Die Suche hat nicht geklappt. Versuchen Sie es gleich noch einmal.", "update_downloading_pct": "Plume %1 wird geladen… %2 %",
         "settings_startup": "START", "pref_autostart_hint": "Plume startet unauffällig mit Ihrer Sitzung, ohne Fenster: Erinnerungen und neue Nachrichten kommen an, ohne dass Sie es öffnen müssen.",
         "welcome_title": "Verbinden Sie zuerst diesen Computer",
         "welcome_lead": "Plume nutzt das Orneos-Konto dieses Computers. Melden Sie sich einmal mit Orneos Connect an: "

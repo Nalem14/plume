@@ -1,11 +1,14 @@
 """Plume updates itself (Windows, macOS, AppImage; a newer .deb or .rpm is offered to the system's installer).
 
-At start, then every 6 hours, Plume asks orneos.eu for the release of its channel (stable or unstable): version,
+At start, every 6 hours, when the window comes back after 2 hours, or from « Rechercher les mises à jour » in the
+settings (checkNow: what it finds is told, « à jour » included), Plume asks orneos.eu for the release of its channel (stable or unstable): version,
 file, size, SHA-256 and an Ed25519 signature of "plume|<package>|<version>|<sha256>". The file is downloaded in the
 background and kept only if both match: the binaries are not signed by Apple or Microsoft, this signature (key in
 private/clients/plume-ed25519.key, public half below) is what says the file comes from Orneos. Then « Restart to
-update », or the update is installed when Plume quits:
-- Windows: the Inno Setup installer, silent, per user (no administrator), Plume started again on /RELAUNCH;
+update » (a pill at the top right of the window: Plume's windows go, a small window with the logo turning says it
+is being installed, Plume starts again), or the update is installed when Plume quits:
+- Windows: the Inno Setup installer per user (no administrator), Plume started again on /RELAUNCH; its progress
+  window shows (/SILENT) when asked for, nothing when Plume quits with an update waiting (/VERYSILENT);
 - macOS: Plume.app taken out of the DMG, swapped in by a small script once Plume has quit, started again;
 - AppImage: the file replaced in place (rename), started again;
 - .deb, .rpm: handed to the system's software installer (it asks for the administrator password itself).
@@ -20,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +38,8 @@ FEED = os.environ.get("PLUME_UPDATE_FEED") or "https://orneos.eu/updates/plume"
 # the public half of private/clients/plume-ed25519.key (PLUME_UPDATE_KEY: the tests' own)
 PUBLIC_KEY = os.environ.get("PLUME_UPDATE_KEY") or "wlSRVr3CTRogYQRRUVFedQRKOFyvAd/OqvxR8hx0n9Q="
 EVERY = 6 * 3600 * 1000
+STALE = 2 * 3600                 # back in front after this long without a check: one more
+SPLASH = "updateSplash"          # the objectName of the window shown while the update goes in (it stays)
 FOLDER = system.CACHE / "updates"
 
 
@@ -80,10 +86,14 @@ def signed_text(kind, version, sha256):
 
 
 class Updater(QObject):
-    """For QML: state "" | "downloading" | "ready" | "installing" | "error", the version waiting, and installNow()."""
+    """For QML: state "" | "downloading" | "ready" | "installing" | "restarting" | "error", the version waiting, and installNow().
+    status: what a check asked for found ("" | "checking" | "uptodate" | "failed"), progress: the download (0..1)."""
     changed = Signal()
+    progressChanged = Signal()
     _update = Signal(str, str)
     _installed = Signal(bool)
+    _told = Signal(str)
+    _moved = Signal(float)
 
     def __init__(self, version, channel="stable"):
         super().__init__()
@@ -91,9 +101,12 @@ class Updater(QObject):
         self._channel = channel
         self._kind = package()
         self._state, self._version, self._file = "", "", None
+        self._status, self._progress, self._last, self._hidden = "", 0.0, 0.0, []
         self._busy = threading.Lock()
         self._update.connect(self._apply)
         self._installed.connect(self._after_install)
+        self._told.connect(self._set_status)
+        self._moved.connect(self._set_progress)
         self._timer = QTimer(self)
         self._timer.setInterval(EVERY)
         self._timer.timeout.connect(self.check)
@@ -119,6 +132,23 @@ class Updater(QObject):
         return self._state
 
     @Property(str, notify=changed)
+    def status(self):
+        return self._status
+
+    @Property(float, notify=progressChanged)
+    def progress(self):
+        return self._progress
+
+    def _set_status(self, status):
+        if status != self._status:
+            self._status = status
+            self.changed.emit()
+
+    def _set_progress(self, value):
+        self._progress = value
+        self.progressChanged.emit()
+
+    @Property(str, notify=changed)
     def version(self):
         return self._version
 
@@ -139,16 +169,38 @@ class Updater(QObject):
 
     @Slot()
     def check(self):
-        if self._kind and self._state != "ready" and self._busy.acquire(blocking=False):
-            threading.Thread(target=self._run, daemon=True).start()
+        self._start(False)
 
-    def _run(self):
+    @Slot()
+    def checkNow(self):
+        """« Rechercher les mises à jour »: the same check, and what it finds is told (« Plume est à jour »)."""
+        if self._state == "ready":
+            return
+        self._set_status("checking")
+        if not self._start(True) and self._state != "downloading":
+            self._set_status("")
+
+    @Slot()
+    def checkIfStale(self):
+        """The window back in front: a check when the last one is old (a computer asleep for the night)."""
+        if self._last and time.monotonic() - self._last > STALE:
+            self._start(False)
+
+    def _start(self, told):
+        if not self._kind or self._state in ("ready", "installing") or not self._busy.acquire(blocking=False):
+            return False
+        threading.Thread(target=self._run, args=(told,), daemon=True).start()
+        return True
+
+    def _run(self, told):
         try:
-            self._check_and_fetch()
+            self._check_and_fetch(told)
         finally:
+            self._last = time.monotonic()
             self._busy.release()
 
-    def _check_and_fetch(self):
+    def _check_and_fetch(self, told=False):
+        say = self._told.emit if told else (lambda status: None)
         query = urllib.parse.urlencode({"package": self._kind, "arch": platform.machine().lower(),
                                         "version": self._current, "channel": self._channel})
         try:
@@ -156,13 +208,15 @@ class Updater(QObject):
             with urllib.request.urlopen(req, timeout=20) as res:
                 release = json.loads(res.read() or b"{}")
         except (urllib.error.URLError, OSError, ValueError):
-            return
+            return say("failed")
         version = str(release.get("version") or "")
         if not version or not newer(version, self._current):
-            return
+            return say("uptodate")
         sha256, signature, url = str(release.get("sha256") or ""), str(release.get("signature") or ""), str(release.get("url") or "")
         if not verify(signed_text(self._kind, version, sha256), signature) or not url.startswith("https://"):
-            return
+            return say("failed")
+        say("")
+        self._moved.emit(0.0)
         self._update.emit("downloading", version)
         FOLDER.mkdir(parents=True, exist_ok=True)
         name = Path(urllib.parse.urlparse(url).path).name
@@ -172,9 +226,14 @@ class Updater(QObject):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": f"Plume/{self._current}"}),
                                         timeout=60) as res, open(part, "wb") as out:
+                total, done, shown = int(release.get("size") or res.headers.get("Content-Length") or 0), 0, 0.0
                 while chunk := res.read(1 << 20):
                     digest.update(chunk)
                     out.write(chunk)
+                    done += len(chunk)
+                    if total and done / total - shown >= 0.01:
+                        shown = done / total
+                        self._moved.emit(min(1.0, shown))
         except (urllib.error.URLError, OSError):
             part.unlink(missing_ok=True)
             return self._update.emit("error", version)
@@ -198,15 +257,31 @@ class Updater(QObject):
         if not self.replaces:
             self._install(relaunch=True)             # the system's installer takes it (Qt: main thread)
             return
+        # at once: the small window of the update shows (its binding), Plume's windows go
         self._apply("installing", self._version)
-        threading.Thread(target=lambda: self._installed.emit(self._install(relaunch=True)), daemon=True).start()
+        QTimer.singleShot(120, self._hide_windows)
+        threading.Thread(target=lambda: self._installed.emit(self._install(relaunch=True, shown=True)), daemon=True).start()
+
+    def _hide_windows(self):
+        from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+        if not isinstance(QGuiApplication.instance(), QGuiApplication):
+            return
+        self._hidden = [w for w in QGuiApplication.allWindows() if w.isVisible() and w.objectName() != SPLASH]
+        for window in self._hidden:
+            window.hide()
 
     def _after_install(self, ok):
         if ok:
             from PySide6.QtCore import QCoreApplication  # noqa: PLC0415
-            QCoreApplication.quit()
+            # a moment for the new one to be on its way (the splash says « Redémarrage… »), then out
+            self._apply("restarting", self._version)
+            QTimer.singleShot(400, QCoreApplication.quit)
         else:
+            for window in self._hidden:              # it did not go in: Plume as it was, the pill again
+                window.show()
+            self._hidden = []
             self._apply("ready", self._version)
+            self._told.emit("failed")
 
     def install_on_quit(self):
         """Plume quits with an update waiting: it goes in now, without starting Plume again. The windows go
@@ -217,12 +292,13 @@ class Updater(QObject):
                 window.hide()
             self._install(relaunch=False)
 
-    def _install(self, relaunch):
+    def _install(self, relaunch, shown=False):
         path = self._file
         if path is None or not path.exists():
             return False
         if self._kind == "windows":
-            args = [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"]
+            # asked for: Inno Setup's progress window takes over from ours (the files only go in once Plume is gone)
+            args = [str(path), "/SILENT" if shown else "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER"]
             if relaunch:
                 args.append("/RELAUNCH")
             return system.spawn(args)

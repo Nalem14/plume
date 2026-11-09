@@ -230,25 +230,74 @@ ApplicationWindow {
             Layout.fillHeight: true
             spacing: 0
 
-            // a new version downloaded and checked (updater.py): one line, never in the way
+            // a new version downloaded and checked (updater.py): a strip like a title bar, and at its right the pill
+            // « Mettre à jour » that glows until it is clicked (Plume goes, UpdateSplash says it is going in)
             Rectangle {
+                id: updateBar
                 Layout.fillWidth: true
-                visible: updater.state === "ready" || updater.state === "installing"
-                implicitHeight: 38
-                color: win.c.saffronTint
+                readonly property bool on: updater.state === "ready"
+                visible: implicitHeight > 0
+                implicitHeight: on ? 46 : 0
+                Behavior on implicitHeight { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                clip: true
+                color: win.c.chrome
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: win.c.hairline }
                 RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 18; anchors.rightMargin: 10
+                    anchors.right: parent.right; anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
                     spacing: 12
                     Text {
-                        Layout.fillWidth: true
-                        text: (updater.state === "installing" ? plume.t.update_installing : plume.t.update_ready).replace("%1", updater.version)
-                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
-                        color: win.c.saffronInk
-                        elide: Text.ElideRight
+                        textFormat: Text.PlainText
+                        text: plume.t.update_ready.replace("%1", updater.version)
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.Medium
+                        color: win.c.muted
                     }
-                    BusyIndicator { visible: updater.state === "installing"; running: visible; implicitWidth: 20; implicitHeight: 20 }
-                    OButton { visible: updater.state === "ready"; kind: "quiet"; iconName: "refresh"; text: updater.replaces ? plume.t.update_restart : plume.t.update_install; onClicked: updater.installNow() }
+                    AbstractButton {
+                        id: updatePill
+                        objectName: "updatePill"
+                        implicitHeight: 32
+                        implicitWidth: pillRow.implicitWidth + 26
+                        hoverEnabled: true
+                        Accessible.name: updater.replaces ? plume.t.update_restart : plume.t.update_install
+                        onClicked: updater.installNow()
+                        // the glow that breathes around it
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: parent.width + 10; height: parent.height + 10; radius: height / 2
+                            color: "transparent"
+                            border.width: 3; border.color: Qt.alpha(win.c.ok, 0.45)
+                            SequentialAnimation on opacity {
+                                running: updateBar.on && Qt.application.state === Qt.ApplicationActive; loops: Animation.Infinite
+                                NumberAnimation { from: 0.15; to: 1; duration: 900; easing.type: Easing.InOutSine }
+                                NumberAnimation { from: 1; to: 0.15; duration: 900; easing.type: Easing.InOutSine }
+                            }
+                        }
+                        background: Rectangle {
+                            radius: height / 2
+                            gradient: Gradient {
+                                GradientStop { position: 0; color: Qt.lighter(win.c.ok, updatePill.hovered ? 1.25 : 1.12) }
+                                GradientStop { position: 1; color: updatePill.pressed ? Qt.darker(win.c.ok, 1.1) : win.c.ok }
+                            }
+                        }
+                        contentItem: Item {
+                            Row {
+                                id: pillRow
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Icon { anchors.verticalCenter: parent.verticalCenter; name: "download"; size: 16; color: win.c.okTint }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    textFormat: Text.PlainText
+                                    text: updater.replaces ? plume.t.update_now : plume.t.update_install
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.Bold
+                                    color: win.c.okTint
+                                }
+                            }
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 500
+                        ToolTip.text: updater.replaces ? plume.t.update_restart_hint : plume.t.update_install
+                    }
                 }
             }
 
@@ -313,6 +362,9 @@ ApplicationWindow {
     }
 
     Toast { id: toast }
+    UpdateSplash {}
+    // back in front after hours (a computer asleep): one more look for an update
+    onActiveChanged: if (active) updater.checkIfStale()
 
     Connections {
         target: mail

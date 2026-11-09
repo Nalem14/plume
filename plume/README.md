@@ -82,10 +82,16 @@ sauvegardes). Le manifeste `private/clients/plume.json` est servi par `/updates/
 
 ## Mises à jour
 
-`orneos/updater.py` vérifie au démarrage, puis toutes les 6 h. Il n'accepte qu'un fichier dont le SHA-256 et la
-signature correspondent : les binaires ne sont pas signés par Apple ni par Microsoft, cette signature est la seule
-garantie. Selon le paquet :
-- Windows, macOS et AppImage : Plume se remplace lui-même (« Redémarrer pour mettre à jour », sinon à la fermeture) ;
+`orneos/updater.py` vérifie au démarrage, toutes les 6 h, au retour au premier plan après 2 h sans vérification
+(`checkIfStale`) et sur « Rechercher les mises à jour » (Réglages › Compte, `checkNow` : « Recherche en cours… », « Plume
+est à jour », le téléchargement en %, ou l'échec). Il n'accepte qu'un fichier dont le SHA-256 et la signature
+correspondent : les binaires ne sont pas signés par Apple ni par Microsoft, cette signature est la seule garantie.
+Une version prête s'annonce par une barre fine en haut de la fenêtre avec, à droite, la pastille verte « Mettre à
+jour » qui pulse (`Main.qml`, `updatePill`). Au clic, les fenêtres de Plume disparaissent et `UpdateSplash.qml` (fenêtre
+`updateSplash`, ciel « Nuit », logo dans un anneau qui tourne) dit « Mise à jour de Plume » puis « Plume redémarre… »
+jusqu'à la fermeture ; un échec rouvre les fenêtres et la pastille. Selon le paquet :
+- Windows, macOS et AppImage : Plume se remplace lui-même (pastille, sinon à la fermeture) ; sous Windows, l'installeur
+  montre sa fenêtre de progression (`/SILENT`) quand on l'a demandé, rien à la fermeture (`/VERYSILENT`) ;
 - `.deb` et `.rpm` : le fichier est confié à l'installeur du système.
 
 Une version n'est jamais remplacée par une plus ancienne. Pour revenir en arrière, il faut publier une version plus

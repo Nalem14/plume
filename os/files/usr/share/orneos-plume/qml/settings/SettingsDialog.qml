@@ -30,6 +30,8 @@ Popup {
     function openAt(section) {
         if (section === "boxes" || section === "add_box")
             tabKey = "boxes"
+        else if (tabs.some(t => t.key === section))     // « account »: the updates, the start
+            tabKey = section
         open()
         if (section === "add_box")
             addBox.openFor()
@@ -650,6 +652,42 @@ Popup {
                     Group {
                         visible: updater.enabled
                         Label_ { label: plume.t.update_current.replace("%1", updater.current); hint: plume.t.update_auto }
+                        // « Rechercher les mises à jour »: what it finds, then the download, then « Mettre à jour »
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+                            OButton {
+                                objectName: "checkUpdates"
+                                visible: updater.state !== "ready"
+                                kind: "secondary"; iconName: "refresh"
+                                text: plume.t.update_check
+                                enabled: updater.status !== "checking" && updater.state !== "downloading"
+                                onClicked: updater.checkNow()
+                            }
+                            OButton {
+                                visible: updater.state === "ready"
+                                kind: "primary"; iconName: "download"
+                                text: updater.replaces ? plume.t.update_now : plume.t.update_install
+                                onClicked: { dialog.close(); updater.installNow() }
+                            }
+                            BusyIndicator {
+                                visible: updater.status === "checking" || updater.state === "downloading"
+                                running: visible
+                                implicitWidth: 20; implicitHeight: 20
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                font.pixelSize: 13
+                                text: updater.state === "ready" ? plume.t.update_ready.replace("%1", updater.version)
+                                    : updater.state === "downloading" ? plume.t.update_downloading_pct.replace("%1", updater.version).replace("%2", Math.round(updater.progress * 100))
+                                    : updater.status === "checking" ? plume.t.update_checking
+                                    : updater.status === "uptodate" ? plume.t.update_uptodate
+                                    : updater.status === "failed" ? plume.t.update_failed : ""
+                                color: updater.status === "failed" ? dialog.c.danger : updater.state === "ready" || updater.status === "uptodate" ? dialog.c.okInk : dialog.c.muted
+                            }
+                        }
                         Line_ {}
                         Option {
                             label: plume.t.update_unstable

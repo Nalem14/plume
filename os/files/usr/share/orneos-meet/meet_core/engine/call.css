@@ -49,6 +49,11 @@
   --famSpace: #7A3B6E;
   --elev: #0F244024;
   --elevEdge: #FFFFFF00;
+  --night0: #050B16;
+  --night1: #0A1528;
+  --night2: #0F2244;
+  --onNight: #FFFFFF;
+  --onNightMuted: #C9D3F3;
   --radius: 10px;
   --radius-control: 6px;
   --font: "Schibsted Grotesk", "Helvetica Neue", Arial, sans-serif;
@@ -103,6 +108,11 @@
   --famSpace: #DDA8D3;
   --elev: #000000A0;
   --elevEdge: #FFFFFF14;
+  --night0: #050B16;
+  --night1: #0A1528;
+  --night2: #0F2244;
+  --onNight: #FFFFFF;
+  --onNightMuted: #C9D3F3;
   color-scheme: dark;
 }
 /* ornis-tokens:end */

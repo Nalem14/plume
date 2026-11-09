@@ -119,7 +119,12 @@ var t = {
         "famTools": "#0F2440",
         "famSpace": "#7A3B6E",
         "elev": "#240F2440",
-        "elevEdge": "#00FFFFFF"
+        "elevEdge": "#00FFFFFF",
+        "night0": "#050B16",
+        "night1": "#0A1528",
+        "night2": "#0F2244",
+        "onNight": "#FFFFFF",
+        "onNightMuted": "#C9D3F3"
     },
     "dark": {
         "chrome": "#0A1424",
@@ -169,7 +174,12 @@ var t = {
         "famTools": "#C5D0E6",
         "famSpace": "#DDA8D3",
         "elev": "#A0000000",
-        "elevEdge": "#14FFFFFF"
+        "elevEdge": "#14FFFFFF",
+        "night0": "#050B16",
+        "night1": "#0A1528",
+        "night2": "#0F2244",
+        "onNight": "#FFFFFF",
+        "onNightMuted": "#C9D3F3"
     }
 };
 function palette(dark) { return dark ? t.dark : t.light; }

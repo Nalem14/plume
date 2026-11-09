@@ -24,6 +24,8 @@ LIGHT = {
     "tag1": "#C8381E", "tag2": "#002FA7", "tag3": "#2F7D6D", "tag4": "#E09600", "tag5": "#6E5BB8",
     "famCommunicate": "#002FA7", "famDocs": "#2F7D6D", "famOrganize": "#8A5A00", "famMedia": "#1A5F7A",
     "famTools": "#0F2440", "famSpace": "#7A3B6E", "elev": "#240F2440", "elevEdge": "#00FFFFFF",
+    "night0": "#050B16", "night1": "#0A1528", "night2": "#0F2244", "onNight": "#FFFFFF",
+    "onNightMuted": "#C9D3F3",
 }
 DARK = {
     "chrome": "#0A1424", "bg": "#0A1424", "card": "#101D33", "line": "#1E2E4A", "hairline": "#1A2840",
@@ -37,6 +39,8 @@ DARK = {
     "tag1": "#FF7A5C", "tag2": "#7D93FF", "tag3": "#5FC2AC", "tag4": "#F0A202", "tag5": "#A897F0",
     "famCommunicate": "#8A9EFF", "famDocs": "#5CC2AC", "famOrganize": "#F2B13A", "famMedia": "#7EB8CC",
     "famTools": "#C5D0E6", "famSpace": "#DDA8D3", "elev": "#A0000000", "elevEdge": "#14FFFFFF",
+    "night0": "#050B16", "night1": "#0A1528", "night2": "#0F2244", "onNight": "#FFFFFF",
+    "onNightMuted": "#C9D3F3",
 }
 # ornis-tokens:end
 
