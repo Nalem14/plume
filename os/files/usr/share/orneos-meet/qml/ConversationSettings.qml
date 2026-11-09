@@ -418,7 +418,7 @@ Popup {
             Group {
                 visible: dialog.room.type !== 6
                 title: app.t.rs_link
-                lead: dialog.room.public ? app.t.rs_link_public : app.t.rs_link_members
+                lead: dialog.room["public"] ? app.t.rs_link_public : app.t.rs_link_members
                 ActionRow {
                     iconName: "link"
                     text: String(dialog.room.link || "").replace(/^https?:\/\//, "")
@@ -550,11 +550,11 @@ Popup {
                 }
                 SwitchRow {
                     iconName: "globe"; text: app.t.public_link; lead: app.t.public_link_lead
-                    on: !!dialog.room.public
+                    on: !!dialog.room["public"]
                     onToggled: v => meet.setPublic(v)
                 }
                 ColumnLayout {
-                    visible: !!dialog.room.public
+                    visible: !!dialog.room["public"]
                     Layout.fillWidth: true
                     spacing: 0
                     Line {}

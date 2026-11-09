@@ -231,8 +231,8 @@ ListView {
     property var spans: ({ tops: [], total: 1, marks: [] })
     onModelChanged: measure()
     function dateOf(dayid) { return new Date(dayid * 86400000) }        // a day id: days since 1970, read in UTC
-    function monthName(d, short) {
-        const n = Qt.locale().standaloneMonthName(d.getUTCMonth(), short ? Locale.ShortFormat : Locale.LongFormat)
+    function monthName(d, brief) {   // not « short »: a reserved word for Qt 6.9 (Plume on Intel Macs)
+        const n = Qt.locale().standaloneMonthName(d.getUTCMonth(), brief ? Locale.ShortFormat : Locale.LongFormat)
         return n.charAt(0).toUpperCase() + n.slice(1)
     }
     function measure() {

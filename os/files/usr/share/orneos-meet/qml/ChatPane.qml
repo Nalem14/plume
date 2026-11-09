@@ -110,7 +110,7 @@ Rectangle {
         if (r.type === 1) return app.t.kind_one + (r.status === "online" ? " · " + app.t.status_online : "")
         if (r.type === 6) return app.t.kind_note
         if (r.event) return app.t.kind_event
-        return (r.public ? app.t.kind_public : app.t.kind_group) + (r.participants ? " · " + app.plural("participants", r.participants) : "")
+        return (r["public"] ? app.t.kind_public : app.t.kind_group) + (r.participants ? " · " + app.plural("participants", r.participants) : "")
     }
     function subtitle() {
         const r = pane.room
