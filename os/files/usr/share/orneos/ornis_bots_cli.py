@@ -22,7 +22,7 @@ commands:
   list
   create   '{"id":"…","title":"…","description":"…"}'
   update   '{"id":"…","title":"…",…}'
-  soul     '{"id":"…","soul":"…"}'
+  soul     '{"id":"…"}' reads it; '{"id":"…","soul":"…"}' replaces it (the old one in SOUL.prev.md)
   skills   '{"id":"…","enabled_skills":["…"]}'
   message  '{"target":"…","message":"…"}'   (from= ORNIS_BOT_ID)
   exchange '{"peer":"…"}'

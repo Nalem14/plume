@@ -216,8 +216,18 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 t["next_run"] = time.time() - 1
                 t["force_run"] = True
                 ornis_cron.upsert(t, create=False)
-            return _ok({"queued": True, "id": args["id"],
-                        "hint": "The running Ornis/Plume app will start it within about 20 seconds."})
+            if t.get("pending"):
+                hint = ("Waiting for the person's approval in the app: it runs once they accept it. "
+                        "Tell them; do not conclude that the scheduler is broken.")
+            elif t.get("bot") and t.get("kind") == "chat":
+                hint = (f"It runs in the thread of the bot « {t['bot']} », after the turn that bot is in now "
+                        "(never two at once in one thread) — if you are that bot, it starts once you end this turn. "
+                        "Only one conversation routine runs at a time on this computer; it may also wait for another "
+                        "one to finish. Check later with cron_history; « queued » with nothing yet is normal.")
+            else:
+                hint = ("The running Ornis/Plume app starts it within about 20 seconds (a conversation routine may wait "
+                        "for another one to finish). Check with cron_history.")
+            return _ok({"queued": True, "id": args["id"], "hint": hint})
         if name == "cron_delete":
             if not ornis_cron.remove(args["id"]):
                 raise ValueError(f"unknown task: {args['id']}")

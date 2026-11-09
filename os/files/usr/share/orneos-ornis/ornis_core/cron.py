@@ -642,12 +642,13 @@ class Cron(QObject):
                 self._reload()
                 return True
             task = dict(task, folder=ornis_bots.working_folder(bot))
-            peer_worker = getattr(self._code, "_bot_peer_worker", None)
+            peer_workers = getattr(self._code, "_bot_peer_workers", None) or []
             bg_bots = getattr(self._code, "_bg_bots", {})
-            if ((self._code.bot == bot and (self._code.busy or self._code._queued))
+            # a conversation routine runs in the bot's own thread: it waits for the bot's turn to end. A script does
+            # not use the thread: it never waits (09/11: a bot's test script « queued » while the bot was talking)
+            if task.get("kind") == "chat" and ((self._code.bot == bot and (self._code.busy or self._code._queued))
                     or bot in bg_bots
-                    or (peer_worker is not None and peer_worker.bot == bot
-                        and (peer_worker.busy or peer_worker._cron_job))):
+                    or any(w.bot == bot and (w.busy or w._cron_job) for w in peer_workers)):
                 if manual:
                     ornis_cron.patch(tid, {"force_run": True}, self._lang())
                 return False
@@ -779,9 +780,9 @@ class Cron(QObject):
     def _run_chat_background(self, task, run_id, title, prompt, started):
         """Fallback when Code is already busy: own agent (not openable until done)."""
         bot = str(task.get("bot") or "").strip()
-        worker = getattr(self._code, "_bot_peer_worker", None)
-        if bot and worker is not None and worker.bot == bot and not worker.busy and not worker._cron_job:
-            worker.clearBot()            # its idle agent holds the conversation: never two agents on it
+        for worker in getattr(self._code, "_bot_peer_workers", None) or []:
+            if bot and worker.bot == bot and not worker.busy and not worker._cron_job:
+                worker.clearBot()        # its idle agent holds the conversation: never two agents on it
         folder = Path(task["folder"])
         resume = ""
         if bot:

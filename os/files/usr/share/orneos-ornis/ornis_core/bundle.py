@@ -97,7 +97,8 @@ def build(qt):
     qt.aboutToQuit.connect(chat.flush)      # deletions still waiting for their undo
     qt.aboutToQuit.connect(code.shutdown)   # the coding agent stops with the window
     qt.aboutToQuit.connect(cron.shutdown)
-    qt.aboutToQuit.connect(bots._worker.shutdown)
+    for worker in bots._workers:
+        qt.aboutToQuit.connect(worker.shutdown)
     chat.badgeChanged.connect(dock_count())
 
     def on_active():

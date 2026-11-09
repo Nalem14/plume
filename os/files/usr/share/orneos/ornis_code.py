@@ -1220,18 +1220,21 @@ class Agent:
     def prompt(self, session_id: str, blocks: list[dict]) -> dict:
         """Sends a message; returns when the agent has finished ({stopReason}). Updates arrive meanwhile."""
         current = blocks
-        for attempt in range(3):
+        # the model's provider refuses for a minute or more at times (429 bursts, 09/11): five tries over ~2 min
+        waits = (3, 10, 30, 60)
+        for attempt in range(len(waits) + 1):
             try:
                 return self.call("session/prompt", {"sessionId": session_id, "prompt": current}, timeout=3600)
             except (RuntimeError, TimeoutError) as error:
                 low = str(error).lower()
                 transient = any(tok in low for tok in (
                     "produced no chunks", "incompleteproviderstream", "model_stream_failed",
-                    "502", "503", "504", "408", "timeout", "peer closed", "connection reset",
-                ))
-                if not transient or attempt >= 2 or not self.alive():
+                    "502", "503", "504", "408", "429", "rate limit", "too many requests", "overloaded",
+                    "timeout", "peer closed", "connection reset",
+                )) and "quota_exceeded" not in low and "402" not in low
+                if not transient or attempt >= len(waits) or not self.alive():
                     raise
-                time.sleep(2.5 * (attempt + 1))
+                time.sleep(waits[attempt])
                 current = [{"type": "text", "text": (
                     "[Ornis: continue]\nThe model stream was interrupted before finishing. "
                     "Continue from where you stopped without repeating already-completed tool calls."

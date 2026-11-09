@@ -17,6 +17,15 @@ PEER_CHAIN_MAX = 3
 PAGE = 60          # a group's messages loaded at once (older ones as you scroll up)
 
 
+
+WORKERS = 3              # bots answering at once in the background (groups, messages between bots)
+SILENT_TURN = 15 * 60     # a group or bot-to-bot turn with no news this long is stuck (see Bots._stop_silent)
+LONG_TURN = 60 * 60       # and none goes on longer
+
+def _one_line(text: str) -> str:
+    """A preview on one line: a message that starts with « Loïs,⏎⏎ » made rows overlap in the list (09/11)."""
+    return " ".join(str(text or "").split())[:200]
+
 class Bots(QObject):
     changed = Signal()
     toast = Signal(str)
@@ -27,16 +36,23 @@ class Bots(QObject):
         self._app = app
         self._code = code
         from ornis_core.code import CodeChat
-        self._worker = CodeChat(app)
-        self._worker._background = True
+        # Several bots answer at once (a group, messages between bots): one background worker each, up to WORKERS.
+        # With a single one, a bot stuck for an hour kept all the others waiting (09/11: « j'ai toujours rien »).
+        self._workers = []
+        for _ in range(WORKERS):
+            w = CodeChat(app)
+            w._background = True
+            w.cronDone.connect(self._peer_done)
+            w.cronReply.connect(self._on_reply)
+            w.changed.connect(self._on_code)
+            self._workers.append(w)
+        self._worker = self._workers[0]
+        code._bot_peer_workers = self._workers
         code._bot_peer_worker = self._worker
         self._pending = {}
         self._open_requested = ""
-        self._worker.cronDone.connect(self._peer_done)
         code.cronDone.connect(self._peer_done)
-        self._worker.cronReply.connect(self._on_reply)
         code.cronReply.connect(self._on_reply)
-        self._worker.changed.connect(self._on_code)
         self._query = ""
         self._delivering = False
         self._group = ""                 # the group open in the Group view
@@ -168,9 +184,10 @@ class Bots(QObject):
         return {
             "id": b["id"],
             "title": b.get("title") or b["id"],
+            "badge": b.get("badge") or "",
             "description": b.get("description") or "",
-            "preview": (ornis_bots.strip_silent(b.get("preview") or "") if "SILENT" in str(b.get("preview") or "")
-                        else b.get("preview") or ""),
+            "preview": _one_line(ornis_bots.strip_silent(b.get("preview") or "") if "SILENT" in str(b.get("preview") or "")
+                                 else b.get("preview") or ""),
             "folder": b.get("folder") or "",
             "session": b.get("session") or "",
             "hidden": bool(b.get("hidden")),
@@ -510,17 +527,55 @@ class Bots(QObject):
     def release_worker(self, bot_id: str) -> None:
         """The background worker idle on this bot lets it go (its agent keeps the conversation in memory: another
         agent taking it — the window, a routine's own agent — would have its turns overwritten by a stale copy)."""
-        w = self._worker
-        if w.bot == bot_id and not w.busy and not w._cron_job:
-            w.clearBot()
+        for w in self._workers:
+            if w.bot == bot_id and not w.busy and not w._cron_job:
+                w.clearBot()
+
+    def _runner_of(self, bid: str):
+        """Who runs this bot's turn now: the window when it is the bot open in front, else its worker."""
+        if self._code.bot == bid:
+            return self._code
+        return next((w for w in self._workers if w.bot == bid and (w.busy or w._cron_job)), None) \
+            or next((w for w in self._workers if w.bot == bid), self._worker)
+
+    def _free_worker(self, bid: str):
+        """A worker for a new turn of this bot: the one that holds its conversation if idle, else an idle one."""
+        if any(w.bot == bid and (w.busy or w._cron_job) for w in self._workers):
+            return None
+        idle = [w for w in self._workers if not w.busy and not w._cron_job]
+        return next((w for w in idle if w.bot == bid), None) or next((w for w in idle if not w.bot), None) \
+            or (idle[0] if idle else None)
 
     def _occupied(self, bid):
         cron = getattr(self._code, "_bot_cron", None)
         return bool((cron and cron._chat_busy and getattr(cron, "_running_bot", "") == bid)
-                    or (self._worker.bot == bid and (self._worker.busy or self._worker._cron_job)))
+                    or any(w.bot == bid and (w.busy or w._cron_job) for w in self._workers))
+
+    def _stop_silent(self):
+        """A bot answering a group or another bot whose agent stopped giving news (a stalled model call, a tool
+        waiting forever) kept « écrit… » in the room for hours (09/11, Cloé): stopped after 15 min without news, or
+        an hour in all, and the room says it."""
+        now = time.time()
+        for task, p in list(self._pending.items()):
+            if task in self._stopping:
+                continue
+            bid, gid, began = p[0], (p[2] if len(p) > 2 else ""), (float(p[3]) if len(p) > 3 else now)
+            runner = self._runner_of(bid)
+            if not runner.busy:
+                continue
+            quiet = now - max(began, float(getattr(runner, "_activity_at", 0) or 0))
+            if quiet < SILENT_TURN and now - began < LONG_TURN:
+                continue
+            self._stopping.add(task)
+            runner.stop()
+            if gid and ornis_bots.get_group(gid):
+                ornis_bots.group_notice(gid, self._t("groups_stuck", "%1 ne donnait plus de nouvelles : tour arrêté. "
+                                                     "Relancez-le en le mentionnant.").replace("%1", self._title(bid)))
+                self._reload_group()
 
     def _drain_inbounds(self):
         """One delivery at a time, never take over a foreground conversation. Also shows the bots' notifications."""
+        self._stop_silent()
         for row in ornis_bots.take_notices():
             bid = str(row.get("bot") or "")
             self._notify(row.get("title") or self._title(bid), row.get("text") or "")
@@ -528,7 +583,7 @@ class Bots(QObject):
                 ornis_bots.bump_unread(bid)
         self._code.syncBotExchanges()
         self.changed.emit()
-        if self._delivering or self._worker.busy or self._worker._cron_job:
+        if self._delivering or not any(not w.busy and not w._cron_job for w in self._workers):
             return
         self._delivering = True
         try:
@@ -561,7 +616,13 @@ class Bots(QObject):
                         "Reply to the sender using bot_message if useful. "
                         "If nothing needs a reply, end with [SILENT]. Do not continue a finished exchange."
                     )
-                runner = code if same else self._worker
+                runner = code if same else self._free_worker(bid)
+                if runner is None:
+                    continue
+                if runner is not code:
+                    for other in self._workers:          # its conversation was idle in another worker: let it go
+                        if other is not runner and other.bot == bid and not other.busy and not other._cron_job:
+                            other.clearBot()
                 task = f"{'group' if gid else 'peer'}-{row['id']}"
                 started = runner.runScheduled(ornis_bots.working_folder(bid), profile.get("title") or bid,
                                               prompt, task, bot=bid,
@@ -572,7 +633,8 @@ class Bots(QObject):
                 if gid:
                     self._typing[bid] = gid
                 self.changed.emit()
-                break
+                if not any(not w.busy and not w._cron_job for w in self._workers):
+                    break                             # every worker busy: the others wait for the next pass
         finally:
             self._delivering = False
 
@@ -585,8 +647,8 @@ class Bots(QObject):
         return {
             "id": g["id"], "title": g["title"], "description": g.get("description") or "",
             "members": g["members"], "lead": g["lead"], "reply": g["reply"], "faces": faces,
-            "preview": ornis_bots.strip_silent(g.get("preview") or "") if "SILENT" in str(g.get("preview") or "")
-                       else g.get("preview") or "", "when": _when(float(g.get("updated") or 0), self._lang()),
+            "preview": _one_line(ornis_bots.strip_silent(g.get("preview") or "") if "SILENT" in str(g.get("preview") or "")
+                                 else g.get("preview") or ""), "when": _when(float(g.get("updated") or 0), self._lang()),
             "unread": 0 if g["id"] == self._group else int(g.get("unread") or 0),
             "current": g["id"] == self._group,
             "busy": any(v == g["id"] for v in self._typing.values()),
@@ -696,6 +758,7 @@ class Bots(QObject):
             rows.append({
                 "id": r.get("id"), "from": sender, "mine": mine, "text": r.get("text") or "",
                 "title": "" if mine else (p.get("title") or sender), "face": p.get("face") or {},
+                "badge": str(p.get("badge") or ""),
                 "time": time.strftime("%H:%M", time.localtime(at)),
                 "day": _day(at, lang) if not prev or prev["_day"] != day else "",
                 # one name and one face per run of messages from the same sender (as a chat app)
@@ -776,7 +839,7 @@ class Bots(QObject):
 
     def _resandbox(self, members):
         """A shared folder is writable from an agent's next start: the idle agents of these bots start again."""
-        for runner in (self._code, self._worker):
+        for runner in (self._code, *self._workers):
             agent = getattr(runner, "_agent", None)
             if runner.bot in members and agent is not None and not runner.busy and not runner._cron_job:
                 runner._agent = None
@@ -825,7 +888,7 @@ class Bots(QObject):
             if len(p) > 2 and p[2] == gid:
                 self._stopping.add(task)
         for bid in [b for b, g in self._typing.items() if g == gid]:
-            runner = self._code if self._code.bot == bid else self._worker
+            runner = self._runner_of(bid)
             if runner.busy:
                 runner.stop()
         ornis_bots.drop_group_inbox(gid)

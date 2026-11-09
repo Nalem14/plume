@@ -387,7 +387,7 @@ def update(bot_id: str, fields: dict) -> dict:
     fields = dict(fields)
     if "folder" in fields:
         fields["folder"] = _folder_value(fields["folder"])
-    for key in ("title", "description", "folder", "session", "preview", "hidden", "enabled_skills",
+    for key in ("title", "badge", "description", "folder", "session", "preview", "hidden", "enabled_skills",
                 "exchange_seen", "peer_depth", "group_depth", "human_turn", "approvals", "updated", "unread",
                 "paused", "group_turn"):
         if key in fields and fields[key] is not None:
@@ -396,6 +396,8 @@ def update(bot_id: str, fields: dict) -> dict:
         profile["title"] = str(profile.get("title") or bot_id)[:80]
     if "description" in fields:
         profile["description"] = str(profile.get("description") or "")[:500]
+    if "badge" in fields:                    # « Secrétaire »: a title shown as a badge next to the name
+        profile["badge"] = " ".join(str(profile.get("badge") or "").split())[:30]
     if "face" in fields and isinstance(fields["face"], dict):
         face = dict(profile.get("face") or {})
         face.update({k: fields["face"][k] for k in ("shape", "color", "locked")
@@ -891,7 +893,14 @@ def read_soul(bot_id: str) -> str:
 def set_soul(bot_id: str, text: str) -> dict:
     if not get(bot_id):
         raise ValueError(f"unknown bot: {bot_id}")
-    system.private_write(soul_path(bot_id), str(text or "").rstrip() + "\n")
+    path = soul_path(bot_id)
+    try:                                       # the version before, one step back (a SOUL emptied by mistake, 09/11)
+        old = path.read_text(encoding="utf-8")
+        if old.strip() and old.strip() != str(text or "").strip():
+            system.private_write(path.with_name("SOUL.prev.md"), old)
+    except OSError:
+        pass
+    system.private_write(path, str(text or "").rstrip() + "\n")
     return update(bot_id, {})
 
 
@@ -1284,7 +1293,8 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         return ""
     today = time.strftime("%Y-%m-%d (%A)")
     parts = [
-        f"[Bot identity for `{profile['id']}` ({profile.get('title') or profile['id']}). "
+        f"[Bot identity for `{profile['id']}` ({profile.get('title') or profile['id']}"
+        + (f", title: {profile['badge']}" if profile.get("badge") else "") + "). "
         f"Today is {today}. This block is not shown to the person.\n",
         f"You are this bot. One durable conversation. `/new` and `/reset` compact this thread; "
         f"never fork it. Your SOUL overrides project and global style files.\n",
@@ -1364,6 +1374,14 @@ def identity_block(bot_id: str, *, bots_cli: str = "ornis-bots") -> str:
         f"  `{bots_cli}` soul / update / skills / delete — same JSON as the MCP tools.\n"
         "- Edit only your SOUL.md, memory/ and skills/ directly; use tools or CLI for profiles and messages.\n"
         "- End with `[SILENT]` when a peer message needs no visible reply.\n"
+        "- **Deliver, never go round in circles.** Give a first result quickly (save what you have, say what is "
+        "missing) rather than a perfect one late. If the request is unclear, or the same thing fails twice (a page "
+        "that does not load, a login refused, a tool error), stop retrying it: ask the person one precise question "
+        "here (or in the group), say what you tried and offer two ways forward. Never go past about 20 tool calls "
+        "without telling the person where you stand. In a group, first answer in one line (what you will do), then "
+        "work, then post the result.\n"
+        "- Videos often do not play in your browser (no H.264 codec): do not wait for them; read the page instead "
+        "(account names, captions, comments, links).\n"
         "]\n\n"
     )
     return "".join(parts)

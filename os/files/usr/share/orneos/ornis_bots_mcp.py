@@ -69,11 +69,13 @@ TOOLS = [
     },
     {
         "name": "bot_set_soul",
-        "description": "Replace the SOUL.md (persona and standing instructions) of yourself or of a bot you created.",
+        "description": ("Read or replace the SOUL.md (persona and standing instructions) of yourself or of a bot you "
+                        "created. Without `soul` (or with an empty one) it only READS it and writes nothing. To empty "
+                        "it on purpose: `clear: true`. The previous version is kept in SOUL.prev.md."),
         "inputSchema": {
             "type": "object",
-            "required": ["id", "soul"],
-            "properties": {"id": {"type": "string"}, "soul": {"type": "string"}},
+            "required": ["id"],
+            "properties": {"id": {"type": "string"}, "soul": {"type": "string"}, "clear": {"type": "boolean"}},
             "additionalProperties": False,
         },
     },
@@ -279,9 +281,17 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 "enabled_skills": updated.get("enabled_skills"),
             }})
         if name == "bot_set_soul":
+            text = str(args.get("soul") or "")
+            if not text.strip() and not args.get("clear"):
+                # reading it with an empty text emptied four SOULs (09/11): no text, nothing written
+                if not ornis_bots.get(args["id"]):
+                    raise ValueError(f"unknown bot: {args['id']}")
+                return _ok({"id": args["id"], "soul": ornis_bots.read_soul(args["id"]), "written": False,
+                            "hint": "No text given: nothing was written. Pass `soul` to replace it, `clear: true` to empty it."})
             ornis_bots.check_manage(actor, args["id"])
-            ornis_bots.set_soul(args["id"], args.get("soul") or "")
-            return _ok({"soul": True, "id": args["id"], "chars": len(args.get("soul") or "")})
+            ornis_bots.set_soul(args["id"], text)
+            return _ok({"soul": True, "written": True, "id": args["id"], "chars": len(text),
+                        "previous": "SOUL.prev.md"})
         if name == "bot_skills":
             if "enabled_skills" in args and args["enabled_skills"] is not None:
                 ornis_bots.check_manage(actor, args["id"])

@@ -479,6 +479,13 @@ Item {
             font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
             color: (b.entry.face && b.entry.face.color) || theme.c.muted
         }
+        BotBadge {
+            visible: nameText.visible && text !== ""
+            anchors.left: nameText.right; anchors.leftMargin: 6; anchors.verticalCenter: nameText.verticalCenter
+            text: b.entry.badge || ""
+            tint: (b.entry.face && b.entry.face.color) || theme.c.accent
+            size: 10
+        }
         AbstractButton {
             visible: !b.mine && !!b.entry.last
             x: 0; y: bubbleBox.y + bubbleBox.height - 30

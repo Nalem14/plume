@@ -41,7 +41,8 @@ Window {
         httpCacheType: WebEngineProfile.DiskHttpCache
         downloadPath: host.downloadDir(win.owner)
         onDownloadRequested: download => { download.accept(); host.downloaded(win.owner, download.downloadFileName) }
-        Component.onCompleted: win.baseUA = httpUserAgent
+        // a plain Chrome to sites: « QtWebEngine/6.x » made some treat it as an unknown browser
+        Component.onCompleted: { win.baseUA = httpUserAgent.replace(/ ?QtWebEngine\/[\d.]+/, ""); httpUserAgent = win.baseUA }
     }
 
     Component {
@@ -165,8 +166,10 @@ Window {
                 win.changed(); host.done(cid, JSON.stringify(win.state())); break
             case "resize":
                 win.devW = a.w || 0; win.devH = a.h || 0; win.mobile = !!a.mobile
+                // a phone: Chrome on Android, not Safari on iPhone — sites send an iPhone H.264 videos only, which
+                // Plume's Chromium (Qt WebEngine from PyPI) cannot play; Android Chrome often gets VP9 (09/11)
                 prof.httpUserAgent = win.mobile
-                    ? "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+                    ? win.baseUA.replace(/\([^)]*\)/, "(Linux; Android 14; Pixel 8)").replace(/ Safari\//, " Mobile Safari/")
                     : win.baseUA
                 win.view.zoomFactor = a.zoom || 1
                 win.changed()

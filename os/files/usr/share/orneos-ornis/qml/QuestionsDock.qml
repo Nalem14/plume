@@ -30,6 +30,7 @@ FocusScope {
         page = 0
         picks = questions.map(() => [])
         notes = questions.map(() => "")
+        other.text = ""                 // page 0 already shown: onPageChanged does not fire, an old answer stayed (09/11)
         if (questions.length) { enter.restart(); Qt.callLater(() => dock.forceActiveFocus()) }
     }
     function picked(label) { return (picks[page] || []).indexOf(label) >= 0 }

@@ -710,6 +710,7 @@ Rectangle {
                                     Layout.fillWidth: true
                                     text: gRow.modelData.busy ? app.t.groups_busy : (gRow.modelData.preview || gRow.modelData.description)
                                     elide: Text.ElideRight
+                                    maximumLineCount: 1; wrapMode: Text.NoWrap
                                     font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.italic: gRow.modelData.busy
                                     color: gRow.modelData.busy ? side.c.accent : side.c.muted
                                 }
@@ -771,13 +772,23 @@ Rectangle {
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text {
-                                    Layout.fillWidth: true
+                                    Layout.fillWidth: !bRow.modelData.badge
+                                    Layout.maximumWidth: bRow.modelData.badge ? implicitWidth : -1
+                                    Layout.minimumWidth: 30
                                     text: bRow.modelData.title
                                     elide: Text.ElideRight
                                     font.family: "Schibsted Grotesk"; font.pixelSize: 13
                                     font.weight: bRow.modelData.current ? Font.DemiBold : Font.Medium
                                     color: side.c.text
                                 }
+                                BotBadge {
+                                    text: bRow.modelData.badge || ""
+                                    tint: (bRow.modelData.face && bRow.modelData.face.color) || side.c.accent
+                                    size: 10
+                                    Layout.maximumWidth: 110
+                                    clip: true
+                                }
+                                Item { visible: !!bRow.modelData.badge; Layout.fillWidth: true }
                                 Rectangle {
                                     visible: bRow.modelData.busy
                                     implicitWidth: 7; implicitHeight: 7; radius: 3.5
@@ -795,6 +806,7 @@ Rectangle {
                                     Layout.fillWidth: true
                                     text: bRow.modelData.paused ? app.t.bots_paused : (bRow.modelData.preview || bRow.modelData.description)
                                     elide: Text.ElideRight
+                                    maximumLineCount: 1; wrapMode: Text.NoWrap
                                     font.family: "Schibsted Grotesk"; font.pixelSize: 12
                                     font.weight: bRow.modelData.unread ? Font.Medium : Font.Normal
                                     color: bRow.modelData.unread ? side.c.text : side.c.muted

@@ -24,7 +24,7 @@ ODialog {
         lockFace = true   // keep this look until the person picks another
     }
     function openNew() {
-        botId = ""; titleField.text = ""; descField.text = ""; folderField.text = ""
+        botId = ""; titleField.text = ""; badgeField.text = ""; descField.text = ""; folderField.text = ""
         soulField.text = ""
         idField.text = Qt.binding(() => dlg.slug(titleField.text))
         // the face follows the name as it is typed, until a shape, a colour or a model is chosen
@@ -49,6 +49,7 @@ ODialog {
         const row = bots.list.concat(bots.hidden).find(b => b.id === id) || bots.current
         titleField.text = (row && row.title) || id
         descField.text = (row && row.description) || ""
+        badgeField.text = (row && row.badge) || ""
         folderField.text = (row && row.folder) || ""
         soulField.text = bots.soul(id)
         const f = (row && row.face) || {}
@@ -159,6 +160,12 @@ ODialog {
         onTextChanged: if (!dlg.lockFace && creating) {
             const f = bots.faceFor(text || "bot"); dlg.shape = f.shape; dlg.color = f.color
         }
+    }
+    OTextField {                               // « Secrétaire »: shown as a badge next to the name
+        id: badgeField
+        Layout.fillWidth: true
+        maximumLength: 30
+        placeholderText: app.t.bots_badge_ph
     }
     OTextField {
         id: idField
@@ -278,14 +285,15 @@ ODialog {
                     if (created && created.id) {
                         if (soulField.text.trim()) bots.setSoul(created.id, soulField.text)
                         // a face chosen (or a model's) is kept; one from the name follows a later rename
-                        const fields = { enabled_skills: skillList.model.filter(s => !s.owned && s.on).map(s => s.name) }
+                        const fields = { enabled_skills: skillList.model.filter(s => !s.owned && s.on).map(s => s.name),
+                                         badge: badgeField.text }
                         if (dlg.lockFace) Object.assign(fields, { shape: dlg.shape, color: dlg.color, lock_face: true })
                         bots.update(created.id, fields)
                         dlg.close()
                     }
                 } else {
                     const saved = bots.update(botId, {
-                        title: titleField.text, description: descField.text, folder: folderField.text,
+                        title: titleField.text, badge: badgeField.text, description: descField.text, folder: folderField.text,
                         shape: dlg.shape, color: dlg.color, lock_face: dlg.lockFace,
                         enabled_skills: skillList.model.filter(s => !s.owned && s.on).map(s => s.name)
                     })

@@ -940,13 +940,20 @@ class CodeChat(QObject):
 
     # ---- conversations ---------------------------------------------------------------------------------------------
     def _stash_bot(self, next_bot: str = ""):
-        """Keep a busy or queued bot running in the background when the user switches to another bot or conversation."""
-        if not self._bot or self._bot == next_bot:
+        """Keep a busy or queued conversation running in the background when the user switches to another one: a
+        bot (key: its id) or an ordinary Code session (key: « s:<session> ») — opening another session used to stop
+        the one working (09/11). `next_bot`: the key of what opens next."""
+        key = self._bot or (f"s:{self._session}" if self._session else "")
+        if not key or key == next_bot:
             return
         if not (self._busy or self._queued or self._later):
             return
+        if self._host is not None or self._compacting:
+            return                      # a delegated or compacting turn stays in front (it is stopped as before)
         self._write_text()
-        self._bg_bots[self._bot] = {
+        self._bg_bots[key] = {
+            "key": key,
+            "mode": self._mode, "plan_mode": self._plan_mode, "ask_mode": self._ask_mode,
             "bot": self._bot,
             "folder": self._folder,
             "session": self._session,
@@ -1025,8 +1032,9 @@ class CodeChat(QObject):
         self._parts = dict(bg.get("parts") or {})
         self._asked = bg.get("asked")
         self._cron_job = bg.get("cron_job")
-        self._mode = "auto"
-        self._plan_mode = self._ask_mode = False
+        self._mode = "auto" if self._bot else (bg.get("mode") or "auto")     # bots are always Autonome
+        self._plan_mode = bool(bg.get("plan_mode")) and not self._bot
+        self._ask_mode = bool(bg.get("ask_mode")) and not self._bot
         self._pending_text.clear()
         self._failures, self._looped, self._repeats = {}, False, {}
         self._items.quiet = bool(self._replaying)
@@ -1072,7 +1080,11 @@ class CodeChat(QObject):
         if profile:
             self.openBot(profile["id"], ornis_bots.working_folder(profile["id"]), session_id)
             return
-        self._stash_bot("")
+        key = f"s:{session_id}" if session_id else ""
+        self._stash_bot(key)
+        if key and key in self._bg_bots:              # it went on working in the background: back to it, live
+            self._restore_bot(key)
+            return
         self._bot, self._bot_brief = "", False
         self._open(str(folder), str(session_id))
 
@@ -1081,10 +1093,10 @@ class CodeChat(QObject):
         """Open a bot's durable chat (one conversation forever; /new becomes /compact)."""
         bot_id = str(bot_id or "").strip()
         cron = getattr(self, "_bot_cron", None)
-        worker = getattr(self, "_bot_peer_worker", None)
+        workers = getattr(self, "_bot_peer_workers", None) or [w for w in [getattr(self, "_bot_peer_worker", None)] if w]
         if ((cron and cron._chat_busy and getattr(cron, "_running_bot", "") == bot_id
              and not (cron._ui_run and cron._ui_run.get("bot") == bot_id))
-                or (worker and worker.bot == bot_id and (worker.busy or worker._cron_job))):
+                or any(w.bot == bot_id and (w.busy or w._cron_job) for w in workers)):
             opening = self._opening
             QTimer.singleShot(500, lambda: self.openBot(bot_id, folder, session_id)
                               if self._opening == opening else None)
@@ -1144,11 +1156,16 @@ class CodeChat(QObject):
             return False
         if self._busy or self._cron_job or self._host is not None:
             return False
+        self._activity_at = time.time()
         # The user has a window in front with a conversation open: never swap it under them (the cron then runs
         # on its own agent, and opens from the list once done) — unless it is already that bot's chat idle.
         same_bot = bool(bot and self._bot == bot and self._session and (not session_id or self._session == session_id))
         if self._session and QGuiApplication.focusWindow() is not None and not same_bot and not getattr(self, "_background", False):
             return False
+        # this bot's conversation already loaded in this agent: the turn goes straight to it. A reload replayed the
+        # whole thread before every group or bot message (slower with each turn; a long thread outlasted the room)
+        loaded = bool(same_bot and self._agent is not None and self._agent.alive() and self._state == "ready"
+                      and not self._replaying)
         self._cron_job = {
             "task_id": str(task_id or ""),
             "title": str(title or "").strip() or str(task_id or "cron"),
@@ -1166,12 +1183,22 @@ class CodeChat(QObject):
             return False
         self._title = self._cron_job["title"]
         self._queued = str(prompt)
-        if self._state == "ready" and not self._busy:
+        if loaded and self._session and not self._busy:
+            QTimer.singleShot(0, self._send_queued)
+        elif self._state == "ready" and not self._busy:
             QTimer.singleShot(0, self._attach)
         if bot:
             self._bot_brief = True
         self.changed.emit()
         return True
+
+    def _send_queued(self):
+        """What runScheduled left waiting, sent on the conversation the agent already has (no replay)."""
+        if self._queued and not self._busy and self._agent is not None:
+            text, self._queued = self._queued, ""
+            self.send(text)
+        elif self._queued and not self._busy:
+            self._attach()
 
     def _last_answer(self) -> str:
         """The text of this turn's last answer (empty when the bot only worked, or said [SILENT])."""
@@ -1392,7 +1419,7 @@ class CodeChat(QObject):
                 bg["queued"] = ""
                 self._bg_send(bg, text)
             else:
-                self._close_bg_bot(bot)
+                self._close_bg_bot(bg.get("key") or bot)
             return
         bg["busy"] = True
         bg["replaying"] = True
@@ -1681,7 +1708,7 @@ class CodeChat(QObject):
                     bg["queued"] = ""
                     self._bg_send(bg, text)
                 else:
-                    self._close_bg_bot(bg["bot"])
+                    self._close_bg_bot(bg.get("key") or bg["bot"])
                 self.changed.emit()
                 return
             bg["busy"] = False
@@ -1696,7 +1723,10 @@ class CodeChat(QObject):
                 text = bg["later"].pop(0)
                 self._bg_send(bg, text)
             else:
-                self._close_bg_bot(bg["bot"])
+                self._close_bg_bot(bg.get("key") or bg["bot"])
+                if not bg["bot"] and not result.get("error"):     # a session that finished while you were elsewhere
+                    self.problem.emit(self._app._t.get("code_bg_done", "« %1 » a fini").replace(
+                        "%1", bg.get("title") or Path(bg["folder"]).name))
             self.changed.emit()
             return
         if result.get("created"):
@@ -2132,6 +2162,7 @@ class CodeChat(QObject):
                 self._remember_for(bg["folder"], bg["session"], title, bg["bot"], touch=not bg.get("replaying"))
 
     def _on_update(self, agent, sid, update):
+        self._activity_at = time.time()          # Bots' watchdog: a delivered turn with no news for long is stuck
         if sid != self._session or agent is not self._agent:   # only the agent in use writes
             bg = next((b for b in self._bg_bots.values() if b.get("agent") is agent), None)
             if bg is not None:
@@ -2375,7 +2406,7 @@ class CodeChat(QObject):
                         "title": row.get("title") or (tool or {}).get("title"),
                         "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
                         "content": (tool or {}).get("content") or []}
-                verdict = ornis_code.decide("auto", call, sandboxed=bool(ornis_code.sandbox_kind()),
+                verdict = ornis_code.decide(bg.get("mode") or "auto", call, sandboxed=bool(ornis_code.sandbox_kind()),
                                             folder=bg["folder"], bot=bg["bot"])
                 if bg.get("cron_job") and verdict == "ask":
                     verdict = "reject"

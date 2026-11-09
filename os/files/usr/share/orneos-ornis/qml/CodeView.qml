@@ -197,12 +197,22 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 0
-                    Text {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: code.bot ? ((bots.current && bots.current.title) || code.folderName) : (code.title || code.folderName || app.t.mode_code)
-                        elide: Text.ElideRight
-                        font.family: "Schibsted Grotesk"; font.pixelSize: 15; font.weight: Font.DemiBold
-                        color: view.c.text
+                        spacing: 8
+                        Text {
+                            Layout.fillWidth: !(code.bot && bots.current && bots.current.badge)
+                            Layout.maximumWidth: implicitWidth
+                            text: code.bot ? ((bots.current && bots.current.title) || code.folderName) : (code.title || code.folderName || app.t.mode_code)
+                            elide: Text.ElideRight
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 15; font.weight: Font.DemiBold
+                            color: view.c.text
+                        }
+                        BotBadge {
+                            text: code.bot && bots.current ? (bots.current.badge || "") : ""
+                            tint: (bots.current && bots.current.face && bots.current.face.color) || view.c.accent
+                        }
+                        Item { Layout.fillWidth: true }
                     }
                     RowLayout {              // bot role, or the folder (its full path on hover) + Git branch
                         Layout.fillWidth: true
