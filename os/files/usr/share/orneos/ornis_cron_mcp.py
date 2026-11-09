@@ -124,7 +124,10 @@ def _lang(ctx: dict | None = None) -> str:
 
 
 def _ok(data) -> dict:
-    return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}]}
+    res = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}]}
+    if isinstance(data, dict):
+        res["structuredContent"] = data
+    return res
 
 
 def _err(msg: str) -> dict:
@@ -137,13 +140,17 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
         if name == "cron_list":
             rows = []
             for t in ornis_cron.tasks():
-                last = (t.get("runs") or [{}])[0]
+                runs = list(t.get("runs") or [])
+                last = runs[0] if runs else {}
                 rows.append({
                     "id": t.get("id"), "title": t.get("title"), "description": t.get("description"),
                     "kind": t.get("kind"), "schedule": t.get("schedule"),
                     "scheduleLabel": t.get("scheduleLabel"), "paused": t.get("paused"),
+                    "bot": t.get("bot") or "",
                     "folder": t.get("folder"), "next_run": t.get("next_run"),
                     "last_status": last.get("status"), "last_summary": last.get("summary"),
+                    "last_run_at": last.get("started"), "last_session": last.get("session"),
+                    "runs_count": len(runs),
                 })
             return _ok({"tasks": rows})
         if name == "cron_create":
@@ -158,10 +165,11 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 "folder": _folder(args, ctx),
                 "paused": bool(args.get("paused", False)),
                 "lang": _lang(ctx),
-                "pending": "create",     # the app confirms it (ask mode) or clears it; never runs while pending
             }
             if bot:
                 row["bot"] = bot
+            else:
+                row["pending"] = "create"     # the app confirms it (ask mode) or clears it; never runs while pending
             created = ornis_cron.upsert(row, create=True)
             return _ok({"created": True, "task": {
                 "id": created["id"], "title": created["title"], "schedule": created["schedule"],
@@ -178,13 +186,16 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
                 before = ornis_cron.get(args["id"])
                 if not before:
                     raise ValueError(f"unknown task: {args['id']}")
-                if before.get("pending") == "create":
-                    fields["pending"] = "create"     # still not confirmed: the card stays « créée », not « modifiée »
-                else:
-                    fields["pending"] = "update"
-                    if before.get("pending") != "update":   # keep the version the user last accepted
-                        fields["pending_previous"] = {k: v for k, v in before.items()
-                                                      if k not in ("runs", "pending", "pending_previous", "force_run")}
+                is_bot = bool(before.get("bot") or fields.get("bot")
+                              or (ctx.get("bot", "") if ctx is not None else os.environ.get("ORNIS_BOT_ID", "")))
+                if not is_bot:
+                    if before.get("pending") == "create":
+                        fields["pending"] = "create"     # still not confirmed: the card stays « créée », not « modifiée »
+                    else:
+                        fields["pending"] = "update"
+                        if before.get("pending") != "update":   # keep the version the user last accepted
+                            fields["pending_previous"] = {k: v for k, v in before.items()
+                                                          if k not in ("runs", "pending", "pending_previous", "force_run")}
                 updated = ornis_cron.patch(args["id"], fields, _lang(ctx))
             return _ok({"updated": True, "task": {
                 "id": updated["id"], "title": updated["title"], "schedule": updated["schedule"],

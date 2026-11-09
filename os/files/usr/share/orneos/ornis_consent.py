@@ -68,6 +68,18 @@ def sensitive(text: str) -> bool:
     text = str(text or "")
     expanded = text.replace("$HOME", str(HOME)).replace("${HOME}", str(HOME))
     expanded = re.sub(r"(^|[\s=\"'(:])~(?=/)", lambda m: m.group(1) + str(HOME), expanded)
+    # On macOS/Windows, system.DATA == system.CONFIG (~/Library/Application Support/Orneos, ~/AppData/Roaming/Orneos).
+    # Ornis Code's own bot workspaces, profiles and logs live under DATA/ornis-bots and DATA/ornis-code: only the
+    # token file (credentials.json) inside ornis-code is a secret.
+    if "credentials.json" in expanded:
+        return True
+    for sub in ("ornis-bots", "ornis-code"):
+        for base in (str(system.DATA / sub), f"~/Library/Application Support/Orneos/{sub}",
+                     f"~/AppData/Roaming/Orneos/{sub}", f"Library/Application Support/Orneos/{sub}",
+                     f"AppData/Roaming/Orneos/{sub}"):
+            for variant in {base, base.replace("\\", "/"), base.replace("/", "\\")}:
+                expanded = expanded.replace(variant, "/tmp/ornis-safe")
+                text = text.replace(variant, "/tmp/ornis-safe")
     if str(system.CONFIG) in expanded or str(system.STATE) in expanded:
         return True
     for item in SENSITIVE:

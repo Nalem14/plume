@@ -707,22 +707,25 @@ def expand_command(folder, name: str, args: str) -> str | None:
 
 def in_notebook(folder, raw: dict, bot: str = "") -> bool:
     """A file call whose every path is in Ornis's notebook (.ornis/memory, plans or tmp) of this project,
-    or in a bot's profile memory/skills/tmp when `bot` is set."""
+    or in a bot's profile (outside workspace/) when `bot` is set."""
     if not isinstance(raw, dict):
         return False
     paths = [raw.get(k) for k in ("path", "file_path", "filePath", "target_file") if isinstance(raw.get(k), str) and raw.get(k)]
     if not paths:
         return False
     allowed = []
+    excluded = []
     if folder:
         base = ornis_dir(folder).resolve()
         allowed = [base / sub for sub in NOTEBOOK]
     if bot:
         try:
             import ornis_bots  # noqa: PLC0415
-            root = ornis_bots.bot_dir(bot).resolve()
-            allowed += [root / sub for sub in ("memory", "skills", "tmp")]
-            allowed.append(root / "SOUL.md")
+            bots_root = ornis_bots.ROOT.resolve()
+            allowed.append(bots_root)
+            excluded.append(ornis_bots.workspace_of(bot).resolve())
+            for b in ornis_bots.list_bots(include_hidden=True):
+                excluded.append((bots_root / b["id"] / "workspace").resolve())
         except (ValueError, OSError):
             pass
     if not allowed:
@@ -732,6 +735,8 @@ def in_notebook(folder, raw: dict, bot: str = "") -> bool:
         try:
             path = path.resolve()
         except OSError:
+            return False
+        if any(path == ex or ex in path.parents for ex in excluded):
             return False
         if not any(path == a or a in path.parents for a in allowed):
             return False
@@ -781,8 +786,11 @@ def wrap(argv: list[str], folder: Path, bot: str = "") -> list[str]:
     if soul:
         writable.append(soul)
     if bot:
+        writable.append(home(bot).resolve())
         try:
             import ornis_bots  # noqa: PLC0415
+            ornis_bots.ROOT.mkdir(parents=True, exist_ok=True)
+            writable.append(ornis_bots.ROOT.resolve())
             root = ornis_bots.bot_dir(bot)
             writable += [(root / sub).resolve() for sub in ("memory", "skills", "tmp")]
             writable.append((root / "SOUL.md").resolve())
@@ -821,10 +829,25 @@ def _against_itself(command: str, raw: dict) -> bool:
     if command and (SELF_PROCESS.search(command) or re.search(r"(^|[\s/;&|])vibe-acp\b(?![^|;&]*\bgrep\b)", command)):
         return True                              # a second agent started on the same home answers the same turns
     own = str(home())
+    bots_own = str(ROOT / "bot-homes")
     paths = [str(raw.get(k) or "") for k in ("path", "file_path", "filepath", "target") if raw.get(k)]
-    if command and own in command and re.search(r"(>|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\bchmod\b)", command):
-        return True
-    return any(Path(p).expanduser().resolve().is_relative_to(Path(own).resolve()) for p in paths if p)
+    if command and (own in command or bots_own in command):
+        cleaned = re.sub(r"(?:[0-9]*>&[0-9]+|(?:&|[0-9]*)>\s*/dev/null)\b", "", command)
+        # Reading logs under home/logs/ with 2>/dev/null is diagnostic, not self-modification
+        if re.search(r"(?:config\.toml|hooks\.toml|AGENTS\.md|/prompts\b)", cleaned) and re.search(
+                r"(>|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\bchmod\b)", cleaned):
+            return True
+    for p in paths:
+        if not p:
+            continue
+        try:
+            resolved = Path(p).expanduser().resolve()
+        except OSError:
+            continue
+        if (resolved.is_relative_to(Path(own).resolve()) or resolved.is_relative_to((ROOT / "bot-homes").resolve())):
+            if "logs" not in resolved.parts:
+                return True
+    return False
 
 
 # File tools must pass the same checks as commands, including aliases and symlinks.
@@ -938,12 +961,14 @@ def decide(mode: str, tool: dict, sandboxed: bool = False, folder: str = "", bot
         import ornis_shell
         if ornis_shell.classify(command).get("blocked"):
             return "reject"
+    from ornis_consent import sensitive
+    if (kind in ("edit", "delete") and in_notebook(folder, raw, bot)
+            and not any(SECRET_PATH.search(p.replace("\\", "/")) or sensitive(p) for p in file_paths(tool))):
+        return "allow"                               # its own notebook (memory, plans, tmp, bot profile): in every mode
     if always_ask(tool, folder, reusable=False):
         if remembered:
             return "allow"
         return "reject" if mode == "plan" and kind not in ("read", "search", "think", "fetch") else "ask"
-    if kind in ("edit", "delete") and in_notebook(folder, raw, bot):
-        return "allow"                               # its own notebook (memory, plans, tmp): in every mode, Plan too
     if mode == "plan":                               # Plan: Ornis looks, never changes anything
         if kind in ("read", "search", "think", "fetch"):
             return "allow"
@@ -1070,7 +1095,12 @@ class Agent:
         reply = slot[1] or {}
         if "error" in reply:
             error = reply["error"] or {}
-            raise RuntimeError(str(error.get("message") or error.get("code") or "error"))
+            msg = str(error.get("message") or error.get("code") or "error")
+            data = error.get("data") if isinstance(error.get("data"), dict) else {}
+            details = str(data.get("details") or "").strip()
+            if details and details not in msg:
+                msg = f"{msg}: {details}"
+            raise RuntimeError(msg)
         return reply.get("result") or {}
 
     def notify(self, method: str, params: dict) -> None:
@@ -1154,7 +1184,24 @@ class Agent:
 
     def prompt(self, session_id: str, blocks: list[dict]) -> dict:
         """Sends a message; returns when the agent has finished ({stopReason}). Updates arrive meanwhile."""
-        return self.call("session/prompt", {"sessionId": session_id, "prompt": blocks}, timeout=3600)
+        current = blocks
+        for attempt in range(3):
+            try:
+                return self.call("session/prompt", {"sessionId": session_id, "prompt": current}, timeout=3600)
+            except (RuntimeError, TimeoutError) as error:
+                low = str(error).lower()
+                transient = any(tok in low for tok in (
+                    "produced no chunks", "incompleteproviderstream", "model_stream_failed",
+                    "502", "503", "504", "408", "timeout", "peer closed", "connection reset",
+                ))
+                if not transient or attempt >= 2 or not self.alive():
+                    raise
+                time.sleep(2.5 * (attempt + 1))
+                current = [{"type": "text", "text": (
+                    "[Ornis: continue]\nThe model stream was interrupted before finishing. "
+                    "Continue from where you stopped without repeating already-completed tool calls."
+                )}]
+        return {}
 
     def cancel(self, session_id: str) -> None:
         self.notify("session/cancel", {"sessionId": session_id})

@@ -390,7 +390,14 @@ class Cron(QObject):
         for t in self._tasks:
             tid = t.get("id")
             pending = t.get("pending")
-            if pending == "create" and (startup or tid not in prev):
+            if pending and t.get("bot"):
+                try:
+                    self._clear_pending(t)
+                    self._reload()
+                except ValueError:
+                    pass
+                continue
+            if pending == "create":
                 if mode == "ask":
                     if self._consent:
                         return
@@ -480,7 +487,7 @@ class Cron(QObject):
         return bool(getattr(code, "_busy", False) or getattr(code, "_cron_job", None)
                     or getattr(code, "_host", None) or getattr(code, "_queued", None))
 
-    def _reap_stale(self) -> None:
+    def _reap_stale(self, startup: bool = False) -> None:
         """Unblock the scheduler if a run stayed « running » after a lost UI/background handle."""
         now = time.time()
         # Recover a stuck chat gate (cronDone never fired, agent gone)
@@ -498,14 +505,14 @@ class Cron(QObject):
                     continue
                 age = now - float(r.get("started") or 0)
                 # chat turns can be long; scripts use SCRIPT_TIMEOUT. Still unblock after 15 min orphan.
-                limit = SCRIPT_TIMEOUT + 60 if t.get("kind") == "script" else 15 * 60
+                limit = 0 if startup else (SCRIPT_TIMEOUT + 60 if t.get("kind") == "script" else 15 * 60)
                 if age <= limit:
                     continue
                 try:
                     ornis_cron.update_run(t["id"], rid, {
                         "status": "error", "ended": now,
-                        "summary": (self._t("cron_timeout", "Délai dépassé (10 min)") if t.get("kind") == "script"
-                                    else self._t("cron_lost", "Interrompue")),
+                        "summary": (self._t("cron_lost", "Interrompue") if startup
+                                    else self._t("cron_timeout", "Délai dépassé (10 min)")),
                     })
                     changed = True
                 except ValueError:
@@ -570,7 +577,7 @@ class Cron(QObject):
 
     def _catch_up(self):
         now = time.time()
-        self._reap_stale()
+        self._reap_stale(startup=True)
         for t in list(ornis_cron.tasks()):
             if t.get("paused") or t.get("pending"):
                 continue
@@ -601,7 +608,9 @@ class Cron(QObject):
                 return False
             task = dict(task, folder=ornis_bots.working_folder(bot))
             peer_worker = getattr(self._code, "_bot_peer_worker", None)
+            bg_bots = getattr(self._code, "_bg_bots", {})
             if ((self._code.bot == bot and (self._code.busy or self._code._queued))
+                    or bot in bg_bots
                     or (peer_worker is not None and peer_worker.bot == bot
                         and (peer_worker.busy or peer_worker._cron_job))):
                 if manual:
@@ -851,7 +860,9 @@ class Cron(QObject):
                 status, summary = "error", self._t(f"code_{code}", str(code))
             except Exception as err:  # noqa: BLE001
                 print("Ornis cron chat:", type(err).__name__, err, flush=True)
-                status, summary = "error", self._t("cron_failed", "Échec")
+                detail = str(err).strip()
+                base = self._t("cron_failed", "Échec")
+                status, summary = "error", (f"{base} — {detail}" if detail else base)[:300]
             finally:
                 self._bg_run = None
                 try:

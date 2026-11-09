@@ -133,7 +133,10 @@ def _sender(args: dict) -> str:
 
 
 def _ok(data) -> dict:
-    return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}]}
+    res = {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, indent=2)}]}
+    if isinstance(data, dict):
+        res["structuredContent"] = data
+    return res
 
 
 def _err(msg: str) -> dict:

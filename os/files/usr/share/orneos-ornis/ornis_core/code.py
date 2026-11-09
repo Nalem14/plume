@@ -248,6 +248,7 @@ class CodeChat(QObject):
         self._git = {}
         self._cron_job = None            # {task_id, title, prev_mode} while a scheduled Code task runs here
         self._last_status = None         # bot: what its status bubble shows (_status_tick)
+        self._bg_bots: dict[str, dict] = {}  # bot_id -> stashed live state while another conversation is viewed
         self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
         try:
             self._history = json.loads(HISTORY.read_text())
@@ -545,6 +546,9 @@ class CodeChat(QObject):
 
     def _on_question(self, request_id, sid, questions):
         if sid != self._session or self._agent is None:
+            bg = next((b for b in self._bg_bots.values() if b.get("session") == sid and b.get("agent") is not None), None)
+            if bg and bg.get("agent"):
+                bg["agent"].answer(request_id, {"action": "decline"})
             return
         if self._cron_job:                       # scheduled task: nobody is watching — decide alone
             self._agent.answer(request_id, {"action": "decline"})
@@ -873,9 +877,95 @@ class CodeChat(QObject):
         return blocks
 
     # ---- conversations ---------------------------------------------------------------------------------------------
+    def _stash_bot(self, next_bot: str = ""):
+        """Keep a busy or queued bot running in the background when the user switches to another bot or conversation."""
+        if not self._bot or self._bot == next_bot:
+            return
+        if not (self._busy or self._queued or self._later):
+            return
+        self._write_text()
+        self._bg_bots[self._bot] = {
+            "bot": self._bot,
+            "folder": self._folder,
+            "session": self._session,
+            "title": self._title,
+            "agent": self._agent,
+            "state": self._state,
+            "busy": self._busy,
+            "replaying": self._replaying,
+            "queued": self._queued,
+            "later": list(self._later),
+            "rows": list(self._items.rows),
+            "tools": dict(self._tools),
+            "plan": list(self._plan),
+            "usage": dict(self._usage),
+            "parts": dict(self._parts),
+            "asked": self._asked,
+            "cron_job": self._cron_job,
+            "bot_brief": self._bot_brief,
+            "start": getattr(self, "_starts", 0),
+        }
+        self._agent = None
+        self._busy = False
+        self._replaying = False
+        self._queued = ""
+        self._later = []
+        self._asked = None
+        self._cron_job = None
+
+    def _restore_bot(self, bot_id: str) -> bool:
+        bg = self._bg_bots.pop(bot_id, None)
+        if bg is None:
+            return False
+        self._cancel_host()
+        if self._agent is not None and self._agent is not bg.get("agent"):
+            old_agent, self._agent = self._agent, None
+            threading.Thread(target=old_agent.close, daemon=True).start()
+        self._opening += 1
+        self._bot = bg["bot"]
+        self._bot_brief = bool(bg.get("bot_brief"))
+        self._folder = bg["folder"]
+        self._session = bg["session"]
+        self._title = bg["title"]
+        self._agent = bg["agent"]
+        self._state = bg["state"]
+        self._busy = bool(bg["busy"])
+        self._replaying = bool(bg["replaying"])
+        self._queued = str(bg.get("queued") or "")
+        self._later = list(bg.get("later") or [])
+        self._tools = dict(bg.get("tools") or {})
+        self._plan = list(bg.get("plan") or [])
+        self._usage = dict(bg.get("usage") or {})
+        self._parts = dict(bg.get("parts") or {})
+        self._asked = bg.get("asked")
+        self._cron_job = bg.get("cron_job")
+        self._mode = "auto"
+        self._plan_mode = False
+        self._pending_text.clear()
+        self._failures, self._looped, self._repeats = {}, False, {}
+        self._items.quiet = bool(self._replaying)
+        self._items.reset(list(bg.get("rows") or []))
+        self.syncBotExchanges()
+        self._refresh_git()
+        self._warm_files()
+        self._app.useWorkspace(self._folder) if hasattr(self._app, "useWorkspace") else None
+        self.planChanged.emit()
+        self.usageChanged.emit()
+        self.laterChanged.emit()
+        self.changed.emit()
+        self._status_tick()
+        return True
+
+    def _close_bg_bot(self, bot_id: str):
+        bg = self._bg_bots.pop(bot_id, None)
+        if bg and bg.get("agent") is not None:
+            agent = bg["agent"]
+            threading.Thread(target=agent.close, daemon=True).start()
+
     @Slot(str)
     def newIn(self, folder):
         """A new conversation in a folder (the agent starts if it is not running there)."""
+        self._stash_bot("")
         self._bot, self._bot_brief = "", False
         self._open(str(folder), "")
 
@@ -887,6 +977,7 @@ class CodeChat(QObject):
         if profile:
             self.openBot(profile["id"], ornis_bots.working_folder(profile["id"]), session_id)
             return
+        self._stash_bot("")
         self._bot, self._bot_brief = "", False
         self._open(str(folder), str(session_id))
 
@@ -903,18 +994,25 @@ class CodeChat(QObject):
             QTimer.singleShot(500, lambda: self.openBot(bot_id, folder, session_id)
                               if self._opening == opening else None)
             return
+        self._stash_bot(bot_id)
+        if bot_id and bot_id in self._bg_bots:
+            self._restore_bot(bot_id)
+            return
         folder = str(folder or "").strip()
         session_id = str(session_id or "").strip()
         self._bot = bot_id
         self._bot_brief = True
         self._mode = "auto"                        # bots: Autonome, Agent classique (no Plan)
         self._plan_mode = False
-        if not folder:
+        if bot_id:
             try:
                 import ornis_bots  # noqa: PLC0415
-                folder = ornis_bots.working_folder(bot_id)
+                if not folder:
+                    folder = ornis_bots.working_folder(bot_id)
+                if not session_id:
+                    session_id = str((ornis_bots.get(bot_id) or {}).get("session") or "")
             except Exception:  # noqa: BLE001
-                folder = ""
+                pass
         self._open(folder, session_id)
         if bot_id:
             try:
@@ -1114,7 +1212,8 @@ class CodeChat(QObject):
                                          gateway_url=str(creds.get("url") or ""), bot=bot)
                 holder.append(agent)
                 agent.start()
-                if start != self._starts:            # overtaken: the newer start keeps the conversation
+                bg = self._bg_bots.get(bot) if bot else None
+                if start != self._starts and (not bg or bg.get("start") != start):
                     agent.close()
                     return
                 self._ready.emit(agent, "")
@@ -1134,7 +1233,15 @@ class CodeChat(QObject):
         if agent is None:
             self._fail(problem)
             return
-        if self._folder != str(agent.folder) or getattr(agent, "bot", "") != self._bot or self._agent is not None:   # another folder, or another agent, meanwhile
+        bot = getattr(agent, "bot", "") or ""
+        if bot and bot in self._bg_bots and self._bot != bot:
+            bg = self._bg_bots[bot]
+            bg["agent"] = agent
+            bg["state"] = "ready"
+            self._bg_attach(bg)
+            self.changed.emit()
+            return
+        if self._folder != str(agent.folder) or bot != self._bot or self._agent is not None:   # another folder, or another agent, meanwhile
             if agent is not self._agent:
                 threading.Thread(target=agent.close, daemon=True).start()
             return
@@ -1142,12 +1249,83 @@ class CodeChat(QObject):
         self._attach()
         self.changed.emit()
 
+    def _bg_attach(self, bg: dict):
+        agent, sid, bot = bg.get("agent"), bg.get("session") or "", bg.get("bot") or ""
+        if not agent:
+            return
+        if not sid:
+            if bg.get("queued") or bg.get("later"):
+                text = bg["queued"] if bg.get("queued") else bg["later"].pop(0)
+                bg["queued"] = ""
+                self._bg_send(bg, text)
+            else:
+                self._close_bg_bot(bot)
+            return
+        bg["busy"] = True
+        bg["replaying"] = True
+
+        def work():
+            try:
+                agent.load_session(sid)
+                agent.set_mode(sid, "auto")
+                self._done.emit(sid, {"loaded": True, "_bot": bot})
+            except Exception as error:  # noqa: BLE001
+                self._done.emit(sid, {"error": str(error), "loaded": True, "_bot": bot})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _bg_send(self, bg: dict, shown: str):
+        agent = bg.get("agent")
+        bot = str(bg.get("bot") or "")
+        folder = str(bg.get("folder") or "")
+        sid = str(bg.get("session") or "")
+        if not agent or not shown:
+            return
+        text = shown
+        rows = bg.setdefault("rows", [])
+        if not (rows and rows[-1].get("kind") == "user" and rows[-1].get("content") == shown):
+            rows.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
+        bg["busy"] = True
+        first = not sid and not text.startswith("/")
+        brief = bool(bg.get("bot_brief"))
+        bg["bot_brief"] = False
+
+        def work():
+            session = sid
+            if first:
+                ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))
+            try:
+                head = ""
+                if first:
+                    head += ornis_code.project_context(folder) + self._tree(folder)
+                if bot and (first or brief):
+                    try:
+                        import ornis_bots  # noqa: PLC0415
+                        bots_cli = str((ornis_code.ROOT / "bin" / "ornis-bots").resolve())
+                        head += ornis_bots.identity_block(bot, bots_cli=bots_cli)
+                    except Exception:  # noqa: BLE001
+                        pass
+                blocks = [ornis_code.text_block(head + text)]
+                if not session:
+                    created = agent.new_session()
+                    session = created.get("sessionId", "")
+                    self._done.emit(session, {"created": True, "_bot": bot})
+                    agent.set_mode(session, "auto")
+                result = agent.prompt(session, blocks)
+                self._done.emit(session, dict(result or {}, _bot=bot))
+            except Exception as error:  # noqa: BLE001
+                self._done.emit(session, {"error": str(error), "_bot": bot})
+        threading.Thread(target=work, daemon=True, name="ornis-code-bg-prompt").start()
+
     def _attach(self):
         """Opens the conversation on the agent: an existing one (replayed) or a new one when the first message goes."""
-        agent, sid = self._agent, self._session
+        agent, sid, bot = self._agent, self._session, self._bot
         if not sid:
             if self._queued:
                 text, self._queued = self._queued, ""
+                self.send(text)
+            elif self._later:
+                text = self._later.pop(0)
+                self.laterChanged.emit()
                 self.send(text)
             return
         self._busy = True
@@ -1158,10 +1336,10 @@ class CodeChat(QObject):
         def work():
             try:
                 agent.load_session(sid)
-                agent.set_mode(sid, "auto" if self._bot else self._mode)
-                self._done.emit(sid, {"loaded": True})
+                agent.set_mode(sid, "auto" if bot else self._mode)
+                self._done.emit(sid, {"loaded": True, "_bot": bot})
             except Exception as error:  # noqa: BLE001
-                self._done.emit(sid, {"error": str(error), "loaded": True})
+                self._done.emit(sid, {"error": str(error), "loaded": True, "_bot": bot})
         threading.Thread(target=work, daemon=True).start()
 
     def _fail(self, problem):
@@ -1205,6 +1383,8 @@ class CodeChat(QObject):
         if self._agent is not None:
             agent, self._agent = self._agent, None
             threading.Thread(target=agent.close, daemon=True).start()
+        for bid in list(self._bg_bots):
+            self._close_bg_bot(bid)
         self._state, self._session, self._folder = "idle", "", ""
         self._items.reset()
         self.changed.emit()
@@ -1244,7 +1424,7 @@ class CodeChat(QObject):
             word0 = shown[1:].split(None, 1)[0].lower() if shown.startswith("/") and len(shown) > 1 else ""
             if word0 in ("new", "reset", "nouveau", "neu"):
                 shown, text = "/compact", "/compact"
-        if self._busy and not shown.startswith("/") or self._busy and text != shown:
+        if (self._busy and not self._replaying) and (not shown.startswith("/") or text != shown):
             self._later.append(shown)                # sent after this turn, as in Claude Code (shown above the box)
             self._remember_prompt(shown)
             self.laterChanged.emit()
@@ -1259,8 +1439,14 @@ class CodeChat(QObject):
         retry = "/" + str(self._app._t.get("slash_retry_cmd", "retry")).lower()
         if text.lower() == retry or text.lower().startswith(retry + " "):
             text = "/retry" + text[len(retry):]  # Vibe's command, under our name
-        if self._state != "ready" or self._agent is None:
-            self._queued = shown                     # sent as soon as the agent is there (after a replay, if any)
+        if self._state != "ready" or self._agent is None or self._replaying:
+            if self._replaying and self._queued:
+                self._later.append(shown)
+                self.laterChanged.emit()
+            else:
+                self._queued = shown                 # sent as soon as the agent is there (after a replay, if any)
+            if not text.startswith("/") or text != shown:
+                self._remember_prompt(shown)
             if not self._session:
                 self._items.append({"kind": "user", "role": "human", "content": shown, "id": f"local-{time.time()}"})
             if self._state in ("idle", "error") and self._folder:
@@ -1308,6 +1494,7 @@ class CodeChat(QObject):
         self.attachmentsChanged.emit()
 
         folder = self._folder
+        bot = self._bot
         self._turn_rev = ""
 
         def work():
@@ -1324,15 +1511,46 @@ class CodeChat(QObject):
                 if not session:
                     created = agent.new_session()
                     session = created.get("sessionId", "")
-                    self._done.emit(session, {"created": True})
+                    self._done.emit(session, {"created": True, "_bot": bot})
                     agent.set_mode(session, mode)
                 result = agent.prompt(session, blocks)
-                self._done.emit(session, result)
+                self._done.emit(session, dict(result or {}, _bot=bot))
             except Exception as error:  # noqa: BLE001
-                self._done.emit(session, {"error": str(error)})
+                self._done.emit(session, {"error": str(error), "_bot": bot})
         threading.Thread(target=work, daemon=True, name="ornis-code-prompt").start()
 
     def _on_done(self, session, result):
+        result = result if isinstance(result, dict) else {}
+        bot_id = str(result.get("_bot") or "")
+        bg = self._bg_bots.get(bot_id) if (bot_id and bot_id != self._bot) else None
+        if bg is None and session != self._session:
+            bg = next((b for b in self._bg_bots.values() if b.get("session") == session), None)
+        if bg is not None:
+            if result.get("created"):
+                bg["session"] = session
+                self._remember_for(bg["folder"], session, bg.get("title") or "", bg["bot"], touch=True)
+                self.changed.emit()
+                return
+            if result.get("loaded"):
+                bg["replaying"] = False
+                bg["busy"] = False
+                if not result.get("error") and (bg.get("queued") or bg.get("later")):
+                    text = bg["queued"] if bg.get("queued") else bg["later"].pop(0)
+                    bg["queued"] = ""
+                    self._bg_send(bg, text)
+                else:
+                    self._close_bg_bot(bg["bot"])
+                self.changed.emit()
+                return
+            bg["busy"] = False
+            self._remember_for(bg["folder"], bg.get("session") or session, bg.get("title") or "", bg["bot"], touch=True)
+            if bg.get("later") and not result.get("error"):
+                text = bg["later"].pop(0)
+                self._bg_send(bg, text)
+            else:
+                self._close_bg_bot(bg["bot"])
+            self.changed.emit()
+            return
         if result.get("created"):
             self._session = session
             title = self._title or ""
@@ -1360,6 +1578,10 @@ class CodeChat(QObject):
             self.changed.emit()
             if self._queued:
                 text, self._queued = self._queued, ""
+                self.send(text)
+            elif self._later:
+                text = self._later.pop(0)
+                self.laterChanged.emit()
                 self.send(text)
             return
         if self._host is not None:
@@ -1389,7 +1611,8 @@ class CodeChat(QObject):
                             "code_busy" if "rate limit" in low or "503" in low or "429" in low or "408" in low or "timeout" in low else
                             "code_stopped" if "cancel" in low else "code_error", error)
         elif result.get("stopReason") == "cancelled":
-            self._add_error({"text": "code_looped_text", "repeat": "code_looped_repeat"}.get(self._looped) or
+            repeat_key = "bots_looped_repeat" if self._bot else "code_looped_repeat"
+            self._add_error({"text": "code_looped_text", "repeat": repeat_key}.get(self._looped) or
                             ("code_looped" if self._looped else "code_stopped"))
         why = self._why_continue(error, result)
         if why:
@@ -1417,8 +1640,11 @@ class CodeChat(QObject):
             self.laterReturned.emit(text)
         if self._cron_job:
             status = "error" if error or result.get("stopReason") == "cancelled" else "ok"
-            summary = (self._app._t.get("cron_failed", "Échec") if status == "error"
-                       else self._app._t.get("cron_done", "Terminé"))
+            if status == "error":
+                base_err = self._app._t.get("cron_failed", "Échec")
+                summary = f"{base_err} — {error}"[:300] if error else base_err
+            else:
+                summary = self._app._t.get("cron_done", "Terminé")
             self._finish_cron(status, summary, session)
             return
         if not error:
@@ -1447,13 +1673,14 @@ class CodeChat(QObject):
         self._items.append({"kind": "notice", "key": "code_continued_" + why, "id": f"notice-{time.time()}"})
         self._busy = True
         self.changed.emit()
-        agent, sid = self._agent, self._session
+        agent, sid, bot = self._agent, self._session, self._bot
 
         def work():
             try:
-                self._done.emit(sid, agent.prompt(sid, [{"type": "text", "text": CONTINUE_NOTE + CONTINUE_TEXT[why]}]))
+                res = agent.prompt(sid, [{"type": "text", "text": CONTINUE_NOTE + CONTINUE_TEXT[why]}])
+                self._done.emit(sid, dict(res or {}, _bot=bot))
             except Exception as error:  # noqa: BLE001
-                self._done.emit(sid, {"error": str(error)})
+                self._done.emit(sid, {"error": str(error), "_bot": bot})
         threading.Thread(target=work, daemon=True, name="ornis-code-continue").start()
 
     @Slot()
@@ -1669,8 +1896,57 @@ class CodeChat(QObject):
         self.changed.emit()
 
     # ---- what the agent sends ------------------------------------------------------------------------------------------
+    def _bg_update(self, bg: dict, update: dict):
+        kind = update.get("sessionUpdate")
+        rows = bg.setdefault("rows", [])
+        if kind in ("agent_message_chunk", "agent_thought_chunk", "user_message_chunk"):
+            text = _text(update.get("content"))
+            role = {"agent_message_chunk": "agent", "agent_thought_chunk": "thought", "user_message_chunk": "user"}[kind]
+            last = rows[-1] if rows else None
+            if last is None or last.get("kind") != role or (role == "user" and not bg.get("replaying")):
+                if role == "user" and not bg.get("replaying"):
+                    return
+                row = {"kind": role, "role": "human" if role == "user" else "assistant", "content": "",
+                       "id": f"{role}-{len(rows)}"}
+                rows.append(row)
+            else:
+                row = last
+            row["content"] = row.get("content", "") + text
+            self._clean_row_text(row, True)
+        elif kind in ("tool_call", "tool_call_update"):
+            tid = str(update.get("toolCallId") or "")
+            tools = bg.setdefault("tools", {})
+            at = tools.get(tid, -1)
+            if at < 0 or at >= len(rows):
+                row = {"kind": "tool", "id": tid, "title": "", "tool": "other", "status": "pending",
+                       "icon": KINDS["other"], "diff": [], "output": "", "path": "", "command": ""}
+                rows.append(row)
+                tools[tid] = len(rows) - 1
+            else:
+                row = rows[at]
+            raw = update.get("rawInput") if isinstance(update.get("rawInput"), dict) else None
+            if raw is not None:
+                row["raw"] = raw
+                row["command"] = str(raw.get("command") or row.get("command") or "")
+                row["path"] = str(raw.get("path") or raw.get("file_path") or row.get("path") or "")
+            if update.get("title"):
+                row["title"] = str(update["title"])
+            if update.get("kind"):
+                row["tool"] = str(update["kind"])
+                row["icon"] = KINDS.get(row["tool"], KINDS["other"])
+            if update.get("status"):
+                row["status"] = str(update["status"])
+        elif kind == "session_info_update":
+            title = str(update.get("title") or "")
+            if title:
+                bg["title"] = title
+                self._remember_for(bg["folder"], bg["session"], title, bg["bot"], touch=not bg.get("replaying"))
+
     def _on_update(self, agent, sid, update):
         if sid != self._session or agent is not self._agent:   # only the agent in use writes
+            bg = next((b for b in self._bg_bots.values() if b.get("agent") is agent), None)
+            if bg is not None:
+                self._bg_update(bg, update)
             return
         kind = update.get("sessionUpdate")
         if kind in ("agent_message_chunk", "agent_thought_chunk", "user_message_chunk"):
@@ -1696,6 +1972,7 @@ class CodeChat(QObject):
             self._write_text()
             self._tool(update)
         elif kind == "plan":
+            self._repeats.clear()                     # advancing the plan starts a new step
             self._plan = [{"text": str(e.get("content") or ""), "status": str(e.get("status") or "pending")}
                           for e in update.get("entries") or []]
             self.planChanged.emit()
@@ -1714,7 +1991,7 @@ class CodeChat(QObject):
             renamed = any(s.get("renamed") for s in self._index.get(self._folder, []) if s.get("id") == self._session)
             if title and not renamed:
                 self._title = title
-                self._remember(self._session, title)
+                self._remember(self._session, title, touch=not self._replaying)
                 self.changed.emit()
         elif kind == "available_commands_update":
             self._commands = [{"name": str(c.get("name") or ""), "description": str(c.get("description") or "")}
@@ -1753,48 +2030,52 @@ class CodeChat(QObject):
                 self._items.rows[at].update(group)
                 self._items.touch(at)
 
+    @staticmethod
+    def _clean_row_text(row: dict, is_bot: bool = False):
+        if row.get("kind") == "user" and row["content"].startswith(CONTINUE_NOTE):
+            rest = row["content"][len(CONTINUE_NOTE):]
+            row.update(kind="notice", key="code_continued_" + ("tool" if rest.startswith("You wrote") else "plan"))
+        if row.get("kind") == "user" and row["content"].startswith("[Ornis: host result]"):
+            row.update(kind="notice", key="code_host_done", content="")
+        for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE):
+            if row.get("kind") == "user" and row["content"].startswith(hidden):
+                row["content"] = row["content"][len(hidden):]
+        if row.get("kind") == "user":
+            for _ in range(6):
+                body = row["content"]
+                if body.startswith(("[Project notebook", "[Bot identity for")):
+                    cut = body.find("\n]\n\n")
+                    if cut < 0:
+                        break
+                    row["content"] = body[cut + 4:]
+                elif body.startswith(("[Files of the working folder", "[The working folder is empty.]")):
+                    cut = body.find("]\n\n")
+                    if cut < 0:
+                        break
+                    row["content"] = body[cut + 3:]
+                else:
+                    break
+            if row["content"].startswith("[Bot message from"):
+                row.update(kind="notice", key="bots_silent", content="")
+        if is_bot and row.get("kind") == "agent" and row.get("content", "").strip() == "[SILENT]":
+            # peer reply with nothing for the person: hide the bubble
+            row.update(kind="notice", key="bots_silent", content="")
+        if row.get("kind") == "user" and row["content"].startswith("[Project command /"):
+            name = row["content"][len("[Project command "):].split(" ", 1)[0]
+            if "]\n\n" in row["content"]:
+                row["content"] = name             # the bubble shows the command, as when it was sent
+        if row.get("kind") == "user" and row["content"].startswith("[Files of the working folder"):
+            cut = row["content"].find("]\n\n")      # the folder's files we joined to the first message: not shown
+            if cut >= 0:
+                row["content"] = row["content"][cut + 3:]
+
     def _write_text(self):
         for at, pieces in self._pending_text.items():
             text = "".join(pieces)
             if 0 <= at < len(self._items.rows):
                 row = self._items.rows[at]
                 row["content"] = row.get("content", "") + text
-                if row.get("kind") == "user" and row["content"].startswith(CONTINUE_NOTE):
-                    rest = row["content"][len(CONTINUE_NOTE):]
-                    row.update(kind="notice", key="code_continued_" + ("tool" if rest.startswith("You wrote") else "plan"))
-                if row.get("kind") == "user" and row["content"].startswith("[Ornis: host result]"):
-                    row.update(kind="notice", key="code_host_done", content="")
-                for hidden in (RETRACT_NOTE, UNDONE_NOTE, PLAN_NOTE):
-                    if row.get("kind") == "user" and row["content"].startswith(hidden):
-                        row["content"] = row["content"][len(hidden):]
-                if row.get("kind") == "user":
-                    for _ in range(6):
-                        body = row["content"]
-                        if body.startswith(("[Project notebook", "[Bot identity for")):
-                            cut = body.find("\n]\n\n")
-                            if cut < 0:
-                                break
-                            row["content"] = body[cut + 4:]
-                        elif body.startswith(("[Files of the working folder", "[The working folder is empty.]")):
-                            cut = body.find("]\n\n")
-                            if cut < 0:
-                                break
-                            row["content"] = body[cut + 3:]
-                        else:
-                            break
-                    if row["content"].startswith("[Bot message from"):
-                        row.update(kind="notice", key="bots_silent", content="")
-                if self._bot and row.get("kind") == "agent" and row.get("content", "").strip() == "[SILENT]":
-                    # peer reply with nothing for the person: hide the bubble
-                    row.update(kind="notice", key="bots_silent", content="")
-                if row.get("kind") == "user" and row["content"].startswith("[Project command /"):
-                    name = row["content"][len("[Project command "):].split(" ", 1)[0]
-                    if "]\n\n" in row["content"]:
-                        row["content"] = name             # the bubble shows the command, as when it was sent
-                if row.get("kind") == "user" and row["content"].startswith("[Files of the working folder"):
-                    cut = row["content"].find("]\n\n")      # the folder's files we joined to the first message: not shown
-                    if cut >= 0:
-                        row["content"] = row["content"][cut + 3:]
+                self._clean_row_text(row, bool(self._bot))
                 step = len(row["content"]) // 2000
                 if (not self._replaying and row.get("kind") in ("agent", "thought") and step > row.get("_step", 0)
                         and not row.update(_step=step) and repeating(row["content"])):
@@ -1856,17 +2137,23 @@ class CodeChat(QObject):
         if row.get("status") == "completed" and not row.get("_repeat"):
             # the same command or search, done again and again although it answered (04/11: one grep 40 times)
             row["_repeat"] = True
-            what = json.dumps(row.get("raw") or {"command": row.get("command"), "path": row.get("path"), "title": row.get("title")}, sort_keys=True)
-            if row.get("tool") in ("edit", "delete", "move"):
+            tool_kind = row.get("tool")
+            if tool_kind in ("edit", "delete", "move"):
                 self._repeats.clear()             # an edit starts a new round of checks
-            elif what:
-                key = (row.get("tool"), what)
-                fingerprint = hashlib.sha256(str(row.get("output") or "").encode("utf-8", "replace")).hexdigest()
-                previous, count = self._repeats.get(key, (None, 0))
-                self._repeats[key] = (fingerprint, count + 1 if previous == fingerprint else 1)
-                if self._repeats[key][1] >= (6 if row.get("tool") == "read" else 4) and self._agent and self._session and self._busy and not self._looped:
-                    self._looped = "repeat"
-                    self._agent.cancel(self._session)
+            elif tool_kind not in ("other", "think"):
+                what = json.dumps(row.get("raw") or {"command": row.get("command"), "path": row.get("path"), "title": row.get("title")}, sort_keys=True)
+                if what:
+                    key = (tool_kind, what)
+                    fingerprint = hashlib.sha256(str(row.get("output") or "").encode("utf-8", "replace")).hexdigest()
+                    previous, count = self._repeats.get(key, (None, 0))
+                    if self._bot and self._repeats.get("_last") != key:
+                        count = 0
+                    self._repeats["_last"] = key
+                    self._repeats[key] = (fingerprint, count + 1 if previous == fingerprint else 1)
+                    limit = 10 if self._bot else (6 if tool_kind == "read" else 4)
+                    if self._repeats[key][1] >= limit and self._agent and self._session and self._busy and not self._looped:
+                        self._looped = "repeat"
+                        self._agent.cancel(self._session)
         if row.get("path") and self._folder:
             try:
                 row["short"] = str(Path(row["path"]).resolve().relative_to(self._folder))
@@ -1877,6 +2164,37 @@ class CodeChat(QObject):
 
     def _on_permission(self, request_id, sid, tool, options):
         tid = str((tool or {}).get("toolCallId") or "")
+        if sid != self._session:
+            bg = next((b for b in self._bg_bots.values() if b.get("session") == sid and b.get("agent") is not None), None)
+            if bg is not None:
+                if tid:
+                    self._bg_update(bg, dict(tool, toolCallId=tid, sessionUpdate="tool_call"))
+                at = (bg.get("tools") or {}).get(tid, -1)
+                rows = bg.get("rows") or []
+                row = rows[at] if 0 <= at < len(rows) else {}
+                call = {"kind": row.get("tool") or (tool or {}).get("kind"),
+                        "rawInput": row.get("raw") or (tool or {}).get("rawInput") or {},
+                        "title": row.get("title") or (tool or {}).get("title"),
+                        "locations": [*((tool or {}).get("locations") or []), *([{"path": row["path"]}] if row.get("path") else [])],
+                        "content": (tool or {}).get("content") or []}
+                verdict = ornis_code.decide("auto", call, sandboxed=bool(ornis_code.sandbox_kind()),
+                                            folder=bg["folder"], bot=bg["bot"])
+                if bg.get("cron_job") and verdict == "ask":
+                    verdict = "reject"
+                opts = [o for o in options or [] if isinstance(o, dict)]
+                if verdict in ("allow", "reject") or at < 0:
+                    want = "allow_once" if verdict == "allow" else "reject_once"
+                    pick = next((o for o in opts if o.get("kind") == want), None) or next(
+                        (o for o in opts if str(o.get("kind", "")).startswith("reject")), None)
+                    outcome = {"outcome": "selected", "optionId": pick.get("optionId")} if pick else {"outcome": "cancelled"}
+                    bg["agent"].answer(request_id, {"outcome": outcome})
+                else:
+                    choices = [{"id": o.get("optionId"), "kind": str(o.get("kind") or ""), "label": ""}
+                               for o in opts if o.get("optionId") != "allow_always_permanent"]
+                    reject = next((o.get("optionId") for o in opts if o.get("kind") == "reject_once"), None)
+                    row["permission"] = {"request": request_id, "options": choices, "host": False, "reject": reject,
+                                         "title": "", "key": ornis_code.approval_key(call, bg["folder"])}
+                return
         if tid and sid == self._session:
             self._tool(dict(tool, toolCallId=tid))
         at = self._tools.get(tid, -1)
@@ -2152,23 +2470,31 @@ class CodeChat(QObject):
         self._items.append({"kind": "error", "key": key, "detail": detail[:300]})
 
     # ---- the list of conversations ---------------------------------------------------------------------------------------
-    def _remember(self, session, title):
-        if not session or not self._folder:
+    def _remember(self, session, title, touch: bool = True):
+        self._remember_for(self._folder, session, title, self._bot, touch=touch)
+
+    def _remember_for(self, folder: str, session: str, title: str, bot: str = "", touch: bool = True):
+        if not session or not folder:
             return
         self.reloadIndex()
-        rows = self._index.setdefault(self._folder, [])
+        rows = self._index.setdefault(folder, [])
         found = next((s for s in rows if s.get("id") == session), None)
+        now = time.time()
         if found is None:
-            found = {"id": session, "title": title or "", "created": time.time()}
+            found = {"id": session, "title": title or "", "created": now, "updated": now}
             rows.append(found)
         if title and not found.get("renamed"):
             found["title"] = title
-        found["updated"] = time.time()
-        if self._bot:
-            found["bot"] = self._bot
+        if touch or "updated" not in found:
+            found["updated"] = now
+        if bot:
+            found["bot"] = bot
             try:
                 import ornis_bots  # noqa: PLC0415
-                ornis_bots.update(self._bot, {"session": session, "preview": title or found.get("title") or ""})
+                fields = {"session": session, "preview": title or found.get("title") or ""}
+                if touch:
+                    fields["updated"] = now
+                ornis_bots.update(bot, fields)
             except Exception:  # noqa: BLE001
                 pass
         self._save()
@@ -2187,3 +2513,5 @@ class CodeChat(QObject):
         if self._agent is not None:
             self._agent.close()
             self._agent = None
+        for bid in list(self._bg_bots):
+            self._close_bg_bot(bid)

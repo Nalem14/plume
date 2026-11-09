@@ -219,7 +219,7 @@ def get(bot_id: str) -> dict | None:
     return data
 
 
-def _write_profile(bot_id: str, profile: dict) -> dict:
+def _write_profile(bot_id: str, profile: dict, *, touch: bool = True) -> dict:
     tid = _ok_id(bot_id)
     root = bot_dir(tid)
     root.mkdir(parents=True, exist_ok=True)
@@ -234,7 +234,8 @@ def _write_profile(bot_id: str, profile: dict) -> dict:
         soul.write_text(DEFAULT_SOUL.get(lang, DEFAULT_SOUL["en"]), encoding="utf-8")
     profile = dict(profile)
     profile["id"] = tid
-    profile["updated"] = time.time()
+    if touch or not profile.get("updated"):
+        profile["updated"] = time.time()
     if "created" not in profile:
         profile["created"] = profile["updated"]
     system.private_write(root / "profile.json",
@@ -311,7 +312,7 @@ def update(bot_id: str, fields: dict) -> dict:
     if "folder" in fields:
         fields["folder"] = _folder_value(fields["folder"])
     for key in ("title", "description", "folder", "session", "preview", "hidden", "enabled_skills",
-                "exchange_seen", "peer_depth", "human_turn", "approvals"):
+                "exchange_seen", "peer_depth", "human_turn", "approvals", "updated"):
         if key in fields and fields[key] is not None:
             profile[key] = fields[key]
     if "face" in fields and isinstance(fields["face"], dict):
@@ -325,7 +326,8 @@ def update(bot_id: str, fields: dict) -> dict:
         profile["face"] = face
     if "title" in fields and fields["title"] and not (profile.get("face") or {}).get("locked"):
         profile["face"] = {**face_from_name(str(fields["title"])), "locked": False}
-    return _write_profile(bot_id, profile)
+    touch = bool("human_turn" in fields and "updated" not in fields)
+    return _write_profile(bot_id, profile, touch=touch)
 
 
 @_transaction
@@ -715,5 +717,5 @@ def remember_approval(bot_id: str, key: str) -> bool:
         return True
     kept.append(key)
     profile["approvals"] = kept[-80:]
-    _write_profile(bot_id, profile)
+    _write_profile(bot_id, profile, touch=False)
     return True

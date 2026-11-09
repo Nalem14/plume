@@ -95,7 +95,10 @@ class Bots(QObject):
 
     def _row(self, b: dict) -> dict:
         current = getattr(self._code, "bot", None) or ""
-        busy = bool((getattr(self._code, "busy", False) and current == b["id"]) or self._occupied(b["id"]))
+        bg_bots = getattr(self._code, "_bg_bots", {}) or {}
+        bg = bg_bots.get(b["id"])
+        bg_busy = bool(bg and (bg.get("busy") or bg.get("queued") or bg.get("later")))
+        busy = bool((getattr(self._code, "busy", False) and current == b["id"]) or bg_busy or self._occupied(b["id"]))
         return {
             "id": b["id"],
             "title": b.get("title") or b["id"],
@@ -348,7 +351,8 @@ class Bots(QObject):
                 bid = profile["id"]
                 code = self._code
                 same = code.bot == bid
-                if self._occupied(bid) or (same and (code.busy or code._queued or code._cron_job)):
+                bg_bots = getattr(code, "_bg_bots", {}) or {}
+                if self._occupied(bid) or bid in bg_bots or (same and (code.busy or code._queued or code._cron_job)):
                     continue
                 row = ornis_bots.peek_inbound(bid)
                 if not row:
