@@ -294,10 +294,10 @@ Item {
             onCodeChosen: (folder, session) => win.openCode(folder, session)
             onCodeMenuRequested: (session, item, x, y) => codeMenu.openFor(session, item, x, y)
             onProjectPickRequested: codeFolderDialog.open()          // the Code tab: a folder to work in
-            onBotChosen: id => { if (codeLocked()) return; mode = "projects"; view = "code"; peek = false; sidebar.codeTab = "bots"; bots.open(id) }
+            onBotChosen: id => { if (win.codeLocked()) return; win.mode = "projects"; win.view = "code"; win.peek = false; sidebar.codeTab = "bots"; bots.closeGroup(); bots.open(id) }   // win.: the sidebar has a view of its own
             onGroupChosen: id => win.openGroup(id)
             onGroupCreateRequested: { if (codeLocked()) return; groupDialog.openNew("") }
-            onBotCreateRequested: { if (codeLocked()) return; mode = "projects"; view = "code"; sidebar.codeTab = "bots"; botDialog.openNew() }
+            onBotCreateRequested: { if (win.codeLocked()) return; win.mode = "projects"; win.view = "code"; sidebar.codeTab = "bots"; botDialog.openNew() }
             onBotEditRequested: id => botDialog.openEdit(id)
             onBotMenuRequested: (bot, item, x, y) => botMenu.openFor(bot, item, x, y)
             onModeChosen: m => m === "tasks" ? win.showTasks() : m === "projects" ? win.showCode() : win.showChats()

@@ -1563,6 +1563,9 @@ class CodeChat(QObject):
         self._busy = True
         self._failures, self._looped, self._repeats = {}, False, {}
         self._continued, self._turn_start = 0, len(self._items.rows) - 1
+        if self._plan and all(p.get("status") == "completed" for p in self._plan):
+            self._plan = []                      # a finished to-do list is the last turn's, not this one's
+            self.planChanged.emit()
         self.changed.emit()
         sid = self._session
         mode = "auto" if self._bot else self._mode

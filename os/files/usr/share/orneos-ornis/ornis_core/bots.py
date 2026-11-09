@@ -208,7 +208,7 @@ class Bots(QObject):
         self.release_worker(bot_id)                  # never two agents on one bot's conversation
         if self._group:
             self._leave_group()
-        self._group = ""
+        self._group, self._group_rows = "", []   # never a room's messages under an empty header
         unread = int(profile.get("unread") or 0)
         ornis_bots.clear_unread(bot_id)
         self._code.openBot(bot_id, folder, session)

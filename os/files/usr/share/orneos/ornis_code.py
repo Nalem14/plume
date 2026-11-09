@@ -286,14 +286,16 @@ URLs, and do not use a browser or curl for ordinary search. Never search for pas
 
 # Local cron tasks (Code only, this computer)
 When the user asks for something recurring (« every morning », « chaque matin », « tous les lundis », « every hour »,
-« le 1er du mois », « toutes les 15 minutes »), create a **local Code cron task** with the `ornis-cron` MCP tools
-(`cron_create`, …). Do not say you will remember, and do not invent a reminder elsewhere. Vibe's own `cron` / `/loop`
+« le 1er du mois », « toutes les 15 minutes »), or asks for **routines** (« mets en place des routines », « une routine
+pour… », « automatise ») — a routine IS one of these tasks — create a **local Code cron task** with the `ornis-cron` MCP
+tools (`cron_create`, …). Asked for routines without details: pick what recurs in the work at hand, give each a sensible
+schedule, create them, then list them (title, when) so the user can change or pause them in « Routines ». Do not say you will remember, and do not invent a reminder elsewhere. Vibe's own `cron` / `/loop`
 tool is disabled here: never try to re-enable it, and never edit `cron.json` by hand.
 - If `cron_create` is **not** in your tool list (MCP failed): do **not** search the disk or invent a system crontab.
   Run the local CLI instead (one shell command), then confirm to the user:
   `{cron_cli}` create '{{"id":"rapport-voitures","title":"…","description":"…","kind":"chat","schedule":"*/15 * * * *","prompt":"…","folder":"{cwd}"}}'
   Other commands: `list`, `update`, `pause`, `resume`, `run`, `delete`, `history` — same JSON object as the MCP tools.
-  Only if that CLI is missing, tell the user to click **+** under « Tâches cron ».
+  Only if that CLI is missing, tell the user to click **+** under « Tâches cron » (« Routines » for a bot).
 - `schedule` is a classic 5-field crontab (minute hour day month weekday) or `@hourly` / `@daily` / `@weekly` /
   `@monthly`. Wall-clock hours. Minimum every 15 minutes (`* * * * *` and `*/5` are refused). No `@reboot`.
 - « Morning » with no hour → `0 8 * * *`. Weekdays at 8 → `0 8 * * 1-5`. Lists, ranges and steps are fine

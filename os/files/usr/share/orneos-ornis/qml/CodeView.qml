@@ -736,7 +736,8 @@ Item {
             Layout.alignment: Qt.AlignHCenter
             Layout.preferredWidth: view.column
             Layout.preferredHeight: visible ? planCol.implicitHeight + 16 : 0
-            visible: code.plan.length > 0
+            // the agent's to-do list while it works on it; once all done and the turn over, it goes
+            visible: code.plan.length > 0 && (code.busy || code.plan.some(p => p.status !== "completed"))
             radius: 10
             color: view.c.card
             border.color: view.c.line
@@ -1073,6 +1074,7 @@ Item {
                     }
                     ContextGauge {               // what the next step carries; a click compacts (as in the Discussion mode)
                         Layout.alignment: Qt.AlignVCenter
+                        visible: code.bot === ""    // a bot's thread never ends: it summarises itself, nothing to watch
                         info: code.context
                         onTipDismissed: key => code.dismissTip(key)
                         onTipRequested: prompt => { input.text = prompt; input.forceActiveFocus() }
