@@ -11,6 +11,7 @@ It stays in the session (started at login with --agent): Code cron fires with th
 a second launch hands its arguments over.
 Usage: ornis [--agent | --new | --session=ID | --ask=TEXT | --scheduled | --code]
 """
+import os
 import sys
 from pathlib import Path
 
@@ -38,6 +39,9 @@ def main():
     args = sys.argv[1:]
     QGuiApplication.setDesktopFileName("eu.orneos.assistant")
     if QtWebEngineQuick is not None:
+        # the bots' browsers work unseen (Plume in the tray, a routine at 8 h): Chromium must not slow their pages down
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + " --disable-renderer-backgrounding"
+                                                    " --disable-background-timer-throttling --disable-backgrounding-occluded-windows").strip()
         QtWebEngineQuick.initialize()   # before the application; Chromium itself starts only with a first artifact
     qt = QGuiApplication(sys.argv)
     qt.setApplicationName("Ornis")

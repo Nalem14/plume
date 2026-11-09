@@ -151,6 +151,9 @@ def main():
     QGuiApplication.setDesktopFileName(app_id)
     # Mail bodies render in Chromium (no JavaScript, nothing remote unless allowed): set up before the app
     if os.environ.get("PLUME_NO_WEBENGINE") != "1":
+        # the bots' browsers work unseen (Plume in the tray, a routine at 8 h): Chromium must not slow their pages down
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + " --disable-renderer-backgrounding"
+                                                    " --disable-background-timer-throttling --disable-backgrounding-occluded-windows").strip()
         QtWebEngineQuick.initialize()
     # Orneos OS: Orneos Connect signs in, the dock and Plasma's notifications; elsewhere Plume does both, in the tray
     own = shutil.which("orneos-connect") is None and not edition

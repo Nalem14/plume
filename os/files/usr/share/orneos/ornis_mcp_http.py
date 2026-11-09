@@ -23,6 +23,17 @@ _server: ThreadingHTTPServer | None = None
 _token = ""
 _base = ""
 _contexts: dict[str, dict] = {}     # key in /mcp/cron/<key> → {folder, lang, bot}: one shared server per session
+_extra: dict = {}                    # servers the app hosts itself (the browser: ornis_core/browser.py), by name
+
+
+def register(kind: str, handler) -> None:
+    """A server living in the app (it needs the window's thread): handler(msg, context) → reply or None."""
+    with _lock:
+        _extra[kind] = handler
+
+
+def has(kind: str) -> bool:
+    return kind in _extra
 
 
 def context_key(folder: str, lang: str = "fr", bot: str = "") -> str:
@@ -47,6 +58,8 @@ def _dispatch(kind: str, msg: dict, key: str = "") -> dict | None:
     if kind == "bots":
         import ornis_bots_mcp  # noqa: PLC0415
         return ornis_bots_mcp.handle(msg, _contexts.get(key))
+    if kind in _extra:
+        return _extra[kind](msg, _contexts.get(key))
     return {"jsonrpc": "2.0", "id": msg.get("id"),
             "error": {"code": -32601, "message": f"unknown MCP: {kind}"}}
 
@@ -84,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/")
         # /mcp/cron, /mcp/cron/<context key>, /mcp/search or /mcp/bots[/<key>]
         parts = [p for p in path.split("/") if p]
-        if len(parts) in (2, 3) and parts[0] == "mcp" and parts[1] in ("cron", "search", "bots"):
+        if len(parts) in (2, 3) and parts[0] == "mcp" and (parts[1] in ("cron", "search", "bots") or parts[1] in _extra):
             return parts[1], (parts[2] if len(parts) == 3 else "")
         return None, ""
 

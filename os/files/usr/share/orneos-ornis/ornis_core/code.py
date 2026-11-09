@@ -176,6 +176,14 @@ def diff_lines(path: str, old: str | None, new: str) -> list[dict]:
     return out
 
 
+def _emit_safe(signal, *args):
+    """From the agent's reader thread: the window may be gone (closing, a test's end) — nothing to tell then."""
+    try:
+        signal.emit(*args)
+    except RuntimeError:
+        pass
+
+
 def _bot_turn_note(bot: str) -> str:
     """The hidden memory line of a bot's turn (ornis_bots.turn_note); never a reason for a turn to fail."""
     try:
@@ -1321,7 +1329,7 @@ class CodeChat(QObject):
                 ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder,
                                       self._app.pref("code_reasoning") or "high", bot=bot)
                 agent = ornis_code.Agent(exe, Path(folder), creds["token"],
-                                         on_update=lambda sid, u: self._update.emit(holder[0] if holder else None, sid, u),
+                                         on_update=lambda sid, u: _emit_safe(self._update, holder[0] if holder else None, sid, u),
                                          on_permission=lambda rid, sid, tool, opts: self._permission.emit(rid, sid, tool, opts),
                                          on_exit=lambda code, err: self._exited.emit(code, err),
                                          on_question=lambda rid, sid, qs: self._question.emit(rid, sid, qs),

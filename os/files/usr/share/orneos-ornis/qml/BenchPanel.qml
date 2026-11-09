@@ -9,7 +9,7 @@ import "components"
 
 Rectangle {
     id: bench
-    property string tab: "files"            // routines | files | changes | plan | terminal
+    property string tab: "files"            // routines | files | changes | plan | terminal | browser
     property bool maximized: false
     signal closeRequested()
     signal maximizeRequested()
@@ -20,7 +20,7 @@ Rectangle {
     readonly property bool narrow: width < 360
     readonly property bool compact: width < 600            // the tabs not chosen: their icon only
     // StackLayout order is fixed; the Routines tab button only appears for bots.
-    readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal"]
+    readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal", "browser"]
     color: c.chrome
     clip: true
 
@@ -73,6 +73,8 @@ Rectangle {
                             { key: "plan", label: app.t.bench_plan, icon: "list", badge: 0, dot: code.planReady },
                             { key: "terminal", label: app.t.bench_terminal, icon: "terminal", badge: 0, dot: false }
                         )
+                        if (browser)
+                            rows.push({ key: "browser", label: app.t.bench_browser, icon: "globe", badge: 0, dot: false })
                         return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
                     }
                     AbstractButton {
@@ -975,6 +977,11 @@ Rectangle {
                         onClicked: code.openTerminal()
                     }
                 }
+            }
+
+            // ---- Navigateur: the browser of the bot (or the person's), live -------------------------------------------
+            BrowserPane {
+                shownNow: bench.visible && bench.tab === "browser"
             }
         }
     }

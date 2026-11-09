@@ -27,6 +27,8 @@ from ornis_core.strings import language, strings
 
 CONFIG = cloud.CFG.parent / "ornis.json"
 PREFS = {
+    "browser_keychain": False,          # the Code sessions may use the Trousseau in their browser (asked once)
+    "browser_keychain_bots": [],        # the bots allowed once: here, out of reach of their sandbox (not in their profile)
     "local_tools": True,
     "reasoning": "think",        # think (the model reasons) | fast (« Rapide »: no reasoning, FAST_TAG)
     "code_mode": "ask",        # Code: what Ornis does without asking (ask, edits, auto: ornis_code.MODES)

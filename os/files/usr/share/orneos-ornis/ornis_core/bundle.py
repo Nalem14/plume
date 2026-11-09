@@ -42,6 +42,18 @@ def build(qt):
     code = CodeChat(app)                    # the « Code » mode: Ornis works in a folder of the computer
     cron = Cron(app, code)                  # local Code cron tasks (not cloud scheduled Chat tasks)
     bots = Bots(app, code)                  # durable Code bots (SOUL, routines, peer messages)
+    browser = None                          # the browsers of the person and of each bot (Chromium), when there
+    try:
+        from PySide6 import QtWebEngineQuick  # noqa: F401, PLC0415
+        from ornis_core.browser import Browser  # noqa: PLC0415
+        import ornis_mcp_http  # noqa: PLC0415
+        browser = Browser(app)
+        ornis_mcp_http.register("browser", browser.mcp_handle)
+        # the window asks (OrnisView); a notification too, Plume may be in the tray
+        browser.consentRequested.connect(lambda owner, name: app.toast.emit(
+            app._t.get("browser_keychain_ask", "%1 demande le Trousseau").replace("%1", name)))
+    except ImportError:
+        pass
     projects = Projects(app, chat)          # the Work mode's projects (instructions, folder, conversations)
     chat.projects = projects
     app.project_folder = lambda sid: projects.local_folder(sid)
@@ -91,6 +103,7 @@ def build(qt):
     def on_active():
         chat.refresh(False)
 
-    context = {"app": app, "theme": theme, "chat": chat, "code": code, "cron": cron, "bots": bots, "projects": projects}
+    context = {"app": app, "theme": theme, "chat": chat, "code": code, "cron": cron, "bots": bots, "projects": projects,
+               "browser": browser}
     # chat in keep: its badgeChanged gives Plume's rail the conversations with answers not read yet
-    return Bundle("ornis", app, context, QML / "OrnisView.qml", QML / "Main.qml", on_active, keep=[chat, code, cron, bots, projects])
+    return Bundle("ornis", app, context, QML / "OrnisView.qml", QML / "Main.qml", on_active, keep=[chat, code, cron, bots, projects] + ([browser] if browser else []))

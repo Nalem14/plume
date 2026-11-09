@@ -192,6 +192,20 @@ Item {
         try { conversation.Accessible.announce(text) } catch (e) { }
     }
 
+    Connections {                             // the browsers: the Trousseau asked once, an annotation sent to its bot
+        target: browser
+        ignoreUnknownSignals: true
+        function onConsentRequested(owner, name) {
+            win.bringUp()
+            workDialog.ask(app.t.browser_keychain_title.replace("%1", name), app.t.browser_keychain_text.replace(/%1/g, name),
+                           [{ id: "no", text: app.t.cancel }, { id: "yes", text: app.t.browser_keychain_allow, kind: "primary" }],
+                           () => browser.allowKeychain(owner))
+        }
+        function onAnnotation(owner, text) {
+            if (owner === "you" ? code.bot === "" && code.folder !== "" : code.bot === owner) code.send(text)
+            else toast.show(app.t.browser_annotate_other)          // the panel shows the bot in front: rare
+        }
+    }
     Connections {
         target: app
         function onToast(message) { toast.show(message) }
@@ -535,6 +549,13 @@ Item {
         OMenuItem {
             text: app.t.groups_new_with; iconName: "people"
             onTriggered: groupDialog.openNew(botMenu.bot.id)
+        }
+        OMenuItem {                           // the Trousseau: given once, taken back here
+            visible: !!browser
+            height: visible ? implicitHeight : 0
+            text: browser && browser.keychainAllowed(botMenu.bot.id || "") ? app.t.browser_keychain_revoke : app.t.browser_keychain_grant
+            iconName: "key"
+            onTriggered: browser.keychainAllowed(botMenu.bot.id) ? browser.forbidKeychain(botMenu.bot.id) : browser.allowKeychain(botMenu.bot.id)
         }
         OMenuItem {
             text: botMenu.bot.hidden ? app.t.bots_unhide : app.t.bots_hide; iconName: "eye"

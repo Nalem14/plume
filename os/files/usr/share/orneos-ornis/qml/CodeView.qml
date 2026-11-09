@@ -268,6 +268,8 @@ Item {
                                 { key: "plan", icon: "list", tip: app.t.bench_plan, keys: "", badge: 0, dot: code.planReady },
                                 { key: "terminal", icon: "terminal", tip: app.t.bench_terminal, keys: "Ctrl+`", badge: 0, dot: false }
                             )
+                            if (browser)
+                                rows.push({ key: "browser", icon: "globe", tip: app.t.bench_browser, keys: "", badge: 0, dot: false })
                             return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
                         }
                         AbstractButton {
