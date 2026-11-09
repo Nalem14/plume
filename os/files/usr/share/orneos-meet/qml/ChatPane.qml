@@ -15,10 +15,18 @@ Rectangle {
     readonly property bool typing: composer.typing
     property bool compact: false
     property bool infoOpen: false
-    property string infoTab: ""          // the Details panel's tab (people, shared) while it is open
     readonly property bool channel: room.type === 2 || room.type === 3
+    // a group's tab: the chat, or in its place everything shared (FilesPane) or the people (PeoplePane)
+    property string tab: "chat"
+    readonly property string shownTab: channel && !compact ? tab : "chat"
+    Connections { target: meet; function onRoomChanged() { if (meet.current !== pane.tabRoom) { pane.tabRoom = meet.current; pane.tab = "chat" } } }
+    property string tabRoom: ""
+    onShownTabChanged: {
+        if (shownTab === "shared") filesPane.focusSearch()
+        else if (shownTab === "people") peoplePane.focusSearch()
+        else composer.focusText()
+    }
     signal infoWanted()
-    signal panelWanted(string tab)       // a tab of the head: the Details panel on it (again: closed)
     signal callWanted(bool video)
     signal newConversation()
     signal planWanted()
@@ -29,7 +37,11 @@ Rectangle {
     color: c.bg
 
     function focusComposer() { composer.focusText() }
-    function openSearch() { searchBar.visible = true; searchField.forceActiveFocus() }
+    function openSearch() {
+        if (shownTab === "shared") filesPane.focusSearch()
+        else if (shownTab === "people") peoplePane.focusSearch()
+        else { searchBar.visible = true; searchField.forceActiveFocus() }
+    }
 
     // ---- Ornis: one card above the messages (summary, minutes, a question, tasks), replies above the composer
     property int ornisRequest: -1
@@ -196,6 +208,7 @@ Rectangle {
 
         // a group: its tabs under the head, like a workspace (Slack): the chat, the threads, the files, the people
         Rectangle {
+            id: tabsBar
             visible: pane.channel && !pane.compact
             Layout.fillWidth: true
             implicitHeight: 40
@@ -206,7 +219,7 @@ Rectangle {
                 x: 14
                 height: parent.height
                 spacing: 2
-                readonly property string current: pane.infoOpen && (pane.infoTab === "shared" || pane.infoTab === "people") ? pane.infoTab : "chat"
+                readonly property string current: pane.shownTab
                 Repeater {
                     model: [{ id: "chat", icon: "chat", text: app.t.tab_chat },
                             { id: "threads", icon: "reply", text: app.t.tab_threads + ((pane.extras.threads || []).length ? " · " + pane.extras.threads.length : ""),
@@ -223,9 +236,8 @@ Rectangle {
                         hoverEnabled: true
                         Accessible.name: modelData.text
                         onClicked: {
-                            if (modelData.id === "chat") { if (pane.infoOpen) pane.infoWanted(); list.forceActiveFocus() }
-                            else if (modelData.id === "threads") threadsMenu.popupAt(tab, true)
-                            else pane.panelWanted(modelData.id)
+                            if (modelData.id === "threads") threadsMenu.popupAt(tab, true)
+                            else pane.tab = modelData.id
                         }
                         background: Item {
                             Rectangle {
@@ -915,6 +927,21 @@ Rectangle {
         OMenuItem { text: app.t.ask_conversation; iconName: "chat"; onTriggered: pane.openAsk() }
         OMenuItem { text: app.t.suggest_replies; iconName: "sparkle"; enabled: pane.room.canPost !== false; onTriggered: pane.suggest() }
     }
+    // a group's other tabs, over the chat below the tabs (the chat keeps its place underneath)
+    FilesPane {
+        id: filesPane
+        visible: pane.shownTab === "shared"
+        x: 0; y: tabsBar.y + tabsBar.height
+        width: pane.width; height: pane.height - y
+        onShownInChat: id => { pane.tab = "chat"; meet.jumpTo(id) }
+    }
+    PeoplePane {
+        id: peoplePane
+        visible: pane.shownTab === "people"
+        x: 0; y: tabsBar.y + tabsBar.height
+        width: pane.width; height: pane.height - y
+    }
+
     MeetMenu {
         id: moreMenu
         OMenuItem { text: app.t.plan_this_meeting; iconName: "calendar"; visible: pane.room.type !== 6; onTriggered: pane.planWanted() }

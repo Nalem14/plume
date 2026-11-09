@@ -54,7 +54,8 @@ Item {
     width: ListView.view ? ListView.view.width : 400
     // a picture folded into the album of the message before it: shown there
     visible: !m.inAlbum
-    implicitHeight: m.inAlbum ? 0 : column.implicitHeight + (m.grouped ? 2 : 8)
+    // a group: air between two authors (a series of one person stays tight), like Slack
+    implicitHeight: m.inAlbum ? 0 : column.implicitHeight + (m.grouped ? 2 : (channel && !m.system ? 18 : 8))
     readonly property var album: m.album || []
 
     HoverHandler { id: hover }
@@ -62,7 +63,7 @@ Item {
     ColumnLayout {
         id: column
         width: parent.width
-        y: row.m.grouped ? 1 : 6
+        y: row.m.grouped ? 1 : (row.channel && !row.m.system ? 12 : 6)
         spacing: 4
 
         // the day (a group: on a line across, like a workspace)
@@ -153,14 +154,23 @@ Item {
                 Layout.alignment: row.onRight ? Qt.AlignRight : Qt.AlignLeft
                 spacing: row.channel ? 2 : 3
 
-                Text {
+                // the author and the time: two texts (a span's weight and colour were lost: the time looked bold)
+                Row {
                     visible: !row.onRight && !row.m.grouped
-                    text: row.m.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")   // a guest names himself
-                          + "  <span style='color:" + row.c.faint + ";font-weight:400;font-size:" + (row.channel ? 12 : 13) + "px'>"
-                          + app.clock(row.m.time) + "</span>"
-                    textFormat: Text.StyledText
-                    font.pixelSize: row.channel ? 14 : 13; font.weight: row.channel ? Font.Bold : Font.DemiBold
-                    color: row.c.text
+                    spacing: 8
+                    Text {
+                        textFormat: Text.PlainText         // a guest names himself
+                        text: row.m.name
+                        font.pixelSize: row.channel ? 15 : 13; font.weight: row.channel ? Font.Bold : Font.DemiBold
+                        color: row.c.text
+                    }
+                    Text {
+                        anchors.baseline: parent.children[0].baseline
+                        textFormat: Text.PlainText
+                        text: app.clock(row.m.time)
+                        font.pixelSize: row.channel ? 12 : 11; font.weight: Font.Normal
+                        color: row.c.faint
+                    }
                 }
 
                 // the bubble: ours in Klein (a little light from the top), the others' on a raised card
@@ -590,8 +600,9 @@ Item {
                         font.pixelSize: 11; color: row.c.faint
                     }
                     Text { textFormat: Text.PlainText;
-                        visible: !row.m.failed
-                        text: row.m.pending ? app.t.sending : (row.m.read ? app.t.read + " · " : "") + app.clock(row.m.time)
+                        visible: !row.m.failed && text !== ""
+                        text: row.m.pending ? app.t.sending : row.channel ? (row.m.read ? app.t.read : "")
+                              : (row.m.read ? app.t.read + " · " : "") + app.clock(row.m.time)
                         font.pixelSize: 11; color: row.c.faint
                     }
                     Text {

@@ -210,6 +210,7 @@ class Library(QObject):
     meetingReady = Signal(str)        # « Nouvelle réunion »: its conversation, to call at once
     settingsChanged = Signal()        # the bots of the open conversation (its settings window)
     sharedChanged = Signal()          # what was shared in the open conversation (the details' tab)
+    filesChanged = Signal()           # everything shared, for the tab « Fichiers » of a group
     tagsChanged = Signal()            # the account's tags of conversations
     emailsImported = Signal("QVariantMap")   # a CSV of addresses: counted (testRun) or invited
     _ran = Signal(object)
@@ -252,6 +253,7 @@ class Library(QObject):
         self._settings = {"bots": [], "loaded": False}
         self._shared = {"loaded": False, "kinds": []}
         self._shared_loading = ""
+        self._files = {"token": "", "loaded": False, "items": [], "more": {}}
         self._tags = []
         self._home = {"events": [], "reminders": [], "calendars": []}
         self._last_home = 0
@@ -879,6 +881,8 @@ class Library(QObject):
         self._participants = []
         self._settings = {"bots": [], "loaded": False}
         self._shared = {"loaded": False, "kinds": []}
+        self._files = {"token": "", "loaded": False, "items": [], "more": {}}
+        self.filesChanged.emit()
         self.settingsChanged.emit()
         self.sharedChanged.emit()
         self._loading_older = False
@@ -1041,6 +1045,12 @@ class Library(QObject):
         if cleared:
             self._history_cleared(token, max(cleared))
         self._merge(token, messages)
+        # something shared while the tab « Fichiers » was read: read again
+        if self._files.get("loaded") and self._files.get("token") == token and \
+                any(isinstance(m.get("messageParameters"), dict) and ("file" in m["messageParameters"] or
+                    "object" in m["messageParameters"]) for m in messages):
+            self._files = dict(self._files, loading=False)
+            self.loadFiles()
         if self._active:
             me = self._talk.user if self._talk else ""
             # a reaction of the other counts as unread in a one-to-one conversation (Talk): read too
@@ -1965,6 +1975,8 @@ class Library(QObject):
             self._older_done.add(token)
             self._shared = {"loaded": False, "kinds": []}
             self.sharedChanged.emit()
+            self._files = {"token": "", "loaded": False, "items": [], "more": {}}
+            self.filesChanged.emit()
 
     # the picture of the conversation: an emoji on a colour, a picture of this computer, or none
     @Slot(str, str)
@@ -2215,6 +2227,91 @@ class Library(QObject):
             out["loaded"], out["failed"] = True, False
             self._shared = out
             self.sharedChanged.emit()
+        self._bg(work, then)
+
+    # ---- the tab « Fichiers »: everything shared, every kind, older ones on demand ----------------------
+    SHARED_PAGE = 200
+
+    @js_property(notify=filesChanged)
+    def files(self):
+        """{loaded, failed, items: [{id, kind, name, actorId, time, files, poll, location, plain}], more: {kind: bool}}"""
+        return self._files
+
+    def _shared_item(self, m, kind, me):
+        parts = richtext.render(m, me)
+        return {"id": int(m.get("id") or 0), "kind": kind, "name": m.get("actorDisplayName") or "",
+                "actorId": m.get("actorId") or "", "time": int(m.get("timestamp") or 0),
+                "files": parts["files"], "poll": parts["poll"], "location": parts["location"],
+                "plain": parts["plain"][:300]}
+
+    @Slot()
+    def loadFiles(self):
+        """Every kind the overview names, a page of each (Talk: 200 at most per call)."""
+        talk, token = self._talk, self._current
+        if talk is None or not token or (self._files.get("token") == token and self._files.get("loading")):
+            return
+        self._files = dict(self._files, token=token, loading=True)
+        me, page = talk.user, self.SHARED_PAGE
+
+        def work():
+            status, overview = talk.shared_items(token, "", 20)
+            if status != 200 or not isinstance(overview, dict):
+                return status, None
+            out = {}
+            for kind, items in overview.items():
+                if kind not in self.SHARED or not items:
+                    continue
+                st, data = talk.shared_items(token, kind, page)
+                if st == 200:
+                    out[kind] = list(data.values()) if isinstance(data, dict) else data if isinstance(data, list) else []
+            return 200, out
+
+        def then(result):
+            if isinstance(result, Exception) or token != self._current:
+                return
+            status, data = result
+            if status != 200 or data is None:
+                self._files = {"token": token, "loaded": True, "failed": True, "items": [], "more": {}}
+                self.filesChanged.emit()
+                return
+            items, more = [], {}
+            for kind, rows in data.items():
+                items += [self._shared_item(m, kind, me) for m in rows if isinstance(m, dict)]
+                more[kind] = len(rows) >= page
+            items.sort(key=lambda r: -r["id"])
+            self._files = {"token": token, "loaded": True, "failed": False, "items": items, "more": more}
+            self.filesChanged.emit()
+        self._bg(work, then)
+
+    @Slot(str)
+    def loadMoreFiles(self, kind):
+        """The next page of one kind, older than the oldest shown (kind empty: every kind that has more)."""
+        talk, token = self._talk, self._current
+        if talk is None or not token or self._files.get("token") != token:
+            return
+        kinds = [kind] if kind else [k for k, v in self._files.get("more", {}).items() if v]
+        oldest = {k: min([r["id"] for r in self._files["items"] if r["kind"] == k] or [0]) for k in kinds}
+        me, page = talk.user, self.SHARED_PAGE
+
+        def work():
+            out = {}
+            for k in kinds:
+                st, data = talk.shared_items(token, k, page, before=oldest[k])
+                if st == 200:
+                    out[k] = list(data.values()) if isinstance(data, dict) else data if isinstance(data, list) else []
+            return out
+
+        def then(data):
+            if isinstance(data, Exception) or token != self._current or self._files.get("token") != token:
+                return
+            known = {r["id"] for r in self._files["items"]}
+            items, more = list(self._files["items"]), dict(self._files.get("more", {}))
+            for k, rows in data.items():
+                items += [self._shared_item(m, k, me) for m in rows if isinstance(m, dict) and int(m.get("id") or 0) not in known]
+                more[k] = len(rows) >= page
+            items.sort(key=lambda r: -r["id"])
+            self._files = dict(self._files, items=items, more=more)
+            self.filesChanged.emit()
         self._bg(work, then)
 
     @Slot()

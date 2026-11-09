@@ -242,14 +242,7 @@ Item {
                 width: win.callShown ? Math.min(380, parent.width * 0.4) : parent.width
                 compact: win.callShown
                 infoOpen: win.infoOpen && !thread.visible
-                infoTab: info.tab
                 onInfoWanted: win.infoOpen = !win.infoOpen
-                onPanelWanted: tab => {
-                    if (win.infoOpen && info.tab === tab && !thread.visible) { win.infoOpen = false; return }
-                    if (thread.visible) meet.closeThread()
-                    info.tab = tab
-                    win.infoOpen = true
-                }
                 onCallWanted: video => win.startCall(meet.current, video)
                 onNewConversation: newConversation.start()
                 onPlanWanted: meeting.start(meet.room)

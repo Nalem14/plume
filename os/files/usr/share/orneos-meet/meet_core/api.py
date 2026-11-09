@@ -442,9 +442,13 @@ class Talk:
         body = {"shareType": 10, "shareWith": token, "path": path, "talkMetaData": json.dumps(meta)}
         return self._req("POST", "/ocs/v2.php/apps/files_sharing/api/v1/shares", body)
 
-    def shared_items(self, token, item_type="", limit=50):
+    def shared_items(self, token, item_type="", limit=50, before=0):
+        """before: the items older than this message (the next page)."""
         if item_type:
-            return self._req("GET", f"{BASE}/v1/chat/{token}/share", query={"objectType": item_type, "limit": limit})
+            query = {"objectType": item_type, "limit": limit}
+            if before:
+                query["lastKnownMessageId"] = before
+            return self._req("GET", f"{BASE}/v1/chat/{token}/share", query=query)
         return self._req("GET", f"{BASE}/v1/chat/{token}/share/overview", query={"limit": min(limit, 20)})
 
     def search(self, token, term, limit=25):
