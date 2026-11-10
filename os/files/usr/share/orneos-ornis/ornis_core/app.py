@@ -54,6 +54,8 @@ PREFS = {
     "archived": [],              # archived conversations (out of the list, kept): the cloud's (orneos app), kept here for offline
     "archived_dirty": False,     # archived or brought back offline: sent at the next refresh
     "votes": {},                 # 👍 / 👎 given to Ornis's answers: {message id: 1 | -1} (the cloud's, kept here)
+    "feedback_card": {},         # the « Was it useful? » card per agent: {product: {day, calm}} (ornis_core/feedback.py)
+    "code_votes": {},            # 👍 / 👎 given in Code and Bots: {ref: 1 | -1} (this computer only)
     "ephemeral": [],             # ephemeral conversations, deleted in the cloud once left (or at the next start)
     "list_filter": "all",        # the conversations shown: all | unread | pinned | projects | loose | pending | remembered | jobs
     "list_group": "date",        # how they are grouped: date | project | status

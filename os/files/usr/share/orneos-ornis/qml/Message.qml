@@ -47,6 +47,11 @@ Item {
     // a 👎 just given: « what was wrong? » under the answer. Kept by the conversation ({id, reason, comment, share}):
     // the list rebuilds its rows at every change of the conversation, a property of the row would close it at once
     property var why: ({})
+    // who keeps the votes: the Chat (chat, its answers have cloud ids) or Code and Bots (CodeView: code, rows « votable »)
+    property var voter: chat
+    property var reasons: ["wrong", "not_asked", "didnt_act", "too_long", "other"]
+    property string shareNote: app.t.vote_share_note
+    readonly property bool votable: /^\d+$/.test(String(message.id)) || message.votable === true
     signal whyEdited(var state)
     readonly property bool whyOpen: !!why && why.id === String(message.id || "")
     function setWhy(key, value) { const s = Object.assign({}, why); s[key] = value; whyEdited(s) }
@@ -714,18 +719,18 @@ Item {
                     kind: "quiet"; iconName: "subtask"; iconSize: 15; height_: 28; tip: app.t.fork_tip
                     onClicked: chat.fork(String(msg.message.id))
                 }
-                OButton {                    // 👍 / 👎: a signal only (counted per day by the cloud), again to take it back
-                    visible: /^\d+$/.test(String(msg.message.id))
+                OButton {                    // 👍 / 👎: a signal only (one row per answer in the cloud), again to take it back
+                    visible: msg.votable
                     kind: "quiet"; iconName: "thumbUp"; iconSize: 15; height_: 28; tip: app.t.vote_up
-                    onClicked: chat.vote(String(msg.message.id), 1)
+                    onClicked: msg.voter.vote(String(msg.message.id), 1)
                     background: Rectangle { radius: 6; color: msg.message.vote === 1 ? msg.c.tint : parent.hovered ? msg.c.hover : "transparent" }
                 }
                 OButton {
-                    visible: /^\d+$/.test(String(msg.message.id))
+                    visible: msg.votable
                     kind: "quiet"; iconName: "thumbDown"; iconSize: 15; height_: 28; tip: app.t.vote_down
                     onClicked: {
                         msg.whyEdited(msg.message.vote !== -1 ? { id: String(msg.message.id), reason: "", comment: "", share: false } : {})
-                        chat.vote(String(msg.message.id), -1)
+                        msg.voter.vote(String(msg.message.id), -1)
                     }
                     background: Rectangle { radius: 6; color: msg.message.vote === -1 ? msg.c.tint : parent.hovered ? msg.c.hover : "transparent" }
                 }
@@ -741,6 +746,40 @@ Item {
                     opacity: hover.hovered ? 1 : 0          // the time on hover only, as the other assistants
                     font.family: "Schibsted Grotesk"; font.pixelSize: 12
                     color: msg.c.faint
+                }
+            }
+            // now and then (ornis_core/feedback.py): « Was it useful? », coloured, until a choice or ✕
+            Rectangle {
+                id: askCard
+                visible: msg.votable && msg.message.ask === true && !(msg.message.vote || 0) && !msg.streaming
+                Layout.fillWidth: true
+                Layout.maximumWidth: 560
+                implicitHeight: askRow.implicitHeight + 20
+                radius: 12
+                color: msg.c.tint
+                border.width: 1; border.color: msg.c.accentLine
+                opacity: visible ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 180 } }
+                RowLayout {
+                    id: askRow
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: 14; anchors.rightMargin: 6
+                    spacing: 8
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Text { Layout.fillWidth: true; text: app.t.vote_ask; font.family: "Schibsted Grotesk"; font.pixelSize: 14
+                               font.weight: Font.DemiBold; color: msg.c.tintText; wrapMode: Text.Wrap }
+                        Text { Layout.fillWidth: true; text: app.t.vote_ask_sub; font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                               color: msg.c.muted; wrapMode: Text.Wrap }
+                    }
+                    OButton { kind: "secondary"; iconName: "thumbUp"; iconSize: 14; text: app.t.vote_yes
+                              onClicked: msg.voter.answerCard(String(msg.message.id), 1) }
+                    OButton { kind: "secondary"; iconName: "thumbDown"; iconSize: 14; text: app.t.vote_no
+                              onClicked: { msg.whyEdited({ id: String(msg.message.id), reason: "", comment: "", share: false })
+                                           msg.voter.answerCard(String(msg.message.id), -1) } }
+                    OButton { kind: "quiet"; iconName: "close"; iconSize: 14; height_: 28; tip: app.t.vote_close
+                              onClicked: msg.voter.answerCard(String(msg.message.id), 0) }
                 }
             }
             // why a 👎 (optional): a reason, a few words, and the exchange only if ticked; nothing leaves before « Envoyer »
@@ -768,7 +807,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 6
                         Repeater {
-                            model: ["wrong", "not_asked", "didnt_act", "too_long", "other"]
+                            model: msg.reasons
                             AbstractButton {
                                 id: reasonChip
                                 required property string modelData
@@ -792,7 +831,7 @@ Item {
                                  onTextEdited: msg.setWhy("comment", text) }
                     OSwitch { id: whyShare; Layout.fillWidth: true; text: app.t.vote_share; checked: !!msg.why.share
                               onToggled: msg.setWhy("share", checked) }
-                    Text { visible: whyShare.checked; Layout.fillWidth: true; text: app.t.vote_share_note; wrapMode: Text.Wrap
+                    Text { visible: whyShare.checked; Layout.fillWidth: true; text: msg.shareNote; wrapMode: Text.Wrap
                            font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: msg.c.muted }
                     RowLayout {
                         Layout.fillWidth: true
@@ -800,7 +839,7 @@ Item {
                         OButton {
                             kind: "primary"; text: app.t.vote_send
                             enabled: whyCard.reason !== "" || whyText.text.trim() !== "" || whyShare.checked
-                            onClicked: { chat.voteDetail(String(msg.message.id), whyCard.reason, whyText.text, whyShare.checked); msg.whyEdited({}) }
+                            onClicked: { msg.voter.voteDetail(String(msg.message.id), whyCard.reason, whyText.text, whyShare.checked); msg.whyEdited({}) }
                         }
                     }
                 }

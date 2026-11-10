@@ -244,6 +244,8 @@ conversation. Edits in `.ornis/memory`, `.ornis/plans` and `.ornis/tmp` are alwa
   offset) or grep that file, never run the command again to see it. You may also send an output there yourself
   (`npm test > .ornis/tmp/test.log 2>&1; tail -n 60 .ornis/tmp/test.log`). Put your throwaway scripts and drafts
   there rather than in the project. Emptied after 7 days; never put anything that must last.
+- `history.jsonl`: one line per past exchange in this folder (date, request, answer; kept on the computer, out of git).
+  When the user refers to earlier work (« comme la dernière fois », « ce qu'on a fait hier »), grep it before asking.
 - `commands/`: the user's « / » commands (`<name>.md`, `$ARGUMENTS`). Write one only when the user asks.
 - `skills/`: this project's procedures, the way you learn: memory keeps facts, a skill keeps how to do something
   that comes back (deploy, release, add a page, migrate the data, reproduce a bug). One folder per skill,
@@ -324,6 +326,57 @@ type = "post_tool"
 description = "A long tool output goes to .ornis/tmp; the model keeps its start, its end and the path"
 timeout = 15.0
 command = {command}
+
+[[hooks]]
+name = "ornis-write-guard"
+type = "pre_tool"
+match = "write_file"
+description = "write_file never replaces a file of the project the session did not read, or that changed since"
+timeout = 15.0
+command = {command}
+
+[[hooks]]
+name = "ornis-turn-end"
+type = "post_agent"
+match = "main"
+description = "The end of a turn: the hook forgets the calls of the turn (loop warnings start again)"
+timeout = 15.0
+command = {command}
+"""
+
+
+# The summary Vibe writes past COMPACT_AT (lot 2 of docs/plans/2026-11-10-harness-hermes.md, same sections as the editor
+# extension's context.summaryPrompt): structured, updated rather than rewritten, the person's requests word for word.
+COMPACT_PROMPT = """CRITICAL: Respond with text only. Do NOT call any tools. Any tool call will be rejected.
+
+You write a CONTEXT CHECKPOINT: the handoff from which you (Ornis) will resume this task with no other memory of the
+conversation above. Write it in the language of the conversation.
+
+If the conversation starts with an earlier summary, UPDATE it: keep what is still true, move items from In progress to
+Done, add what happened since, drop what no longer matters. Never lose a request of the user.
+
+Use these sections, in this order, with short lists (leave out an empty one):
+## Goal
+## User requests (word for word)
+Every request, correction and preference the user wrote, quoted exactly in their own words, oldest first (those of the
+earlier summary too). Leave out greetings and the blocks joined ahead of their messages ([Project notebook …], [Files of
+the working folder …], [Bot …]). Never paraphrase them: they are the source of truth.
+## Constraints and preferences
+## Done
+## In progress
+## Blocked
+## Key decisions (and why)
+## Files (path: what changed, or why it matters)
+## Next step
+## Critical values (exact errors, commands, identifiers, versions, URLs)
+
+Never write a secret (password, token, key): write [REDACTED]. No introduction. Be concise: one line per file.
+
+Wrap the ENTIRE summary in <summary></summary> tags and output nothing outside them:
+
+<summary>
+...
+</summary>
 """
 
 
@@ -376,6 +429,7 @@ def write_home(url: str, language: str = "fr", folder: str = "", reasoning: str 
     reasoning = "none" if reasoning == "off" else reasoning
     reasoning = reasoning if reasoning in ("none", "low", "medium", "high") else "high"
     skills = _skill_paths(folder, bot)
+    surface = "bot" if bot else "code"
     config = f"""# Written by Ornis (ornis_code.py): changes are replaced at the next start.
 active_model = "orneos-code"
 default_agent = "ask"
@@ -388,10 +442,14 @@ enable_connectors = false
 # MCP: the servers come only from Ornis's settings (ornis_extensions), given with each session (session/new,
 # mcpServers); Vibe disables even those when enable_mcp is false (MCP never worked in Code before 04/11)
 enable_mcp = true
+# Subagents stay off: Vibe 3.0.4's unified runtime registers no subagent tool even with them on (tried 10/11 against a
+# scripted model: « unsupported top-level tool "task" », not found by search_tool_functions). The editor extension has
+# its own explorer (`explore`).
 enable_subagents = false
 enable_background_processes = false
 include_commit_signature = false
 auto_compact_threshold = {COMPACT_AT}
+compaction_prompt_id = "ornis-compact"
 disabled_tools = ["cron", "unified_harness_scratchpad", "wait", "web_search", "task"]
 # Vibe's own skills (05/11: « skill-creator » made Ornis write its skills in .vibe/skills, which nobody reads here;
 # « vibe:* » does not catch them all): ours go to .ornis/skills
@@ -422,6 +480,8 @@ max_output_bytes = 100000
 name = "orneos"
 api_base = {json.dumps(url.rstrip('/'))}
 api_key_env_var = "ORNEOS_CODE_TOKEN"
+# which product asks (counted by the gateway per product, numbers only: cache, empty or cut answers)
+extra_headers = {{ "X-Ornis-Surface" = "{surface}" }}
 backend = "generic"
 api_style = "openai"
 
@@ -437,6 +497,8 @@ max_context_length = 256000
 """
     (root / "config.toml").write_text(config, encoding="utf-8")
     (root / "hooks.toml").write_text(HOOKS.format(command=json.dumps(hook_command())), encoding="utf-8")
+    (root / "prompts").mkdir(exist_ok=True)
+    (root / "prompts" / "ornis-compact.md").write_text(COMPACT_PROMPT, encoding="utf-8")
     # a project's .vibe/config.toml (its own MCP servers, commands) is read only for a folder Vibe trusts: none
     for name in ("trusted_folders.toml",):
         try:
@@ -475,7 +537,10 @@ memory/
 tmp/
 rules.local.md
 SOUL.md
+history.jsonl
 """
+HISTORY_CAP = 2 * 1024 * 1024        # past this, the older half of .ornis/history.jsonl goes
+HISTORY_TEXT = 2000                  # characters of a request or an answer kept
 README_TEXT = {
     "fr": """# .ornis — le carnet d'Ornis pour ce projet
 
@@ -565,9 +630,10 @@ def prepare_project(folder, language: str = "fr") -> None:
             if not (root / name).exists():
                 (root / name).write_text(text, encoding="utf-8")
         ignore = root / ".gitignore"
-        if "SOUL.md" not in ignore.read_text().splitlines():
-            with ignore.open("a") as out:
-                out.write("\nSOUL.md\n")
+        for line in ("SOUL.md", "history.jsonl"):
+            if line not in ignore.read_text().splitlines():
+                with ignore.open("a") as out:
+                    out.write(f"\n{line}\n")
         limit = time.time() - TMP_DAYS * 86400
         for base, dirs, names in os.walk(root / "tmp", topdown=False):
             for n in names:
@@ -578,6 +644,28 @@ def prepare_project(folder, language: str = "fr") -> None:
                 os.rmdir(base)
     except OSError as error:
         print("Ornis Code: .ornis", error)
+
+
+def record_history(folder, session: str, title: str, asked: str, answer: str) -> None:
+    """One exchange into .ornis/history.jsonl (on the computer, out of git; the editor extension writes the same lines):
+    the agent greps it when the user refers to earlier work. Only where the notebook exists."""
+    if not folder or not _plain_folder(folder) or not ornis_dir(folder).is_dir():
+        return
+
+    def cut(text):
+        text = str(text or "").strip()
+        return text if len(text) <= HISTORY_TEXT else text[:HISTORY_TEXT] + " […]"
+    path = ornis_dir(folder) / "history.jsonl"
+    try:
+        line = json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "from": "code", "chat": session or "",
+                           "title": cut(title)[:120], "asked": cut(asked), "answer": cut(answer)}, ensure_ascii=False)
+        with path.open("a", encoding="utf-8") as out:
+            out.write(line + "\n")
+        if path.stat().st_size > HISTORY_CAP:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            path.write_text("\n".join(lines[len(lines) // 2:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _read_capped(path: Path, cap: int, label: str) -> str:
@@ -758,6 +846,8 @@ def notebook_path(rel: str) -> bool:
     """A project path (relative, with /) in Ornis's notebook: left out of the checkpoints (undoing a turn never takes
     back what Ornis learnt) and of the folder's list given to the model."""
     parts = rel.replace("\\", "/").split("/")
+    if parts == [ORNIS_DIR, "history.jsonl"]:
+        return True                                  # the conversations' history: never undone with a turn
     return len(parts) >= 3 and parts[0] == ORNIS_DIR and parts[1] in NOTEBOOK
 
 

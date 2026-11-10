@@ -11,6 +11,7 @@ import "components"
 
 Item {
     id: view
+    property var why: ({})        // the « why ? » of a 👎 open under an answer (Message.why)
     readonly property var c: theme.c
     readonly property real room: width - (benchTab !== "" && !benchOver ? benchWidth : 0)      // beside the panel
     readonly property int column: Math.min(app.readingWidth + 80, Math.max(300, room - 56))
@@ -715,7 +716,13 @@ Item {
                                   editable: d4.index === code.lastUser && !code.busy
                                   onEditRequested: { const t = code.editLast(); if (t) { input.text = t; input.cursorPosition = input.length; input.forceActiveFocus() } }
                                   // Bot: the live status is the bubble above the box; the answer streams once it has text
-                                  streaming: code.busy && d4.index === list.count - 1 && d4.item.kind === "agent" }
+                                  streaming: code.busy && d4.index === list.count - 1 && d4.item.kind === "agent"
+                                  // 👍 / 👎 and the « Was it useful? » card of Code and Bots (CodeChat.vote, answerCard, voteDetail)
+                                  voter: code
+                                  reasons: ["wrong", "not_asked", "didnt_act", "stuck", "broke", "too_long", "other"]
+                                  shareNote: app.t.vote_share_note_code
+                                  why: view.why
+                                  onWhyEdited: state => view.why = state }
                     } }
                 }
             }

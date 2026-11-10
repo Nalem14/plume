@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import Property, QObject, Qt, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
-from ornis_core import tools
+from ornis_core import feedback, tools
 import cloud
 import system
 from ornis_chat import Chat as Client, Error, MAX_ATTACHMENTS, MAX_BYTES, about_block, attachment_kind
@@ -243,6 +243,8 @@ class Chat(QObject):
                 # it stored a memory while answering: said under the answer (« Voir ou oublier »)
                 "memorized": "store_memory" in [str(x) for x in (msg.get("sources") or [])],
                 "vote": int((self._app.pref("votes") or {}).get(str(msg["id"]), 0)),
+                # the « Was it useful? » card under this answer (feedback.should_ask: now and then, never twice)
+                "ask": str(msg["id"]) == self.__dict__.get("_ask_id", "") and not (self._app.pref("votes") or {}).get(str(msg["id"])),
                 "steps": tools.step_rows(self._steps_of.get(msg["id"]) if msg["id"] in getattr(self, "_steps_of", {}) else [], self._t),
                 "stepsKnown": msg["id"] in getattr(self, "_steps_of", {})}
 
@@ -1975,6 +1977,10 @@ class Chat(QObject):
             if last and getattr(self, "_live_steps", None):        # seen live: no need to ask the task again
                 self._steps_of = dict(getattr(self, "_steps_of", {}), **{last["id"]: self._live_steps})
             self._pending = data["status"]["pending"]
+            # now and then « Was it useful? » under the answer: after a real exchange (two answers or more), none waiting
+            answers = sum(1 for m in self._messages if m["role"] == "assistant")
+            if last and str(last["id"]).isdigit() and not self._pending and feedback.should_ask(self._app, "chat", answers >= 2):
+                self._ask_id = str(last["id"])
         self._live_steps = []
         self._stream, self._working, self._error, self._reasoning = "", [], "", ""
         self._describe(self._messages)
@@ -2453,11 +2459,32 @@ class Chat(QObject):
             while queue:
                 mid, v = queue[0]
                 try:
-                    client.vote(mid, v)
+                    client.vote(mid, v, meta={"version": feedback.version()})
                 except Error:
                     pass                 # a signal only: not worth a message
                 queue.pop(0)
         self._bg(work)
+
+    @Slot(str, int)
+    def answerCard(self, message_id, value):
+        """The « Was it useful? » card: 👍 (1), 👎 (-1, its « why ? » opens under the answer) or ✕ (0: no opinion,
+        none for a week)."""
+        message_id = str(message_id)
+        if not message_id.isdigit():
+            return
+        self._ask_id = ""
+        if value == 0:
+            feedback.calm(self._app, "chat")
+        else:
+            votes = dict(self._app.pref("votes") or {})
+            votes[message_id] = 1 if value > 0 else -1
+            self._app.setPref("votes", dict(list(votes.items())[-300:]))
+            self._vote_rev = self.__dict__.get("_vote_rev", 0) + 1
+            if value > 0:
+                self._app.toast.emit(self._t["vote_thanks"])
+        self.changed.emit()
+        feedback.send(self._app, message_id=int(message_id), vote=max(-1, min(1, int(value))), asked=True,
+                      meta={"version": feedback.version()})
 
     @Slot(str, str, str, bool)
     def voteDetail(self, message_id, reason, comment, share):
@@ -2476,7 +2503,7 @@ class Chat(QObject):
 
         def work():
             try:
-                client.vote(message_id, -1, reason, comment.strip(), excerpt[:3000])
+                client.vote(message_id, -1, reason, comment.strip(), excerpt[:3000], meta={"version": feedback.version()})
             except Error:
                 pass
         self._bg(work)

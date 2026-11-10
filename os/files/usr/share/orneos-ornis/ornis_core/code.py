@@ -18,6 +18,7 @@ from PySide6.QtCore import QAbstractListModel, QByteArray, QModelIndex, QObject,
 
 import ornis_code
 import system
+from ornis_core import feedback
 from ornis_core.chat import _when
 
 INDEX = ornis_code.ROOT / "sessions.json"
@@ -50,8 +51,36 @@ CONTINUE_TEXT = {
             "Stop only to ask a real question.",
     "tool": "You wrote a tool call as text instead of calling the tool: nothing was run. Call the tool now, then go on "
             "with your plan.",
+    # lot 1 of docs/plans/2026-11-10-harness-hermes.md (as the editor extension)
+    # lot 4: after a long turn, once an hour per conversation, silent: an offer appears only if something is worth keeping
+    "learn": "Your work is done. Look back at this turn: if it worked out a procedure that will come back (several steps, "
+             "exact commands, pitfalls met) or taught a lasting fact or preference that is not in the code, offer it to the "
+             "user in ONE short sentence (a skill in .ornis/skills, or a memory in .ornis/memory) and write nothing until "
+             "they agree. If nothing is worth keeping, reply with an empty message.",
+    "empty": "Your last answer was empty. Go on with the task: call a tool, or give your answer.",
+    "verify": "You changed code ({files}) and ran nothing since. Before you finish, run what proves it works (the tests, "
+              "the build, a linter, the script itself), read the result and fix what fails. If it cannot be checked "
+              "here, say so plainly and why.",
 }
+# what « verify » leaves alone: prose and data have nothing to run
+PROSE = re.compile(r"\.(md|markdown|mdx|rst|txt|text|adoc|org|log|csv|tsv)$|(^|/)(license|licence|notice|authors|"
+                   r"contributors|changelog|codeowners)$", re.I)
+
+
+def is_code(path: str) -> bool:
+    p = str(path or "").replace("\\", "/")
+    return bool(p) and not PROSE.search(p) and ".ornis" not in p.split("/")
+
+
+# near the summary of a Code conversation, save what must last first (the bots have theirs: ornis_bots.turn_note)
+FLUSH_AT = 0.75
+MEMORY_NOTE = ("[Project memory note: this conversation will be summarised soon and its details lost. Before you go on, "
+               "write to .ornis/memory what must outlast it and is not in the code (decisions and why, preferences "
+               "learnt, what waits for the user, pitfalls met), one file per memory, indexed in .ornis/memory/MEMORY.md, "
+               "updating a memory that already covers it. Then carry on with the request.\n]\n\n")
 MAX_CONTINUE = 3
+LEARN_TOOLS = 15                   # a turn this long may teach something to keep (lot 4)
+LEARN_EVERY = 3600                 # seconds between two « anything to keep? » in one conversation
 TOOL_KEYS = {"command", "path", "file_path", "content", "old_string", "new_string", "todos", "pattern", "query", "url"}
 MAX_DIFF = 400                     # lines of a diff shown on a card
 MAX_DIFF_INPUT = 4000              # lines of a file past which the card shows counts only (difflib would block the window)
@@ -193,6 +222,15 @@ def _bot_turn_note(bot: str) -> str:
         return ""
 
 
+def _forget_reads(bot: str, session: str):
+    """After a summary, the hook must not point to reads that left the context (ornis_code_hook.forget_reads)."""
+    try:
+        import ornis_code_hook  # noqa: PLC0415
+        ornis_code_hook.forget_reads(str(ornis_code.home(bot)), session or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _bot_usage(bot: str, used: int):
     try:
         import ornis_bots  # noqa: PLC0415
@@ -269,6 +307,9 @@ class CodeChat(QObject):
         self._parts_epoch = 0
         self._parts_hold = False
         self._compacting = False
+        self._flushed = False                    # the memory note was given since the last summary
+        self._learning = False                   # the silent « anything to keep? » note was just sent
+        self._learned_at = {}                    # session -> when it was last sent
         self._dismissed_tips = set()
         self._parts = {}           # what the last request carried, part by part (the gateway's measure)
         self._host = None
@@ -931,6 +972,10 @@ class CodeChat(QObject):
             self._bot_brief = False
         if self._bot and not text.startswith("/"):
             head += _bot_turn_note(self._bot)    # keep memory as it goes; save it before a summary
+        elif (not text.startswith("/") and not self._flushed and folder and ornis_code.ornis_dir(folder).is_dir()
+              and int(self._usage.get("used") or 0) >= ornis_code.COMPACT_AT * FLUSH_AT):
+            self._flushed = True                 # once until the next summary (lot 2 of the harness plan)
+            head += MEMORY_NOTE
         blocks = [ornis_code.text_block(note + head + text)]
         seen = set()
         for a in attachments:
@@ -1716,7 +1761,7 @@ class CodeChat(QObject):
             self._items.touch(len(self._items.rows) - 1)
         self._busy = True
         self._failures, self._looped, self._repeats = {}, False, {}
-        self._continued, self._turn_start = 0, len(self._items.rows) - 1
+        self._continued, self._turn_start, self._learning = 0, len(self._items.rows) - 1, False
         self._turn_asked = shown                 # the bot's history keeps what was asked (a routine, a group…)
         if self._plan and all(p.get("status") == "completed" for p in self._plan):
             self._plan = []                      # a finished to-do list is the last turn's, not this one's
@@ -1899,6 +1944,12 @@ class CodeChat(QObject):
         if self._bot and not error:
             self._bot_preview()
             _bot_record(self._bot, self._turn_asked, self._last_answer())
+        elif not error and result.get("stopReason") != "cancelled" and self._turn_asked:
+            folder, sid, title, asked, answer = self._folder, self._session, self._title, self._turn_asked, self._last_answer()
+            threading.Thread(target=ornis_code.record_history, args=(folder, sid, title, asked, answer), daemon=True,
+                             name="ornis-code-history").start()
+        if not error and result.get("stopReason") != "cancelled":
+            self._offer_vote()
         if self._plan_mode and not error and result.get("stopReason") != "cancelled":
             self._items.append({"kind": "planready", "done": False})
         self.changed.emit()
@@ -1935,6 +1986,9 @@ class CodeChat(QObject):
 
     def _why_continue(self, error, result) -> str:
         """Why the turn should go on by itself ('' when it is really over)."""
+        if self._learning:                       # the answer to « anything to keep? », offer or nothing: the end
+            self._learning = False
+            return ""
         if (error or self._forced is not None or result.get("stopReason") not in (None, "end_turn") or self._plan_mode or self._ask_mode or self._later
                 or self._continued >= MAX_CONTINUE or not self._agent or not self._session):
             return ""
@@ -1946,21 +2000,42 @@ class CodeChat(QObject):
         tools = [r for r in rows if r.get("kind") == "tool"]
         if any(r.get("status") == "failed" or r.get("answer") for r in tools):
             return ""                            # a step refused or failed: Ornis says so, the user decides
+        if not text and not any(r.get("kind") == "notice" and r.get("key") == "bots_silent" for r in rows):
+            return "empty"                       # the turn ended with nothing to read (DeepSeek: reasoning only)
         pending = any(p.get("status") in ("pending", "in_progress") for p in self._plan)
         if pending and tools and not text.endswith("?"):
             return "plan"
+        # code changed and nothing run since: sent on once to check it
+        if any(r.get("kind") == "notice" and r.get("key") == "code_continued_verify" for r in rows):
+            return ""
+        changed, last_edit = [], -1
+        for at, r in enumerate(tools):
+            if r.get("status") == "completed" and r.get("tool") in ("edit", "delete", "move") and is_code(r.get("short") or r.get("path")):
+                changed.append(str(r.get("short") or r.get("path")))
+                last_edit = at
+        if last_edit >= 0 and not any(r.get("tool") == "execute" and r.get("status") == "completed" for r in tools[last_edit + 1:]):
+            self._verify_files = ", ".join(dict.fromkeys(changed[-8:]))
+            return "verify"
+        if (not self._bot and len(tools) >= LEARN_TOOLS and self._folder and ornis_code.ornis_dir(self._folder).is_dir()
+                and time.time() - self._learned_at.get(self._session, 0) > LEARN_EVERY):
+            return "learn"
         return ""
 
     def _continue(self, why: str):
         self._continued += 1
-        self._items.append({"kind": "notice", "key": "code_continued_" + why, "id": f"notice-{time.time()}"})
+        if why == "learn":                       # silent: nothing shown unless Ornis offers something
+            self._learning = True
+            self._learned_at[self._session] = time.time()
+        else:
+            self._items.append({"kind": "notice", "key": "code_continued_" + why, "id": f"notice-{time.time()}"})
         self._busy = True
         self.changed.emit()
         agent, sid, bot = self._agent, self._session, self._bot
 
         def work():
             try:
-                res = agent.prompt(sid, [{"type": "text", "text": CONTINUE_NOTE + CONTINUE_TEXT[why]}])
+                note = CONTINUE_TEXT[why].format(files=getattr(self, "_verify_files", "")) if why == "verify" else CONTINUE_TEXT[why]
+                res = agent.prompt(sid, [{"type": "text", "text": CONTINUE_NOTE + note}])
                 self._done.emit(sid, dict(res or {}, _bot=bot))
             except Exception as error:  # noqa: BLE001
                 self._done.emit(sid, {"error": str(error), "_bot": bot})
@@ -2299,6 +2374,8 @@ class CodeChat(QObject):
                 _bot_usage(self._bot, self._usage["used"])
             if self._compacting or int(self._usage["used"]) < previous * .7:
                 self._invalidate_parts()
+                self._flushed = False                # summarised: the reads and the memory note start again
+                _forget_reads(self._bot, self._session)
                 if self._bot:
                     self._bot_brief = True
             self.usageChanged.emit()
@@ -2361,7 +2438,7 @@ class CodeChat(QObject):
         if row.get("kind") == "user":
             for _ in range(6):
                 body = row["content"]
-                if body.startswith(("[Project notebook", "[Bot identity for", "[Bot memory note")):
+                if body.startswith(("[Project notebook", "[Bot identity for", "[Bot memory note", "[Project memory note")):
                     cut = body.find("\n]\n\n")
                     if cut < 0:
                         break
@@ -2475,7 +2552,9 @@ class CodeChat(QObject):
                         count = 0
                     self._repeats["_last"] = key
                     self._repeats[key] = (fingerprint, count + 1 if previous == fingerprint else 1)
-                    limit = 10 if self._bot else (6 if tool_kind == "read" else 4)
+                    # the hook warned the model at the third (ornis_code_hook.loop_note); stopped at the fifth, as in the
+                    # editor extension
+                    limit = 10 if self._bot else 5
                     if self._repeats[key][1] >= limit and self._agent and self._session and self._busy and not self._looped:
                         self._looped = "repeat"
                         self._agent.cancel(self._session)
@@ -2719,6 +2798,78 @@ class CodeChat(QObject):
         """The message sent `back` times ago in this folder (1 = the last one), "" past the oldest."""
         rows = self._history.get(self._folder, [])
         return rows[-back] if 0 < back <= len(rows) else ""
+
+    # ---- 👍 / 👎 (ornis_core/feedback.py): under the turn's last answer, and now and then the « Was it useful? » card --
+    def _offer_vote(self):
+        """The turn ended well: its last answer can be judged; the card after a real task (3 tools or more), not for a
+        scheduled run nobody watches."""
+        rows = self._items.rows
+        start = max(0, self._turn_start)
+        at = next((i for i in range(len(rows) - 1, start - 1, -1)
+                   if rows[i].get("kind") == "agent" and str(rows[i].get("content") or "").strip()), None)
+        if at is None:
+            return
+        tools = [r for r in rows[start:] if r.get("kind") == "tool"]
+        product = "bot" if self._bot else "code"
+        ref = f"{self._session or 'local'}:{rows[at].get('id')}:{int(time.time())}"
+        asked = next((str(r.get("content") or "") for r in rows[start:] if r.get("kind") == "user"), self._turn_asked or "")
+        rows[at].update(votable=True, ref=ref, vote=0, ask=not self._cron_job and feedback.should_ask(self._app, product, len(tools) >= 3),
+                        fb={"product": product, "asked": str(asked)[:1200], "answer": str(rows[at].get("content") or "")[:1500],
+                            "used": [str(r.get("title") or r.get("tool") or "") + ("!" if r.get("status") == "failed" else "") for r in tools][:60],
+                            "meta": {"version": feedback.version(), "mode": "plan" if self._plan_mode else "agent", "tools": len(tools),
+                                     "failed": sum(1 for r in tools if r.get("status") == "failed"), "notes": self._continued}})
+        self._items.touch(at)
+
+    def _voted_row(self, row_id):
+        at = next((i for i, r in enumerate(self._items.rows) if str(r.get("id")) == str(row_id) and r.get("votable")), None)
+        return (at, self._items.rows[at]) if at is not None else (None, None)
+
+    def _send_vote(self, row, vote, asked=False, reason="", comment="", excerpt=""):
+        fb = row.get("fb") or {}
+        feedback.send(self._app, product=fb.get("product", "code"), ref=row["ref"], vote=vote, asked=asked, reason=reason,
+                      comment=comment, excerpt=excerpt, meta=fb.get("meta") or {})
+
+    @Slot(str, int)
+    def vote(self, row_id, value):
+        """👍 (1) or 👎 (-1) on the turn's answer, the same again to take it back."""
+        at, row = self._voted_row(row_id)
+        if row is None:
+            return
+        value = 0 if int(row.get("vote") or 0) == value else value
+        row.update(vote=value, ask=False)
+        self._items.touch(at)
+        if value == 1:
+            self._app.toast.emit(self._app._t.get("vote_thanks", ""))
+        self._send_vote(row, value)
+
+    @Slot(str, int)
+    def answerCard(self, row_id, value):
+        """The « Was it useful? » card: 👍, 👎 (its « why ? » opens) or ✕ (0: no opinion, none for a week)."""
+        at, row = self._voted_row(row_id)
+        if row is None:
+            return
+        value = max(-1, min(1, int(value)))
+        row.update(vote=value, ask=False)
+        self._items.touch(at)
+        if value == 0:
+            feedback.calm(self._app, (row.get("fb") or {}).get("product", "code"))
+        elif value == 1:
+            self._app.toast.emit(self._app._t.get("vote_thanks", ""))
+        self._send_vote(row, value, asked=True)
+
+    @Slot(str, str, str, bool)
+    def voteDetail(self, row_id, reason, comment, share):
+        """Why a 👎: a reason, the user's words, and the request, the tools used and the answer only if `share`."""
+        at, row = self._voted_row(row_id)
+        if row is None:
+            return
+        fb = row.get("fb") or {}
+        excerpt = ""
+        if share:
+            excerpt = "\n\n".join(x for x in ["> " + fb.get("asked", ""), ("Outils : " + ", ".join(fb.get("used") or [])) if fb.get("used") else "",
+                                                fb.get("answer", "")] if x)[:3000]
+        self._app.toast.emit(self._app._t.get("vote_sent", ""))
+        self._send_vote(row, -1, reason=reason if reason in feedback.AGENT_REASONS else "", comment=comment.strip()[:500], excerpt=excerpt)
 
     @Slot(result=str)
     def editLast(self):

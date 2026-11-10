@@ -729,10 +729,21 @@ class Chat:
         votes = data.get("votes") if isinstance(data, dict) else None
         return {str(k): int(v) for k, v in (votes or {}).items() if str(k).isdigit() and v in (1, -1)} if isinstance(votes, dict) else {}
 
-    def vote(self, message_id, vote: int, reason: str = "", comment: str = "", excerpt: str = "") -> None:
-        """👍 (1), 👎 (-1) or neither (0): a signal counted per day by the cloud. A 👎 may say why (a reason, the user's
-        words) and carry the exchange, only when the user ticked it (excerpt)."""
-        body = {"messageId": int(message_id), "vote": int(vote)}
+    def vote(self, message_id=0, vote: int = 0, reason: str = "", comment: str = "", excerpt: str = "", asked: bool = False,
+             product: str = "chat", ref: str = "", meta: dict | None = None) -> None:
+        """👍 (1), 👎 (-1) or neither (0) on an answer: one row per answer in the cloud, no account named. The Chat names
+        its answer by message id, Code and Bots by product and ref. A 👎 may say why (a reason, the user's words) and
+        carry the exchange, only when the user ticked it (excerpt). asked: from the « Was it useful? » card (vote 0:
+        closed without one). meta: facts of the turn, no content."""
+        body = {"vote": int(vote), "product": product}
+        if str(message_id).isdigit() and int(message_id) > 0:
+            body["messageId"] = int(message_id)
+        else:
+            body["ref"] = str(ref)[:200]
+        if asked:
+            body["asked"] = True
+        if meta:
+            body["meta"] = meta
         if reason or comment or excerpt:
             body.update(reason=str(reason)[:20], comment=str(comment)[:500], excerpt=str(excerpt)[:3000])
         status, _ = self._ocs(f"{FEEDBACK}?format=json", "PUT", body)
