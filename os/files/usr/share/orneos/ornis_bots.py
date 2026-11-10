@@ -26,6 +26,10 @@ NOTICES = ROOT / "notices.jsonl"
 MAX_BOTS = 24            # a bot that creates bots in a loop stops here
 MAX_GROUPS = 24
 GROUP_HOPS = 3           # bots answering bots in a group without a human message in between
+# and how many bot turns their answers may wake in all: GROUP_HOPS bounds a chain, not its width. A message naming the
+# five members, each answer naming the four others, made 5 + 20 + 80 turns (11/11: « ils sont tous en travail en cours
+# à l'infini mais rien n'est fait »)
+GROUP_RELAYS = 12
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,38}[a-z0-9]$|^[a-z]{2,40}$")
 LOCK = threading.RLock()
 
@@ -703,7 +707,7 @@ def update_group(group_id: str, fields: dict, *, actor: str = "") -> dict:
         g["lead"] = fields["lead"]
     if fields.get("reply") in ("lead", "all"):
         g["reply"] = fields["reply"]
-    for key in ("unread", "preview", "updated", "human_turn", "read_at", "anchor"):
+    for key in ("unread", "preview", "updated", "human_turn", "read_at", "anchor", "relays"):
         if key in fields and fields[key] is not None:
             g[key] = fields[key]
     _save_groups(data)
@@ -773,9 +777,10 @@ def mentions(text: str, members: list[str]) -> list[str]:
 
 @_transaction
 def post_group(group_id: str, sender: str, text: str, *, depth: int = 0, route: bool = True,
-               only: list[str] | None = None) -> dict:
+               only: list[str] | None = None, fresh: bool = False) -> dict:
     """Write one message in the room ("user" for the person) and queue it for the bots it concerns.
-    `only`: deliver to these members whatever the text says (a reply « to everyone »)."""
+    `only`: deliver to these members whatever the text says (a reply « to everyone »). `fresh`: a bot writing
+    outside a turn of this group (a routine): the bot turns it may wake are counted afresh, as after the person."""
     g = get_group(group_id)
     if not g:
         raise ValueError(f"unknown group: {group_id}")
@@ -792,6 +797,8 @@ def post_group(group_id: str, sender: str, text: str, *, depth: int = 0, route: 
     with (GROUP_LOGS / f"{g['id']}.jsonl").open("a", encoding="utf-8") as out:
         out.write(json.dumps(row, ensure_ascii=False) + "\n")
     fields = {"preview": body[:120], "updated": row["at"]}
+    if sender == "user" or fresh:
+        fields["relays"] = 0                 # the person spoke (or a bot starts afresh, outside a group turn)
     if sender == "user":
         fields["human_turn"] = row["at"]
     update_group(g["id"], fields)
@@ -811,10 +818,19 @@ def post_group(group_id: str, sender: str, text: str, *, depth: int = 0, route: 
         # a bot's answer that names nobody ends there; one that names others hands over (GROUP_HOPS at most)
         if sender != "user" and depth >= GROUP_HOPS:
             targets = []
-        for mid in targets:
-            queue_inbound(mid, {"id": str(uuid.uuid4()), "kind": "group", "group": g["id"], "msg": row["id"],
-                                "from": sender, "text": row["text"], "depth": int(depth) + (0 if sender == "user" else 1),
-                                "at": row["at"]})
+        item = {"kind": "group", "group": g["id"], "msg": row["id"], "from": sender, "text": row["text"],
+                "depth": int(depth) + (0 if sender == "user" else 1), "at": row["at"]}
+        # a member who still has a message of this room waiting reads this one with it, in one turn
+        merged = [m for m in targets if _merge_group_inbound(m, item)]
+        fresh_ones = [m for m in targets if m not in merged]
+        if sender != "user":
+            used = int((get_group(g["id"]) or {}).get("relays") or 0)
+            fresh_ones = fresh_ones[:max(0, GROUP_RELAYS - used)]
+            if fresh_ones:
+                update_group(g["id"], {"relays": used + len(fresh_ones)})
+        for mid in fresh_ones:
+            queue_inbound(mid, dict(item, id=str(uuid.uuid4())))
+        targets = [m for m in targets if m in merged or m in fresh_ones]
     row["targets"] = targets
     return row
 
@@ -828,6 +844,11 @@ def group_notice(group_id: str, text: str) -> dict:
     with (GROUP_LOGS / f"{gid}.jsonl").open("a", encoding="utf-8") as out:
         out.write(json.dumps(row, ensure_ascii=False) + "\n")
     return row
+
+
+def in_group_turn(bot_id: str, group_id: str) -> bool:
+    """This bot is answering in this group right now (else it writes there on its own: a routine, a private turn)."""
+    return str((get(bot_id) or {}).get("group_turn") or "") == str(group_id or "").strip().lower()
 
 
 def turn_depth(bot_id: str, group_id: str) -> int:
@@ -858,6 +879,42 @@ def group_transcript(group_id: str, *, upto: str = "", limit: int = 14) -> str:
     return "\n".join(out)
 
 
+def _merge_group_inbound(bot_id: str, item: dict) -> bool:
+    """This room's message joins the one still waiting for this bot (not yet taken by a turn): it will answer both
+    in one turn, the room's transcript up to the newer one. True when merged."""
+    path = bot_dir(bot_id) / "inbox.json"
+    with LOCK:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return False
+        items = list(data.get("items") or [])
+        waiting = next((r for r in reversed(items) if r.get("group") == item["group"] and not r.get("taken")), None)
+        if waiting is None:
+            return False
+        waiting.update(msg=item["msg"], text=item["text"], at=item["at"], merged=int(waiting.get("merged") or 1) + 1,
+                       senders=sorted(set(waiting.get("senders") or [waiting.get("from")]) | {item["from"]}),
+                       depth=min(int(waiting.get("depth") or 0), int(item["depth"])))
+        waiting["from"] = "user" if "user" in waiting["senders"] else item["from"]
+        data["items"] = items
+        system.private_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        return True
+
+
+@_transaction
+def mark_inbound(bot_id: str, message_id: str) -> None:
+    """A turn took this message: nothing merges into it any more (its prompt is already written)."""
+    path = bot_dir(bot_id) / "inbox.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for r in data.get("items") or []:
+        if r.get("id") == message_id:
+            r["taken"] = True
+    system.private_write(path, json.dumps(data, ensure_ascii=False) + "\n")
+
+
 def group_prompt(bot_id: str, item: dict) -> str:
     """The turn a bot gets for a room message (hidden in its thread: a pill says « In the group … »)."""
     g = get_group(item.get("group") or "") or {}
@@ -870,7 +927,9 @@ def group_prompt(bot_id: str, item: dict) -> str:
         f"Shared folder of the group (every member reads and writes it; put the files you work on together there, "
         f"and name them in your answer by their full path): {group_folder(g.get('id') or item.get('group') or '')}\n"
         f"Recent messages in the room:\n{group_transcript(item.get('group') or '', upto=item.get('msg') or '')}\n\n"
-        f"The last message (from {sender}) is for you. Your final answer is posted in the room as is: keep it "
+        + (f"The last {int(item['merged'])} messages for you came while you were busy: answer them together, once.\n"
+           if int(item.get("merged") or 1) > 1 else "")
+        + f"The last message (from {sender}) is for you. Your final answer is posted in the room as is: keep it "
         "short, like a chat message. Do the work first if it is asked (tools, files). To hand a part over, name the "
         "member with @id in your answer (they will get it); otherwise name nobody. A file you mention: its full "
         "path in backticks (the others do not work in your folder). If nothing needs an answer from "
@@ -1251,7 +1310,7 @@ def fail_inbound(bot_id: str, message_id: str, *, limit: int = 3) -> bool:
     items, dropped = [], False
     for r in data.get("items") or []:
         if r.get("id") == message_id:
-            r = dict(r, tries=int(r.get("tries") or 0) + 1)
+            r = dict(r, tries=int(r.get("tries") or 0) + 1, taken=False)
             if r["tries"] >= limit:
                 dropped = True
                 continue

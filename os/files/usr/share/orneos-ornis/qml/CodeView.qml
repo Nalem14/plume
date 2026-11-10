@@ -263,8 +263,10 @@ Item {
                         Item { Layout.fillWidth: !code.git.branch }
                     }
                 }
-                // the panel's tabs: Routines (bots), Fichiers, Modifications, Plan, Terminal
+                // the panel's tabs: Routines (bots), Fichiers, Modifications, Plan, Terminal — while it is closed: open,
+                // the panel shows the same tabs at its top (twice side by side, 10/11)
                 Row {
+                    visible: view.benchTab === ""
                     spacing: 2
                     Repeater {
                         model: {
@@ -319,7 +321,7 @@ Item {
                         }
                     }
                 }
-                Rectangle { width: 1; height: 20; color: view.c.hairline }
+                Rectangle { visible: view.benchTab === "" && (!win.sidebarShown || code.session !== ""); width: 1; height: 20; color: view.c.hairline }
                 // a new session: the column has it; here only when the column is folded
                 OButton { visible: !win.sidebarShown; kind: "quiet"; iconName: "compose"; height_: 30; tip: app.t.code_new + "  (Ctrl+N)"; enabled: !code.busy; onClicked: { code.newIn(code.folder); view.focusInput() } }
                 OButton {                    // the conversation's menu, as in Work
@@ -1609,6 +1611,31 @@ Item {
                                 }
                             }
                         }
+                    }
+                }
+                // a picture the browser took (browser_screenshot): shown in the conversation, as the agent saw it
+                Image {
+                    id: shotImage
+                    readonly property string path: {
+                        const m = /^Saved: (.+?\.png)\n/.exec(String(entry.output || ""))
+                        return m ? m[1] : ""
+                    }
+                    objectName: "toolScreenshot"
+                    visible: path !== "" && status === Image.Ready
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 520
+                    Layout.preferredHeight: visible ? Math.min(300, implicitHeight * Math.min(1, width / Math.max(1, implicitWidth))) : 0
+                    source: !path ? "" : path.startsWith("/") ? "file://" + encodeURI(path)
+                                                              : "file:///" + encodeURI(path.replace(/\\/g, "/"))   // Windows
+                    sourceSize.width: 1040
+                    fillMode: Image.PreserveAspectFit
+                    horizontalAlignment: Image.AlignLeft
+                    asynchronous: true
+                    cache: false
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: code.openPath(shotImage.path)
                     }
                 }
                 // what a command printed (or what a tool returned)

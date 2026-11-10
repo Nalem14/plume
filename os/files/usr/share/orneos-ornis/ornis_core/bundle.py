@@ -47,7 +47,7 @@ def build(qt):
         from PySide6 import QtWebEngineQuick  # noqa: F401, PLC0415
         from ornis_core.browser import Browser  # noqa: PLC0415
         import ornis_mcp_http  # noqa: PLC0415
-        browser = Browser(app)
+        browser = Browser(app, theme)
         ornis_mcp_http.register("browser", browser.mcp_handle)
         # the window asks (OrnisView); a notification too, Plume may be in the tray
         browser.consentRequested.connect(lambda owner, name: app.toast.emit(

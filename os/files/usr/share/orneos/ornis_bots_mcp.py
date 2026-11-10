@@ -346,7 +346,8 @@ def call_tool(name: str, args: dict, ctx: dict | None = None) -> dict:
             if not actor:
                 raise ValueError("group_post is for bots: this session is not a bot")
             row = ornis_bots.post_group(args["group"], actor, args.get("message") or "",
-                                        depth=ornis_bots.turn_depth(actor, args["group"]))
+                                        depth=ornis_bots.turn_depth(actor, args["group"]),
+                                        fresh=not ornis_bots.in_group_turn(actor, args["group"]))
             return _ok({"posted": True, "id": row["id"], "delivered_to": row.get("targets") or []})
         if name == "group_create":
             g = ornis_bots.create_group(args, actor=actor)

@@ -20,6 +20,7 @@ PAGE = 60          # a group's messages loaded at once (older ones as you scroll
 
 WORKERS = 3              # bots answering at once in the background (groups, messages between bots)
 SILENT_TURN = 15 * 60     # a group or bot-to-bot turn with no news this long is stuck (see Bots._stop_silent)
+NEVER_STARTED = 5 * 60    # and one whose prompt never went out (its agent never came) after this
 LONG_TURN = 60 * 60       # and none goes on longer
 
 def _one_line(text: str) -> str:
@@ -450,10 +451,17 @@ class Bots(QObject):
         pending = self._pending.pop(task_id, None)
         stopped = task_id in self._stopping
         self._stopping.discard(task_id)
+        # stopped (by the person, from the bot's thread or the group, or by the watchdog): not delivered again. It
+        # was tried again 5 s later, three times: « si je les stop ils reprennent automatiquement » (11/11)
+        by_hand = False
+        for chat in (self._code, *self._workers):
+            if task_id in getattr(chat, "stopped_tasks", ()):
+                chat.stopped_tasks.discard(task_id)
+                by_hand = True
         low = str(summary or "").lower()
         quota = status != "ok" and ("402" in low or "quota" in low or "plan_required" in low)
         dropped = False
-        if pending and status == "ok":
+        if pending and (status == "ok" or stopped or by_hand):
             ornis_bots.ack_inbound(pending[0], pending[1])
         elif pending:
             dropped = ornis_bots.fail_inbound(pending[0], pending[1])     # kept for a retry, dropped after 3 failures
@@ -532,13 +540,6 @@ class Bots(QObject):
             if w.bot == bot_id and not w.busy and not w._cron_job:
                 w.clearBot()
 
-    def _runner_of(self, bid: str):
-        """Who runs this bot's turn now: the window when it is the bot open in front, else its worker."""
-        if self._code.bot == bid:
-            return self._code
-        return next((w for w in self._workers if w.bot == bid and (w.busy or w._cron_job)), None) \
-            or next((w for w in self._workers if w.bot == bid), self._worker)
-
     def _free_worker(self, bid: str):
         """A worker for a new turn of this bot: the one that holds its conversation if idle, else an idle one."""
         if any(w.bot == bid and (w.busy or w._cron_job) for w in self._workers):
@@ -566,18 +567,35 @@ class Bots(QObject):
             if task in self._stopping:
                 continue
             bid, gid, began = p[0], (p[2] if len(p) > 2 else ""), (float(p[3]) if len(p) > 3 else now)
-            runner = self._runner_of(bid)
-            if not runner.busy:
+            holder = self._holder(task)
+            if holder is None:
+                # nobody holds it any more and its end never came: the bot and the room are free again (it kept
+                # « écrit… » and its orange dot for ever), the message is tried again
+                if now - began > 60:
+                    self._pending.pop(task, None)
+                    if self._typing.get(bid) == gid:
+                        self._typing.pop(bid, None)
+                    ornis_bots.fail_inbound(bid, p[1])
+                    self.changed.emit()
                 continue
-            quiet = now - max(began, float(getattr(runner, "_activity_at", 0) or 0))
-            if quiet < SILENT_TURN and now - began < LONG_TURN:
+            # set aside when another conversation opened, or still waiting for an agent that never came: the
+            # watchdog looked only at a busy turn in front or in a worker, so these stayed stuck until Plume restarted
+            if holder.task_running(task):
+                quiet = now - max(began, holder.task_activity(task))
+                if quiet < SILENT_TURN and now - began < LONG_TURN:
+                    continue
+            elif now - max(began, holder.task_activity(task)) < NEVER_STARTED:
                 continue
             self._stopping.add(task)
-            runner.stop()
+            holder.stop_task(task)
             if gid and ornis_bots.get_group(gid):
                 ornis_bots.group_notice(gid, self._t("groups_stuck", "%1 ne donnait plus de nouvelles : tour arrêté. "
                                                      "Relancez-le en le mentionnant.").replace("%1", self._title(bid)))
                 self._reload_group()
+
+    def _holder(self, task: str):
+        """The chat (window or worker) holding this delivered turn, in front or set aside."""
+        return next((c for c in (self._code, *self._workers) if c.holds_task(task)), None)
 
     def _drain_inbounds(self):
         """One delivery at a time, never take over a foreground conversation. Also shows the bots' notifications."""
@@ -589,7 +607,9 @@ class Bots(QObject):
                 ornis_bots.bump_unread(bid)
         self._code.syncBotExchanges()
         self.changed.emit()
-        if self._delivering or not any(not w.busy and not w._cron_job for w in self._workers):
+        # every worker busy is no reason to stop here: the bot open in front answers in the window (09-11/11: three
+        # bots stuck in the workers, the new bot open in front never answered « Bonjour »)
+        if self._delivering:
             return
         self._delivering = True
         try:
@@ -611,7 +631,13 @@ class Bots(QObject):
                 if (not gid and depth > PEER_CHAIN_MAX) or not sender_ok or (gid and not ornis_bots.get_group(gid)):
                     ornis_bots.ack_inbound(bid, row["id"])
                     continue
+                runner = code if same else self._free_worker(bid)
+                if runner is None:
+                    continue                          # every worker busy: it waits for the next pass
                 if gid:
+                    ornis_bots.mark_inbound(bid, row["id"])    # taken: a later message of the room waits apart
+                    row = ornis_bots.peek_inbound(bid) or row   # as merged until now
+                    depth = int(row.get("depth") or 0)
                     ornis_bots.update(bid, {"group_depth": depth, "group_turn": gid})
                     prompt = ornis_bots.group_prompt(bid, row)
                 else:
@@ -622,9 +648,6 @@ class Bots(QObject):
                         "Reply to the sender using bot_message if useful. "
                         "If nothing needs a reply, end with [SILENT]. Do not continue a finished exchange."
                     )
-                runner = code if same else self._free_worker(bid)
-                if runner is None:
-                    continue
                 if runner is not code:
                     for other in self._workers:          # its conversation was idle in another worker: let it go
                         if other is not runner and other.bot == bid and not other.busy and not other._cron_job:
@@ -639,8 +662,6 @@ class Bots(QObject):
                 if gid:
                     self._typing[bid] = gid
                 self.changed.emit()
-                if not any(not w.busy and not w._cron_job for w in self._workers):
-                    break                             # every worker busy: the others wait for the next pass
         finally:
             self._delivering = False
 
@@ -890,13 +911,12 @@ class Bots(QObject):
         gid = self._group
         if not gid:
             return
-        for task, p in self._pending.items():
+        for task, p in list(self._pending.items()):
             if len(p) > 2 and p[2] == gid:
                 self._stopping.add(task)
-        for bid in [b for b, g in self._typing.items() if g == gid]:
-            runner = self._runner_of(bid)
-            if runner.busy:
-                runner.stop()
+                holder = self._holder(task)
+                if holder is not None:
+                    holder.stop_task(task)
         ornis_bots.drop_group_inbox(gid)
         self.changed.emit()
 

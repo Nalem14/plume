@@ -347,6 +347,10 @@ class CodeChat(QObject):
         self._bg_bots: dict[str, dict] = {}  # bot_id -> stashed live state while another conversation is viewed
         self._bot_starts: dict[str, int] = {}  # bot_id -> its latest agent start (see _start)
         self._handed: dict[str, "CodeChat"] = {}   # session -> the window its live turn was handed to (adopt)
+        # scheduled turns (a group or bot message) that ended because they were stopped (by the person, or by the
+        # watchdog), not because they failed: Bots acknowledges them instead of delivering them again (11/11: a bot
+        # stopped in a group started again 5 s later, three times)
+        self.stopped_tasks: set[str] = set()
         self._scheduling = False               # runScheduled opening its bot: never takes a worker's turn (adopt)
         self._unread_mark = 0                  # a bot opened with N answers not read: the bar goes before them
         self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
@@ -1028,6 +1032,7 @@ class CodeChat(QObject):
             "start": getattr(self, "_starts", 0),
             "turn_start": self._turn_start, "turn_asked": self._turn_asked,
             "turn_rev": self._turn_rev, "continued": getattr(self, "_continued", 0),
+            "activity": float(getattr(self, "_activity_at", 0) or 0) or time.time(),
         }
         self._agent = None
         self._busy = False
@@ -1157,16 +1162,73 @@ class CodeChat(QObject):
         self._activity_at = max(float(getattr(self, "_activity_at", 0) or 0), activity)
         return True
 
+    # ---- a scheduled turn wherever it is (in front, or set aside in _bg_bots): Bots' and Cron's watchdogs -------------
+    def _task_bg(self, task_id: str):
+        return next(((k, b) for k, b in self._bg_bots.items()
+                     if task_id and (b.get("cron_job") or {}).get("task_id") == task_id), (None, None))
+
+    def holds_task(self, task_id: str) -> bool:
+        """This chat runs (or still waits to run) this scheduled turn: in front, or set aside when another conversation
+        opened. The watchdogs only looked in front, so a turn set aside that hung kept its bot « au travail » until
+        Plume restarted (11/11)."""
+        if task_id and (self._cron_job or {}).get("task_id") == task_id:
+            return True
+        return self._task_bg(task_id)[1] is not None
+
+    def task_running(self, task_id: str) -> bool:
+        """Its prompt is really out (else it waits for an agent that may never come)."""
+        if task_id and (self._cron_job or {}).get("task_id") == task_id:
+            return bool(self._busy and self._agent is not None and self._session and not self._replaying)
+        bg = self._task_bg(task_id)[1]
+        return bool(bg and bg.get("busy") and bg.get("agent") is not None and bg.get("session") and not bg.get("replaying"))
+
+    def task_activity(self, task_id: str) -> float:
+        """When this turn's agent last gave news."""
+        if task_id and (self._cron_job or {}).get("task_id") == task_id:
+            return float(getattr(self, "_activity_at", 0) or 0)
+        bg = self._task_bg(task_id)[1]
+        return float((bg or {}).get("activity") or 0)
+
+    def stop_task(self, task_id: str) -> None:
+        """Stop this scheduled turn: its prompt is cancelled (its end comes as usual, « stopped »); one that never got
+        going (an agent that never started, a thread being read again for ever) ends here, its agent closed."""
+        stopped = self._app._t.get("code_stopped", "Arrêté")
+        if task_id and (self._cron_job or {}).get("task_id") == task_id:
+            if self.task_running(task_id):
+                self.stop()
+                return
+            agent, self._agent = self._agent, None
+            self._queued, self._busy, self._replaying, self._state = "", False, False, "idle"
+            self._items.quiet = False
+            if agent is not None:
+                threading.Thread(target=agent.close, daemon=True).start()
+            self._finish_cron("error", stopped, self._session, cancelled=True)
+            self.changed.emit()
+            return
+        key, bg = self._task_bg(task_id)
+        if bg is None:
+            return
+        if self.task_running(task_id):
+            agent, sid = bg["agent"], bg["session"]
+            threading.Thread(target=lambda: agent.cancel(sid), daemon=True).start()
+            return
+        self._bg_finish_cron(bg, "error", stopped, bg.get("session") or "", cancelled=True)
+        self._close_bg_bot(key)
+        self.changed.emit()
+
     def _passed_on(self, session: str):
         """The window a handed-over turn of this session went to (adopt), or None."""
         target = self._handed.get(session) if session else None
         return target if target is not None and session != self._session else None
 
-    def _bg_finish_cron(self, bg: dict, status: str, summary: str, session: str = "", answer: str = ""):
+    def _bg_finish_cron(self, bg: dict, status: str, summary: str, session: str = "", answer: str = "",
+                        cancelled: bool = False):
         job, bg["cron_job"] = bg.get("cron_job"), None
         if not job:
             return
         tid = str(job.get("task_id") or "")
+        if cancelled and status != "ok":
+            self.stopped_tasks.add(tid)
         if status == "ok":
             try:
                 import ornis_bots  # noqa: PLC0415
@@ -1347,10 +1409,12 @@ class CodeChat(QObject):
             except (ValueError, OSError):
                 pass
 
-    def _finish_cron(self, status: str, summary: str, session: str = ""):
+    def _finish_cron(self, status: str, summary: str, session: str = "", cancelled: bool = False):
         job, self._cron_job = self._cron_job, None
         if not job:
             return
+        if cancelled and status != "ok":
+            self.stopped_tasks.add(str(job.get("task_id") or ""))
         if status == "ok":
             self.cronReply.emit(str(job.get("task_id") or ""), self._last_answer())
         if job.get("prev_mode") in ornis_code.MODES:
@@ -1847,7 +1911,8 @@ class CodeChat(QObject):
                 return
             bg["busy"] = False
             answer = ""
-            if not result.get("error"):
+            stopped = result.get("stopReason") == "cancelled" or "cancel" in str(result.get("error") or "").lower()
+            if not result.get("error") and not stopped:       # a stopped turn is not an answer (« "answer": "" »)
                 rows = bg.get("rows") or []
                 ask_at = next((i for i in range(len(rows) - 1, -1, -1) if rows[i].get("kind") == "user"), -1)
                 answer = next((str(r.get("content") or "") for r in reversed(rows[ask_at + 1:])
@@ -1861,7 +1926,7 @@ class CodeChat(QObject):
                 base = self._app._t.get("cron_failed", "Échec")
                 self._bg_finish_cron(bg, "error" if failed else "ok",
                                      (f"{base} — {error}"[:300] if error else base) if failed
-                                     else self._app._t.get("cron_done", "Terminé"), session, answer)
+                                     else self._app._t.get("cron_done", "Terminé"), session, answer, cancelled=stopped)
             self._remember_for(bg["folder"], bg.get("session") or session, bg.get("title") or "", bg["bot"], touch=True)
             if bg.get("later") and not result.get("error"):
                 text = bg["later"].pop(0)
@@ -1926,7 +1991,8 @@ class CodeChat(QObject):
             row.pop("permission", None)
         self._asked = None
         error = str(result.get("error") or "")
-        if self._forced is not None and ("cancel" in error.lower() or result.get("stopReason") == "cancelled"):
+        stopped = "cancel" in error.lower() or result.get("stopReason") == "cancelled"
+        if self._forced is not None and stopped:
             error, result = "", dict(result, stopReason="end_turn")      # stopped for the next message: no « Arrêté »
         if error:
             low = error.lower()
@@ -1944,7 +2010,7 @@ class CodeChat(QObject):
             self._continue(why)                  # the same turn for « Annuler »: its checkpoint stays
             return
         self._remember(self._session, self._title)
-        if self._bot and not error:
+        if self._bot and not error and result.get("stopReason") != "cancelled":   # stopped: no empty answer kept
             self._bot_preview()
             _bot_record(self._bot, self._turn_asked, self._last_answer())
         elif not error and result.get("stopReason") != "cancelled" and self._turn_asked:
@@ -1968,7 +2034,7 @@ class CodeChat(QObject):
                 summary = f"{base_err} — {error}"[:300] if error else base_err
             else:
                 summary = self._app._t.get("cron_done", "Terminé")
-            self._finish_cron(status, summary, session)
+            self._finish_cron(status, summary, session, cancelled=stopped and self._forced is None)
             if self._forced is None and not self._later:
                 return                           # else: what waits goes now, or back into the box on an error
         if self._forced is not None:             # « Envoyer maintenant »: the turn was stopped for it
@@ -2340,6 +2406,7 @@ class CodeChat(QObject):
         if sid != self._session or agent is not self._agent:   # only the agent in use writes
             bg = next((b for b in self._bg_bots.values() if b.get("agent") is agent), None)
             if bg is not None:
+                bg["activity"] = time.time()
                 self._bg_update(bg, update)
             return
         kind = update.get("sessionUpdate")

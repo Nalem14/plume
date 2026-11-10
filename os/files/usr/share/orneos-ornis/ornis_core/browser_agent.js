@@ -100,9 +100,47 @@ window.__oa = (function () {
         return out;
     }
 
+    let last = null;          // the lines of the agent's last reading of the whole page: what changed is said from it
     function snapshot(rootRef, max) {
-        max = max || 14000;
-        const root = rootRef ? get(rootRef) : document.body;
+        const t = tree(rootRef ? get(rootRef) : document.body, max || 14000);
+        if (!rootRef) last = t.lines;
+        return JSON.stringify({ url: location.href, title: document.title, snapshot: t.lines.join("\n"),
+                                truncated: t.cut, focused: document.activeElement && document.activeElement !== document.body
+                                    ? ref(document.activeElement) : "" });
+    }
+    // After an action: the lines that came (+) and went (−) since the last reading, or the page itself when it is
+    // new (no reading yet in this document) or changed nearly whole.
+    function changes(max) {
+        max = max || 3500;
+        const t = tree(document.body, 80000);
+        const before = last;
+        last = t.lines;
+        if (!before) {
+            const head = [];
+            let size = 0;
+            for (const l of t.lines) { size += l.length + 1; if (size > max * 2) break; head.push(l); }
+            return JSON.stringify({ fresh: true, snapshot: head.join("\n"), truncated: head.length < t.lines.length });
+        }
+        const count = new Map();
+        for (const l of before) { const k = l.trim(); count.set(k, (count.get(k) || 0) + 1); }
+        const added = [];
+        for (const l of t.lines) {
+            const k = l.trim(), n = count.get(k) || 0;
+            if (n > 0) count.set(k, n - 1); else added.push("+ " + k);
+        }
+        const gone = [];
+        for (const [k, n] of count) for (let i = 0; i < n; i++) gone.push("− " + k);
+        if (!added.length && !gone.length) return JSON.stringify({ same: true });
+        const out = [];
+        let size = 0, cut = false;
+        for (const l of added.concat(gone.slice(0, 40))) {
+            size += l.length + 1;
+            if (size > max) { cut = true; break; }
+            out.push(l);
+        }
+        return JSON.stringify({ diff: out.join("\n"), truncated: cut || gone.length > 40 });
+    }
+    function tree(root, max) {
         const lines = [];
         let size = 0, cut = false;
         function push(depth, text) {
@@ -147,9 +185,11 @@ window.__oa = (function () {
             for (const c of el.childNodes) walk(c, d);
         }
         walk(root, 0);
-        return JSON.stringify({ url: location.href, title: document.title, snapshot: lines.join("\n"),
-                                truncated: cut, focused: document.activeElement && document.activeElement !== document.body
-                                    ? ref(document.activeElement) : "" });
+        return { lines: lines, cut: cut };
+    }
+    function box(el) {          // where an action happened, for the cursor the person watches
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
     }
 
     function text(offset, length) {
@@ -180,13 +220,13 @@ window.__oa = (function () {
         if (hit.focus) hit.focus({ preventScroll: true });
         ["pointerup", "mouseup"].forEach(t => mouse(hit, t, p));
         hit.click();
-        return JSON.stringify({ ok: true, clicked: nameOf(el) || roleOf(el), at: p });
+        return JSON.stringify({ ok: true, clicked: nameOf(el) || roleOf(el), at: p, box: box(el) });
     }
     function hover(id) {
         const el = get(id);
         const p = point(el);
         ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"].forEach(t => mouse(el, t, p));
-        return JSON.stringify({ ok: true });
+        return JSON.stringify({ ok: true, at: p, box: box(el) });
     }
     function insert(el, value, clear) {
         el.focus({ preventScroll: false });
@@ -224,8 +264,10 @@ window.__oa = (function () {
     function type(id, value, submit, clear) {
         const el = get(id);
         insert(el, String(value || ""), clear !== false);
+        const b = box(el);
         if (submit) keyOn(el, "Enter");
-        return JSON.stringify({ ok: true, typed: el.type === "password" ? "(hidden)" : clean(el.value || el.innerText, 80) });
+        return JSON.stringify({ ok: true, typed: el.type === "password" ? "(hidden)" : clean(el.value || el.innerText, 80),
+                                box: b, at: { x: b.x + Math.min(b.w - 4, 12), y: b.y + Math.round(b.h / 2) } });
     }
     function press(key, id) {
         const el = id ? get(id) : (document.activeElement || document.body);
@@ -242,7 +284,8 @@ window.__oa = (function () {
         el.value = o.value;
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
-        return JSON.stringify({ ok: true, chosen: clean(o.text, 60) });
+        const b = box(el);
+        return JSON.stringify({ ok: true, chosen: clean(o.text, 60), box: b, at: { x: b.x + Math.round(b.w / 2), y: b.y + Math.round(b.h / 2) } });
     }
     function scroll(id, dy) {
         if (id) get(id).scrollIntoView({ block: "center", behavior: "instant" });
@@ -316,6 +359,13 @@ window.__oa = (function () {
         const r = JSON.parse(pick(x, y)).rect;
         return JSON.stringify(r || {});
     }
+    function rects(selectors) {   // the annotated elements, where they are now (the page scrolled, moved)
+        return JSON.stringify((selectors || []).map(sel => {
+            let el = null;
+            try { el = sel ? document.querySelector(sel) : null; } catch (e) { el = null; }
+            return el ? box(el) : null;
+        }));
+    }
 
     function guard(fn) {
         return function () {
@@ -325,5 +375,6 @@ window.__oa = (function () {
     }
     return { snapshot: guard(snapshot), text: guard(text), click: guard(click), hover: guard(hover), type: guard(type),
              press: guard(press), choose: guard(choose), scroll: guard(scroll), find: guard(find), fields: guard(fields),
-             fill: guard(fill), read: guard(read), pick: guard(pick), rect: guard(rect) };
+             fill: guard(fill), read: guard(read), pick: guard(pick), rect: guard(rect),
+             rects: guard(rects), changes: guard(changes) };
 })();

@@ -539,17 +539,18 @@ class Cron(QObject):
             ctl, runner = wr["ctl"], self._runner_of_job(tid)
             if runner is None or ctl.get("stopped"):
                 continue
-            beat = max(float(ctl["started"]), float(getattr(runner, "_activity_at", 0) or 0))
+            beat = max(float(ctl["started"]), runner.task_activity(tid))
             if now - beat >= BG_SILENT or now - ctl["started"] >= BG_MAX:
                 ctl["stopped"] = True
-                runner.stop()
+                runner.stop_task(tid)        # in front or set aside, also one whose agent never came
         for bg in list(self._bg_runs.values()):
             self._stop_one(bg, now)
 
     def _runner_of_job(self, task_id: str):
-        """The CodeChat running this routine now: its worker, or the window that took it (adopt)."""
+        """The CodeChat running this routine now: its worker, or the window that took it (adopt), in front or set
+        aside when another conversation opened (then it was taken for lost after 30 s, its bot « free » while it ran)."""
         for c in [self._code, *(getattr(self._code, "_bot_peer_workers", None) or [])]:
-            if (getattr(c, "_cron_job", None) or {}).get("task_id") == task_id:
+            if c.holds_task(task_id):
                 return c
         return None
 
