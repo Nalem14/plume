@@ -54,6 +54,7 @@ PINS = "/ocs/v2.php/apps/orneos/api/v1/ornis/pins"
 ARCHIVED = "/ocs/v2.php/apps/orneos/api/v1/ornis/archived"
 FEEDBACK = "/ocs/v2.php/apps/orneos/api/v1/ornis/feedback"
 USAGE = "/ocs/v2.php/apps/orneos/api/v1/ornis/usage"
+REGION = "/ocs/v2.php/apps/orneos/api/v1/ornis/region"
 READ = "/ocs/v2.php/apps/orneos/api/v1/ornis"      # unread / read: the same on every device (orneos app, OrnisRead)
 ASSISTANT = "/ocs/v2.php/apps/assistant/api/v1"
 
@@ -863,6 +864,22 @@ class Chat:
         status, body = self._ocs(f"{USAGE}/reset?format=json", "POST", {})
         data = _data(body) if _ok(status) else None
         return data if isinstance(data, dict) else {"ok": False, "reason": "failed"}
+
+    def region(self) -> dict | None:
+        """Where Ornis runs for the account (orneos app, OrnisRegion): {region, effective, needs_consent, regions:
+        {eu: {available, providers}, global: {available, providers: [{name, country, country_name}], countries}}}."""
+        status, body = self._ocs(f"{REGION}?format=json")
+        data = _data(body) if _ok(status) else None
+        return data if isinstance(data, dict) and data.get("regions") else None
+
+    def set_region(self, region: str, accept: list | None = None) -> dict:
+        """Choose « eu » or « global » (with the country codes the warning showed). {…region, error?}."""
+        status, body = self._ocs(f"{REGION}?format=json", "PUT", {"region": region, "accept": list(accept or [])})
+        data = _data(body)
+        data = data if isinstance(data, dict) else {}
+        if not _ok(status) and not data.get("error"):
+            data["error"] = "failed"
+        return data
 
     def quota(self) -> dict | None:
         """Today's Ornis allowance (integration_openai, text tokens over a rolling 24 h): {used, limit, percent}."""

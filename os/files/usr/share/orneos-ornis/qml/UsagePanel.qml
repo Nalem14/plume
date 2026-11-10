@@ -50,7 +50,7 @@ ColumnLayout {
         app.openAiOffers(key)
     }
 
-    Component.onCompleted: chat.loadUsage()
+    Component.onCompleted: { chat.loadUsage(); chat.loadRegion() }
     Connections {
         target: Qt.application
         function onStateChanged() {
@@ -60,7 +60,7 @@ ColumnLayout {
             }
         }
     }
-    onVisibleChanged: if (visible) chat.loadUsage()
+    onVisibleChanged: if (visible) { chat.loadUsage(); chat.loadRegion() }
 
     // ---- today ------------------------------------------------------------------------------------------------
     RowLayout {
@@ -218,6 +218,112 @@ ColumnLayout {
         function onResetSettled() { panel.resetting = false }
     }
     ChoiceDialog { id: confirmReset; parent: Overlay.overlay }
+
+    // ---- where Ornis runs (OrnisRegion of the cloud): Europe by default, « global » after a warning -------------
+    // Shown once a provider outside Europe is active (or the account chose it). The warning names each provider and
+    // country, and the cloud keeps the countries accepted: a country added later asks again (needs_consent).
+    readonly property var reg: chat.region
+    readonly property var regGlobal: (reg.regions || {}).global || {}
+    readonly property bool regShown: !!regGlobal.available || reg.region === "global"
+    function regWho(providers) {
+        return (providers || []).map(p => p.country_name ? p.name + " (" + p.country_name + ")" : p.name).join(", ")
+    }
+    function askGlobal() {
+        const codes = (panel.regGlobal.providers || []).map(p => p.country).filter(c => !!c)
+        regionWarn.ask(app.t.region_warn_title, app.t.region_warn.replace("%1", panel.regWho(panel.regGlobal.providers)), [
+            { "id": "accept", "text": app.t.region_accept, "kind": "primary" },
+            { "id": "cancel", "text": app.t.cancel, "kind": "secondary" }
+        ], function (id) {
+            if (id === "accept")
+                chat.setRegion("global", codes)
+        })
+    }
+    ChoiceDialog { id: regionWarn; parent: Overlay.overlay }
+
+    Text {
+        visible: panel.regShown
+        Layout.topMargin: 10
+        text: app.t.region_title
+        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
+        font.capitalization: Font.AllUppercase; font.letterSpacing: 0.4
+        color: panel.c.muted
+    }
+    Text {
+        visible: panel.regShown
+        Layout.fillWidth: true
+        text: app.t.region_lead
+        wrapMode: Text.Wrap
+        font.family: "Schibsted Grotesk"; font.pixelSize: 13
+        color: panel.c.text
+    }
+    Text {
+        visible: panel.regShown && !!panel.reg.needs_consent
+        Layout.fillWidth: true
+        text: app.t.region_consent
+        wrapMode: Text.Wrap
+        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
+        color: panel.c.saffronInk || panel.c.saffron
+    }
+    GridLayout {
+        visible: panel.regShown
+        Layout.fillWidth: true
+        columns: panel.width < 520 ? 1 : 2
+        columnSpacing: 10; rowSpacing: 10
+        Repeater {
+            model: ["eu", "global"]
+            Rectangle {
+                id: regCard
+                required property string modelData
+                readonly property var info: (panel.reg.regions || {})[modelData] || {}
+                readonly property bool current: (panel.reg.region || "eu") === modelData
+                visible: modelData === "eu" || !!info.available || current
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                implicitHeight: regBody.implicitHeight + 28
+                radius: 12
+                color: current ? panel.c.tint : panel.c.field
+                border.width: current ? 2 : 1
+                border.color: current ? panel.c.famCommunicate : panel.c.line
+                ColumnLayout {
+                    id: regBody
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: 14 }
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            Layout.fillWidth: true
+                            text: regCard.modelData === "eu" ? app.t.region_eu : app.t.region_global
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 15; font.weight: Font.DemiBold
+                            color: regCard.current ? panel.c.tintText : panel.c.text
+                        }
+                        Text {
+                            visible: regCard.current
+                            text: app.t.region_current
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
+                            color: panel.c.famCommunicate
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: (regCard.modelData === "eu" ? app.t.region_eu_desc : app.t.region_global_desc)
+                              .replace("%1", panel.regWho(regCard.info.providers))
+                        wrapMode: Text.Wrap
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                        color: panel.c.muted
+                    }
+                    OButton {
+                        readonly property bool review: regCard.current && regCard.modelData === "global" && !!panel.reg.needs_consent
+                        visible: !regCard.current || review
+                        Layout.topMargin: 4
+                        kind: "secondary"
+                        text: review ? app.t.region_review : app.t.region_choose
+                        onClicked: regCard.modelData === "eu" ? chat.setRegion("eu", []) : panel.askGlobal()
+                    }
+                }
+            }
+        }
+    }
 
     // ---- the AI offers ---------------------------------------------------------------------------------------
     Text {

@@ -30,6 +30,7 @@ Popup {
     // the names of the keys as written on French and German keyboards
     function keyName(keys) { return Shortcuts.keyName(keys, app.lang, Qt.platform.os === "osx" || Qt.platform.os === "macos") }
     function show(index) { tab = index; open() }
+    readonly property alias usage: usagePanel     // the usage panel (its region warning, for the benches)
     function showUsage() { show(3) }      // the usage panel (the gauge at the bottom of the column)
     onTabChanged: Qt.callLater(() => {                // narrow: the chosen tab scrolled into the row
         const b = tabRow.children[tab]
@@ -413,7 +414,7 @@ Popup {
 
                 }
                 Page {   // usage: 24 h hour by hour, the AI offers (the gauge of the column opens it)
-            UsagePanel { Layout.fillWidth: true }
+            UsagePanel { id: usagePanel; Layout.fillWidth: true }
                 }
                 Page {   // the conversations
             Text {

@@ -74,6 +74,7 @@ class Chat(QObject):
     quotaChanged = Signal()
     usageChanged = Signal()        # the usage panel (Settings › Utilisation): 24 h hour by hour, the AI offer
     resetSettled = Signal()        # a banked reset finished (used or refused): the button can be pressed again
+    regionChanged = Signal()       # where Ornis runs (Settings › Utilisation): Europe or « global »
     replied = Signal()             # a reply arrived (the view scrolls, the window may notify)
     laterChanged = Signal()        # the messages written while Ornis answers, sent one by one after the reply
     laterReturned = Signal(str)    # stopped: what was waiting goes back into the box
@@ -90,6 +91,7 @@ class Chat(QObject):
     _quota = Signal(object)
     _usageFetched = Signal(object)
     _resetFetched = Signal(object)
+    _regionFetched = Signal(object)
     _failed = Signal(str)
     _archivedFetched = Signal(object, bool, int)   # the cloud's archived conversations (or [] and offline), the revision asked at
     _votesFetched = Signal(object, int)      # the cloud's votes, and the vote revision when they were asked
@@ -176,7 +178,7 @@ class Chat(QObject):
                 old.unlink(missing_ok=True)
         for signal, slot in ((self._listed, self._on_listed), (self._opened, self._on_opened), (self._progress, self._on_progress),
                              (self._finished, self._on_finished), (self._scheduled, self._on_scheduled),
-                             (self._quota, self._on_quota), (self._usageFetched, self._on_usage), (self._resetFetched, self._on_reset),
+                             (self._quota, self._on_quota), (self._usageFetched, self._on_usage), (self._resetFetched, self._on_reset), (self._regionFetched, self._on_region),
                              (self._failed, self.problem.emit),
                              (self._transcript, self._on_transcript), (self._pinned, self._on_pinned),
                              (self._uploaded, self._on_uploaded), (self._described, self._on_described),
@@ -839,6 +841,37 @@ class Chat(QObject):
                 if limit > 0:          # the gauge follows at once (a new offer raises the limit)
                     used = int(info.get("used") or 0)
                     self._quota.emit({"used": used, "limit": limit, "percent": min(100, round(100 * used / limit))})
+        self._bg(work)
+
+    @Property("QVariantMap", notify=regionChanged)
+    def region(self):
+        """{region, effective, needs_consent, regions} (ornis_chat.Client.region), {} until read."""
+        return getattr(self, "_region_info", None) or {}
+
+    @Slot()
+    def loadRegion(self):
+        def work():
+            client = self._client()
+            try:
+                info = client.region() if client else None
+            except Exception:  # noqa: BLE001 - offline: the panel keeps what it had
+                info = None
+            if info is not None:
+                self._regionFetched.emit(info)
+        self._bg(work)
+
+    @Slot(str, "QVariantList")
+    def setRegion(self, region, accept):
+        """« eu » at once; « global » with the countries the warning listed (the cloud refuses an incomplete list)."""
+        def work():
+            client = self._client()
+            try:
+                result = client.set_region(region, [str(c) for c in accept or []]) if client else {"error": "failed"}
+            except Exception:  # noqa: BLE001
+                result = {"error": "failed"}
+            if not result.get("error"):
+                result["_set"] = region
+            self._regionFetched.emit(result)
         self._bg(work)
 
     @Slot()
@@ -2601,6 +2634,18 @@ class Chat(QObject):
     def _on_usage(self, info):
         self._usage_info = info
         self.usageChanged.emit()
+
+    def _on_region(self, info):
+        info = info if isinstance(info, dict) else {}
+        error = info.pop("error", None)
+        chosen = info.pop("_set", None)
+        if info.get("regions"):
+            self._region_info = info
+            self.regionChanged.emit()
+        if error:
+            self._app.toast.emit(self._t.get("region_" + str(error), self._t["region_failed"]))
+        elif chosen in ("eu", "global"):
+            self._app.toast.emit(self._t["region_done_" + chosen])
 
     def _on_reset(self, result):
         result = result if isinstance(result, dict) else {"ok": False, "reason": "failed"}
