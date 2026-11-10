@@ -999,7 +999,7 @@ class Cron(QObject):
                         import ornis_bots  # noqa: PLC0415
                         bots_cli = str((ornis_code.ROOT / "bin" / "ornis-bots").resolve())
                         body = (ornis_bots.identity_block(bot, bots_cli=bots_cli)
-                                + ornis_bots.turn_note(bot, ornis_code.COMPACT_AT) + prompt)
+                                + ornis_bots.turn_note(bot, ornis_code.compact_at(bot)) + prompt)
                     except Exception:  # noqa: BLE001
                         pass
                 said.clear()                     # a resumed thread replays its past: only this turn's answer

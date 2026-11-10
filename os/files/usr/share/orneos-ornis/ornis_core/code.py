@@ -56,7 +56,8 @@ CONTINUE_TEXT = {
     "learn": "Your work is done. Look back at this turn: if it worked out a procedure that will come back (several steps, "
              "exact commands, pitfalls met) or taught a lasting fact or preference that is not in the code, offer it to the "
              "user in ONE short sentence (a skill in .ornis/skills, or a memory in .ornis/memory) and write nothing until "
-             "they agree. If nothing is worth keeping, reply with an empty message.",
+             "they agree. Not the limits of your own tools nor how you got round them: those are ours to fix. If nothing "
+             "is worth keeping, reply with an empty message.",
     "empty": "Your last answer was empty. Go on with the task: call a tool, or give your answer.",
     "verify": "You changed code ({files}) and ran nothing since. Before you finish, run what proves it works (the tests, "
               "the build, a linter, the script itself), read the result and fix what fails. If it cannot be checked "
@@ -76,8 +77,9 @@ def is_code(path: str) -> bool:
 FLUSH_AT = 0.75
 MEMORY_NOTE = ("[Project memory note: this conversation will be summarised soon and its details lost. Before you go on, "
                "write to .ornis/memory what must outlast it and is not in the code (decisions and why, preferences "
-               "learnt, what waits for the user, pitfalls met), one file per memory, indexed in .ornis/memory/MEMORY.md, "
-               "updating a memory that already covers it. Then carry on with the request.\n]\n\n")
+               "learnt, what waits for the user, pitfalls of the project), one fact per file, indexed in "
+               ".ornis/memory/MEMORY.md, updating a memory that already covers it; name code by file and function, not "
+               "line numbers; never the limits of your own tools or how you worked around them (those are ours to fix, not the project's). Then carry on with the request.\n]\n\n")
 MAX_CONTINUE = 3
 LEARN_TOOLS = 15                   # a turn this long may teach something to keep (lot 4)
 LEARN_EVERY = 3600                 # seconds between two « anything to keep? » in one conversation
@@ -217,7 +219,7 @@ def _bot_turn_note(bot: str) -> str:
     """The hidden memory line of a bot's turn (ornis_bots.turn_note); never a reason for a turn to fail."""
     try:
         import ornis_bots  # noqa: PLC0415
-        return ornis_bots.turn_note(bot, ornis_code.COMPACT_AT)
+        return ornis_bots.turn_note(bot, ornis_code.compact_at(bot))
     except Exception:  # noqa: BLE001
         return ""
 
@@ -549,7 +551,7 @@ class CodeChat(QObject):
         """The same shape as chat.context, for the shared gauge (ContextGauge.qml): measured against the size past which
         the agent summarises its start by itself."""
         used = int(self._parts.get("tokens") or self._usage.get("used") or 0)
-        limit = ornis_code.COMPACT_AT
+        limit = ornis_code.compact_at(self._bot)
         measured = {k: int(v or 0) for k, v in (self._parts.get("parts") or {}).items()}
         total = sum(measured.values())
         if not total:                                 # not measured yet (or an older cloud): one part
@@ -973,7 +975,7 @@ class CodeChat(QObject):
         if self._bot and not text.startswith("/"):
             head += _bot_turn_note(self._bot)    # keep memory as it goes; save it before a summary
         elif (not text.startswith("/") and not self._flushed and folder and ornis_code.ornis_dir(folder).is_dir()
-              and int(self._usage.get("used") or 0) >= ornis_code.COMPACT_AT * FLUSH_AT):
+              and int(self._usage.get("used") or 0) >= ornis_code.compact_at(self._bot) * FLUSH_AT):
             self._flushed = True                 # once until the next summary (lot 2 of the harness plan)
             head += MEMORY_NOTE
         blocks = [ornis_code.text_block(note + head + text)]
@@ -1477,6 +1479,7 @@ class CodeChat(QObject):
                 creds = ornis_code.credentials(*account)
                 self._gateway = {"token": creds["token"], "url": creds["url"]}
                 ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))   # its skills/ for skill_paths
+                ornis_code.fetch_context(creds["url"], creds["token"])   # the offer's context (64K, 128K, 256K)
                 ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder,
                                       self._app.pref("code_reasoning") or "high", bot=bot)
                 agent = ornis_code.Agent(exe, Path(folder), creds["token"],

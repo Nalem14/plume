@@ -29,7 +29,7 @@ import subprocess
 import sys
 import time
 
-KEEP = 8000                 # characters past which the output leaves the conversation
+KEEP = 30000                # characters past which the output leaves the conversation (Claude Code ~30 000; Hermes 100 000)
 HEAD, TAIL = 1500, 2500     # characters shown from its start and its end (errors and summaries are at the end)
 LINE = 300                  # characters of one shown line
 SKIP = {"read_file", "write_file", "edit", "todo", "ask_user_question", "skill"}   # a file already is the full text

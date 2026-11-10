@@ -39,7 +39,8 @@ RUNTIME = {      # (system, machine): (archive, sha256) — tools/ornis-code-run
     ("windows", "amd64"): (f"vibe-acp-windows-x86_64-{VERSION}.zip", "e853cc56f586bf3e618d2d82eca5659db2f781f070252b24ea273f6c156b5aec"),
 }
 ROOT = system.DATA / "ornis-code"
-COMPACT_AT = 64_000          # the agent summarises its start beyond this (each step sends the whole context again)
+COMPACT_AT = 64_000          # the agent summarises its start beyond this (each step sends the whole context again);
+                             # the offer's own (64K, 128K, 256K: OrnisCode::contextFor) once read, see compact_at()
 SECRET_DIRS = (".ssh", ".gnupg", ".pki", ".aws", ".kube", ".password-store", ".docker", ".config/gh", ".netrc")
 CACHE_DIRS = (".cache", ".npm", ".cargo", ".rustup", ".m2", ".gradle", "go", ".local/share/pnpm", ".bun", ".deno")
 MODES = ("ask", "edits", "auto")   # Demander / Modifier le projet sans demander (default) / Autonome
@@ -235,14 +236,18 @@ conversation. Edits in `.ornis/memory`, `.ornis/plans` and `.ornis/tmp` are alwa
   `- [Demo server](demo-server.md) — address and how to deploy`. MEMORY.md is only an index, never the content. Before writing, look for a memory
   that already covers it and update it instead; delete one that turns out wrong. Save when the user says
   « retiens… » / « remember… », when they correct you, or when you learn something that will matter again. Never
-  save secrets, what the code already says, or what only matters to this conversation. A memory may be old:
+  save secrets, what the code already says, or what only matters to this conversation. One fact per file: never
+  several subjects in one. Point to code by file and function name, never by line number (lines move). Never save
+  the limits of your own tools or how you worked around them (an output cut, a command that misbehaved): those are
+  ours to fix, not facts of the project. A memory may be old:
   check it against the code before relying on it. Read a memory file when its line in the index looks relevant.
 - `plans/`: in Plan mode, also write your plan to `.ornis/plans/<YYYY-MM-DD>-<short-title>.md` (context, steps
   file by file, how to check). When you carry out a plan from there, tick its steps (`- [x]`) as you go.
-- `tmp/`: for what is too long for your context. A tool output past about 8 000 characters is saved there by
-  itself (`.ornis/tmp/<tool>-<time>.txt`): you get its start, its end and the path; read the part you need (with an
-  offset) or grep that file, never run the command again to see it. You may also send an output there yourself
-  (`npm test > .ornis/tmp/test.log 2>&1; tail -n 60 .ornis/tmp/test.log`). Put your throwaway scripts and drafts
+- `tmp/`: for what is too long for your context. A command or tool output past about 30 000 characters is saved
+  there by itself (`.ornis/tmp/<tool>-<time>.txt`): you get its start, its end and the path; read the part you need
+  (read_file with an offset) or grep that file, never run the command again to see it. So do not shorten outputs
+  yourself (no `| head`, `| tail`, compact formats or separators to squeeze them): run the command plainly. A file is
+  read with read_file, which says where to go on when a file is longer than one read. Put your throwaway scripts and drafts
   there rather than in the project. Emptied after 7 days; never put anything that must last.
 - `history.jsonl`: one line per past exchange in this folder (date, request, answer; kept on the computer, out of git).
   When the user refers to earlier work (« comme la dernière fois », « ce qu'on a fait hier »), grep it before asking.
@@ -409,6 +414,33 @@ def _skill_paths(folder: str = "", bot: str = "") -> list[str]:
     return paths
 
 
+def fetch_context(url: str, token: str) -> None:
+    """The context of the account's offer (gateway /usage: compact_at, compact_at_bot), kept for compact_at(); quiet
+    when offline (the last one, or COMPACT_AT, stays)."""
+    import urllib.request  # noqa: PLC0415
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/usage", headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=4) as res:
+            data = json.loads(res.read().decode("utf-8"))
+        kept = {k: int(data[k]) for k in ("compact_at", "compact_at_bot") if int(data.get(k) or 0) >= 16_000}
+        if kept:
+            ROOT.mkdir(parents=True, exist_ok=True)
+            (ROOT / "context.json").write_text(json.dumps(kept), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def compact_at(bot: str = "") -> int:
+    """Past this many tokens the agent summarises its start: the offer's (fetch_context), else COMPACT_AT (half for a
+    bot)."""
+    try:
+        data = json.loads((ROOT / "context.json").read_text(encoding="utf-8"))
+        value = int(data.get("compact_at_bot" if bot else "compact_at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        value = 0
+    return value if value >= 16_000 else (COMPACT_AT // 2 if bot else COMPACT_AT)
+
+
 def write_home(url: str, language: str = "fr", folder: str = "", reasoning: str = "high",
                bot: str = "") -> Path:
     """The agent's configuration: our gateway as its only provider, nothing sent to anyone else (telemetry,
@@ -448,7 +480,7 @@ enable_mcp = true
 enable_subagents = false
 enable_background_processes = false
 include_commit_signature = false
-auto_compact_threshold = {COMPACT_AT}
+auto_compact_threshold = {compact_at(bot)}
 compaction_prompt_id = "ornis-compact"
 disabled_tools = ["cron", "unified_harness_scratchpad", "wait", "web_search", "task"]
 # Vibe's own skills (05/11: « skill-creator » made Ornis write its skills in .vibe/skills, which nobody reads here;
