@@ -915,7 +915,7 @@ class Cron(QObject):
                 creds = ornis_code.credentials(*account)
                 ornis_code.prepare_project(str(folder), self._lang())
                 ornis_code.write_home(creds["url"], self._lang(), str(folder),
-                                      self._app.pref("code_reasoning") or "high", bot=bot)
+                                      "high", bot=bot)   # never a setting: DeepSeek reasons « high » (11/11)
 
                 def on_permission(rid, sid, tool, opts):
                     kind = str((tool or {}).get("kind") or "")

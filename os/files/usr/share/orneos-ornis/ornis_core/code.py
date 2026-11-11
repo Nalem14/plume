@@ -1545,7 +1545,7 @@ class CodeChat(QObject):
                 ornis_code.prepare_project(folder, getattr(self._app, "_lang", "fr"))   # its skills/ for skill_paths
                 ornis_code.fetch_context(creds["url"], creds["token"])   # the offer's context (64K, 128K, 256K)
                 ornis_code.write_home(creds["url"], getattr(self._app, "_lang", "fr"), folder,
-                                      self._app.pref("code_reasoning") or "high", bot=bot)
+                                      "high", bot=bot)   # never a setting: DeepSeek reasons « high » (11/11)
                 agent = ornis_code.Agent(exe, Path(folder), creds["token"],
                                          on_update=lambda sid, u: _emit_safe(self._update, holder[0] if holder else None, sid, u),
                                          on_permission=lambda rid, sid, tool, opts: self._permission.emit(rid, sid, tool, opts),

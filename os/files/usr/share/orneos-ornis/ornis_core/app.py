@@ -43,7 +43,6 @@ PREFS = {
     "enter_sends": True,         # Enter sends (Shift+Enter: a new line); off, Ctrl+Enter sends
     "remember_new": False,       # new conversations are remembered (the assistant's memories)
     "show_tools": True,          # what Ornis used, under each reply
-    "code_reasoning": "high",    # off/none, low, medium, high; read when Code starts
     "reasoning_open": False,     # its reasoning unfolded above each reply (folded by default)
     "suggestions": True,         # ideas on a new conversation
     "notify": True,              # a notification when a reply arrives while the window is in the background

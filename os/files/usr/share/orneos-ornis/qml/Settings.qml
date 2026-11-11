@@ -341,17 +341,6 @@ Popup {
             Option { label: app.t.remember_new; hint: app.t.remember_new_hint; pref: "remember_new"; byDefault: false }
             Option { label: app.t.show_tools; pref: "show_tools" }
             Option { label: app.t.reasoning_open; pref: "reasoning_open" }
-            Choice {
-                label: app.t.code_reasoning_label; pref: "code_reasoning"
-                options: [{ value: "off", text: app.t.code_reasoning_off }, { value: "low", text: app.t.code_reasoning_low },
-                          { value: "medium", text: app.t.code_reasoning_medium }, { value: "high", text: app.t.code_reasoning_high }]
-            }
-            Text {
-                Layout.fillWidth: true
-                text: app.t.code_reasoning_hint
-                wrapMode: Text.Wrap
-                font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: dialog.c.muted
-            }
             Option { label: app.t.suggestions_pref; pref: "suggestions" }
             Option { label: app.t.notify_pref; hint: app.t.notify_hint; pref: "notify" }
 
