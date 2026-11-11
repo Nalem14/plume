@@ -62,6 +62,13 @@ jobs:
           # resolving on the runners for hours (every Linux build failed here)
           sudo sed -i 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu/#g; s#azure.archive.ubuntu.com#archive.ubuntu.com#g' \
             /etc/apt/sources.list $(ls /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null) || true
+          # and when the runner's resolver does not know them (archive.ubuntu.com did not resolve either, while public
+          # resolvers did): their address from 1.1.1.1
+          for host in archive.ubuntu.com security.ubuntu.com; do
+            getent hosts "$host" >/dev/null && continue
+            ip=$(dig +short "$host" @1.1.1.1 | grep -E '^[0-9.]+$' | head -1)
+            [ -n "$ip" ] && echo "$ip $host" | sudo tee -a /etc/hosts
+          done
           sudo apt-get -o Acquire::Retries=5 update -qq
           sudo apt-get -o Acquire::Retries=5 install -y -qq --no-install-recommends libxcb-cursor0 libxkbcommon-x11-0 libxcb-keysyms1 \
             libxcb-shape0 libxcb-icccm4 libxcb-image0 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libnss3 \
