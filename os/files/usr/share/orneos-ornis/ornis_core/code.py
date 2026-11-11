@@ -215,6 +215,18 @@ def _emit_safe(signal, *args):
         pass
 
 
+def _fresh_bot_thread(bot: str) -> bool:
+    """A bot whose conversation cannot be read again (the agent's runtime refuses it: « effect_recovery_failed »
+    after Plume quit during a pending approval, then « Session not found ») starts a new one: its SOUL, memory and
+    history stay, its next turn is briefed again. It was stuck for good, retried on the dead thread (11/11)."""
+    try:
+        import ornis_bots  # noqa: PLC0415
+        ornis_bots.update(bot, {"session": ""})
+        return True
+    except (ValueError, OSError, ImportError):
+        return False
+
+
 def _bot_turn_note(bot: str) -> str:
     """The hidden memory line of a bot's turn (ornis_bots.turn_note); never a reason for a turn to fail."""
     try:
@@ -1900,6 +1912,9 @@ class CodeChat(QObject):
             if result.get("loaded"):
                 bg["replaying"] = False
                 bg["busy"] = False
+                if result.get("error") and bg.get("bot") and _fresh_bot_thread(bg["bot"]):
+                    bg["session"], bg["bot_brief"] = "", True        # its turn goes on, on a new thread
+                    result = dict(result, error="")
                 if not result.get("error") and (bg.get("queued") or bg.get("later")):
                     text = bg["queued"] if bg.get("queued") else bg["later"].pop(0)
                     bg["queued"] = ""
@@ -1957,6 +1972,10 @@ class CodeChat(QObject):
             if self._unread_mark and not result.get("error"):
                 self._place_unread_mark()
             self._busy = False
+            if result.get("error") and self._bot and _fresh_bot_thread(self._bot):
+                self._add_error("bots_session_lost")             # a new thread: what waited goes on there
+                self._session, self._bot_brief = "", True
+                result = dict(result, error="")
             if result.get("error"):
                 self._add_error("code_lost")
                 self._queued = ""

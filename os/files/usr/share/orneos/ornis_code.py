@@ -1037,11 +1037,17 @@ def always_ask(tool: dict, folder: str = "", reusable: bool = True) -> bool:
     from ornis_consent import sensitive
     raw = tool.get("rawInput") if isinstance(tool.get("rawInput"), dict) else {}
     command = str(raw.get("command") or "")
-    writing = tool.get("kind") not in ("read", "search", "think", "fetch") or bool(command)
+    writing = tool.get("kind") not in ("read", "search", "think", "fetch")
     if command:
         import ornis_shell
         if reusable and not ornis_shell.rule_for(command, folder):
             return True
+        # a command that only reads (« type …\SOUL.md », « cat .git/config ») does not write a protected file: a bot
+        # reading its own SOUL by a command asked each time, alone in the background, until it was stuck (11/11)
+        try:
+            writing = writing and not ornis_shell.classify(command).get("read_only")
+        except Exception:  # noqa: BLE001
+            pass
     paths = file_paths(tool)
     if command:
         paths += re.split(r"[\s\"'=;|&]+", command)
