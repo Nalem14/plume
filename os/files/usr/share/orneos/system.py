@@ -105,6 +105,56 @@ def open_url(url: str) -> None:
         subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def reveal(path: str) -> None:
+    """A file shown selected in the system's file manager (Explorer, Finder, Dolphin, Files…); a folder opened there.
+    Linux: the FileManager1 interface every file manager implements, else its folder in the default handler."""
+    target = Path(path)
+    if target.is_dir():
+        open_url(str(target))
+        return
+    if WINDOWS:
+        if spawn(["explorer", "/select," + str(target)]):
+            return
+    elif MACOS:
+        if spawn(["open", "-R", str(target)]):
+            return
+    else:
+        try:
+            from PySide6.QtCore import QUrl  # noqa: PLC0415
+            from PySide6.QtDBus import QDBusConnection, QDBusMessage  # noqa: PLC0415
+            msg = QDBusMessage.createMethodCall("org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                                                "org.freedesktop.FileManager1", "ShowItems")
+            msg.setArguments([[QUrl.fromLocalFile(str(target)).toString()], ""])
+            reply = QDBusConnection.sessionBus().call(msg, timeout=3000)
+            if reply.type() != QDBusMessage.MessageType.ErrorMessage:
+                return
+        except Exception:  # noqa: BLE001 - no D-Bus (another session): the folder instead
+            pass
+    open_url(str(target.parent))
+
+
+def native_dialogs() -> None:
+    """The system's own file picker for « Joindre », « Enregistrer sous », « Importer »… Before the QGuiApplication.
+    Windows and macOS always have it. On Linux, Qt finds it through its theme plugin for the desktop (KDE's, GTK's),
+    which the packages of Plume (AppImage, .deb) do not carry: Qt then drew its own picker, plain and at the root of
+    the disk. They carry the portal's (xdg-desktop-portal: the dialog of KDE, GNOME and the others), chosen here when
+    the desktop's own is missing. Without a portal running, Qt falls back on its picker, as before."""
+    if WINDOWS or MACOS or os.environ.get("QT_QPA_PLATFORMTHEME"):
+        return
+    try:
+        from PySide6.QtCore import QLibraryInfo  # noqa: PLC0415
+        themes = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)) / "platformthemes"
+        names = {p.name.lower() for p in themes.iterdir()} if themes.is_dir() else set()
+    except Exception:  # noqa: BLE001
+        return
+    desktop = (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower()
+    has = lambda part: any(part in n for n in names)  # noqa: E731
+    if ("kde" in desktop and has("kde")) or ("kde" not in desktop and has("gtk3")):
+        return                                 # the desktop's own theme is there (Orneos OS, Fedora's Qt)
+    if has("xdgdesktopportal"):
+        os.environ["QT_QPA_PLATFORMTHEME"] = "xdgdesktopportal"
+
+
 def spawn(cmd) -> bool:
     """Start another program, detached. False when it is not there (another system, not installed)."""
     if not cmd or not (shutil.which(cmd[0]) or os.path.isfile(cmd[0])):

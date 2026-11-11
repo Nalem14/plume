@@ -1168,6 +1168,7 @@ Rectangle {
     ChoiceDialog { id: choice }
     FileDialog {
         id: importDialog
+        currentFolder: StandardPaths.writableLocation(StandardPaths.HomeLocation)
         nameFilters: ["vCard, CSV (*.vcf *.vcard *.csv)", "vCard (*.vcf *.vcard)", "CSV (*.csv)"]
         function into(file, book) {
             const r = people.importFile(file, book)
@@ -1186,19 +1187,18 @@ Rectangle {
     }
     FileDialog {
         id: exportDialog
+        currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
         property string group
         property int contactId
         property var ids: []
         function exportSome(groupName, id, label) {
             group = groupName; contactId = id; ids = []
-            selectedFile = "file://" + StandardPaths.writableLocation(StandardPaths.DocumentsLocation).toString().replace("file://", "")
-                           + "/" + (label ? people.exportNameFor(label) : people.exportName())
+            selectedFile = StandardPaths.writableLocation(StandardPaths.DocumentsLocation) + "/" + encodeURIComponent(label ? people.exportNameFor(label) : people.exportName())
             open()
         }
         function exportIds(list) {
             group = ""; contactId = 0; ids = list.slice()
-            selectedFile = "file://" + StandardPaths.writableLocation(StandardPaths.DocumentsLocation).toString().replace("file://", "")
-                           + "/" + people.exportName()
+            selectedFile = StandardPaths.writableLocation(StandardPaths.DocumentsLocation) + "/" + encodeURIComponent(people.exportName())
             open()
         }
         fileMode: FileDialog.SaveFile

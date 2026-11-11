@@ -7,6 +7,7 @@
 // above the field. The others see that we write. « :) », « <3 »… become their emoji when the message leaves.
 // The draft stays with each conversation (offline too). Entrée sends (Maj+Entrée: a new line), or Ctrl+Entrée
 // in the settings.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -355,6 +356,7 @@ Rectangle {
 
     FileDialog {
         id: files
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         fileMode: FileDialog.OpenFiles
         title: app.t.share_file
         onAccepted: composer.addFiles(selectedFiles.map(u => String(u)))

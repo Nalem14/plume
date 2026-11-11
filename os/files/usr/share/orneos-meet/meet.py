@@ -32,6 +32,7 @@ def main():
     args = sys.argv[1:]
     QtWebEngineQuick.initialize()                 # before the application: the call page needs it
     QGuiApplication.setDesktopFileName("eu.orneos.meet")
+    system.native_dialogs()          # the system's file picker, not Qt's own
     qt = QGuiApplication(sys.argv)
     qt.setApplicationName("Meet")
     qt.setOrganizationName("Orneos")

@@ -43,6 +43,7 @@ def main():
         os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "") + " --disable-renderer-backgrounding"
                                                     " --disable-background-timer-throttling --disable-backgrounding-occluded-windows").strip()
         QtWebEngineQuick.initialize()   # before the application; Chromium itself starts only with a first artifact
+    system.native_dialogs()          # the system's file picker, not Qt's own
     qt = QGuiApplication(sys.argv)
     qt.setApplicationName("Ornis")
     qt.setOrganizationName("Orneos")

@@ -1,5 +1,6 @@
 // Coming from another password manager: its CSV export, read here, then added (offline too). The file holds
 // passwords in clear: the dialog says to delete it afterwards.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -93,6 +94,7 @@ ODialog {
 
     FileDialog {
         id: openFile
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         nameFilters: ["CSV (*.csv *.CSV)", "* (*)"]
         onAccepted: { dialog.reading = true; vault.readImport(selectedFile.toString()) }
     }

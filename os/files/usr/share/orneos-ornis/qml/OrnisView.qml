@@ -3,6 +3,7 @@
 // the Ornis module of Plume both show this view.
 // One menu serves every conversation (the « … » of a row or of the header, a right click): pin, rename, copy,
 // Notes, export, the cloud, delete. A deletion is undone from the toast, the cloud only follows afterwards.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -192,6 +193,14 @@ Item {
         try { conversation.Accessible.announce(text) } catch (e) { }
     }
 
+    Connections {                             // a file or folder of a message: the panel on the right of the view showing it
+        target: app
+        function onLocalRequested(path, isDir) {
+            if (!win.shown) return
+            const v = win.view === "code" ? codeView : win.view === "group" ? groupView : win.view === "chat" ? conversation : null
+            if (v && v.showLocal(path, isDir)) app.localTaken()
+        }
+    }
     Connections {                             // the browsers: the Trousseau asked once, an annotation sent to its bot
         target: browser
         ignoreUnknownSignals: true
@@ -522,6 +531,7 @@ Item {
     }
     FolderDialog {
         id: codeFolderDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.code_choose_folder
         onAccepted: win.newCode(app.localPath(selectedFolder))
     }

@@ -2,6 +2,7 @@
 // being written (what Ornis is looking at, its text so far), the actions waiting for a yes, then the message box.
 // Empty, it greets and suggests what Ornis can do. Scrolled up, a button brings back the end. What is typed in the
 // message box stays with its conversation while another one is open.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -77,7 +78,7 @@ Rectangle {
             const last = chat.messages.length ? chat.messages[chat.messages.length - 1] : null
             if (!last || last.role === "human") return
             const art = app.messageBlocks(last.content || "").filter(b => b.artifact)
-            if (art.length && !view.panel) previewPane.show(art[art.length - 1].title, art[art.length - 1].lang, art[art.length - 1].code)
+            if (art.length && !view.panel) { filePane.open = false; previewPane.show(art[art.length - 1].title, art[art.length - 1].lang, art[art.length - 1].code) }
         }
     }
     Connections {
@@ -90,7 +91,14 @@ Rectangle {
     }
     Connections {
         target: app
-        function onPreviewRequested(title, lang, code) { if (view.panel) view.expandRequested(); else previewPane.show(title, lang, code) }
+        function onPreviewRequested(title, lang, code) { if (view.panel) view.expandRequested(); else { filePane.open = false; previewPane.show(title, lang, code) } }
+    }
+    // a file or folder named in a message: the file panel on the right (OrnisView hands it here)
+    function showLocal(path, isDir) {
+        if (view.panel) return false
+        previewPane.close()
+        filePane.show(path)
+        return true
     }
 
     RowLayout {
@@ -671,10 +679,17 @@ Rectangle {
         Layout.fillHeight: true
         Layout.preferredWidth: Math.max(340, Math.min(540, Math.round(view.width * 0.44)))
     }
+    FilePane {
+        id: filePane
+        enabled: !view.panel
+        Layout.fillHeight: true
+        Layout.preferredWidth: Math.max(340, Math.min(560, Math.round(view.width * 0.44)))
+    }
     }
 
     FolderDialog {
         id: workspaceDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.workspace_pick
         onAccepted: { app.setWorkspace(selectedFolder); composer.focusInput() }
     }

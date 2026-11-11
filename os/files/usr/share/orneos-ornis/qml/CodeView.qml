@@ -36,10 +36,28 @@ Item {
     // a file of a message (joined or named with @) opened in the panel; one outside the folder, in its app
     function openInBench(path) {
         if (!path) return
-        if (code.bench.absolute(path) === "") { Qt.openUrlExternally("file://" + path); return }
-        app.setPref("bench_tab", "files")
+        if (code.bench.absolute(path) === "") { showLocal(path, false); return }
         const root = String(code.folder).replace(/\/+$/, "") + "/"
         benchPanel.openFile(path.startsWith(root) ? path.slice(root.length) : path)
+        app.setPref("bench_tab", "files")
+    }
+    // a file or folder named in a message (OrnisView hands it here): inside the folder, Fichiers (the tree unfolded
+    // down to a folder); a picture, or anything outside the folder, Aperçu (FilePane: in large, saved elsewhere…)
+    function showLocal(path, isDir) {
+        if (code.folder === "") return false
+        const root = String(code.folder).replace(/\/+$/, "")
+        const inside = path === root || path.startsWith(root + "/")
+        const picture = /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(path)
+        if (inside && !picture) {
+            const rel = path === root ? "" : path.slice(root.length + 1)
+            if (isDir) benchPanel.openFolder(rel)
+            else benchPanel.openFile(rel)
+            app.setPref("bench_tab", "files")
+        } else {
+            benchPanel.openLocal(path)
+            app.setPref("bench_tab", "local")
+        }
+        return true
     }
     // a file of a turn's card opened in the panel, with what changed in it
     function showChange(rev, path) {

@@ -2,6 +2,7 @@
 // videos, files, voice messages, sounds, polls, places…), searched by name, author or words, filtered by kind,
 // date and person, sorted, in a list by month or in a grid. A file opens in this computer's app (a picture in
 // the viewer), is saved elsewhere, or is found again in the chat. Older items come on demand (Talk: 200 a call).
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -404,7 +405,8 @@ Rectangle {
         property var file: ({})
         fileMode: FileDialog.SaveFile
         title: app.t.save_as
-        currentFile: "file:///" + (file.name || "")
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(file.name || "")
         onAccepted: meet.saveFile(file, String(selectedFile))
     }
     ImageViewer { id: viewer }

@@ -66,6 +66,23 @@ Rectangle {
 
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: win.c.line; z: 2 }
 
+    // a file or folder of a message: Ornis in large opens it in its panel on the right (here, no room for one).
+    // Asked once: if Ornis did not take it, the system's app opens it, as before.
+    property string localAsked: ""
+    Timer { id: localForget; interval: 3000; onTriggered: win.localAsked = "" }
+    Timer { id: localAgain; interval: 300; onTriggered: app.openLocal(win.localAsked) }     // once Ornis is in front
+    Connections {
+        target: app
+        function onLocalRequested(path, isDir) {
+            if (!win.visible || app.localIsTaken() || win.localAsked === path) return
+            app.localTaken()
+            win.localAsked = path
+            localForget.restart()
+            win.expandRequested()
+            localAgain.restart()
+        }
+    }
+
     Conversation {
         id: conversation
         anchors.fill: parent

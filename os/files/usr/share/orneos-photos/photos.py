@@ -31,6 +31,7 @@ from photos_core import bundle  # noqa: E402
 def main():
     args = sys.argv[1:]
     QGuiApplication.setDesktopFileName("eu.orneos.photos")
+    system.native_dialogs()          # the system's file picker, not Qt's own
     qt = QGuiApplication(sys.argv)
     qt.setApplicationName("Photos")
     qt.setOrganizationName("Orneos")

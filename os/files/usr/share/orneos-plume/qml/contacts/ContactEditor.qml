@@ -2,6 +2,7 @@
 // of one's own), birthday, anniversary, nickname, related people, groups, notes.
 // A card of a read-only book (an Orneos account, someone written to) is edited into my contacts.
 // Every item keeps what it came with (_head, _kind, _value, _label…: vcard.py writes it back as it was).
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -203,6 +204,7 @@ ODialog {
     }
     FileDialog {
         id: photoDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.PicturesLocation)
         nameFilters: ["Images (*.jpg *.jpeg *.png *.webp *.gif *.bmp *.heic)"]
         onAccepted: {
             const data = people.photoFrom(selectedFile.toString())

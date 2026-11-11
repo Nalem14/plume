@@ -6,6 +6,7 @@
 // reactions, its thread; a voice message (or any sound) plays here, a GIF moves, a link shows its preview.
 // On hover, the quick reactions pinned (👍 👀 🎉 at first), « Répondre » and the rest in a menu (forward, pin,
 // Notes, Tâches, remind, translate…). A picture opens in the viewer, another file in this computer's app.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -742,7 +743,8 @@ Item {
         property var file: ({})
         fileMode: FileDialog.SaveFile
         title: app.t.save_as
-        currentFile: "file:///" + (file.name || "")
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(file.name || "")
         onAccepted: meet.saveFile(file, String(selectedFile))
     }
     function openLink(link) {

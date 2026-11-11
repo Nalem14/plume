@@ -2,6 +2,7 @@
 // Chromium without JavaScript (links open in the browser). HTML mail stays on white paper in the dark.
 // A conversation shows all its messages on one page, newest first (older ones folded, a click unfolds
 // them); each has its reply buttons and attachments, caught here as links to plume.invalid.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -228,7 +229,7 @@ Rectangle {
                             else if (kind === "source")
                                 mail.showSource(reader.m.messageId)
                             else if (kind === "eml") {
-                                emlDialog.selectedFile = "file:///" + mail.messageFileName(reader.m.messageId)
+                                emlDialog.selectedFile = Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(mail.messageFileName(reader.m.messageId))
                                 emlDialog.open()
                             } else if (kind === "attachments")
                                 folderDialog.open()
@@ -711,7 +712,7 @@ Rectangle {
             text: plume.t.save_image; iconName: "import"
             onTriggered: {
                 imageSaveDialog.url = textMenu.image
-                imageSaveDialog.selectedFile = "file:///" + mail.imageName(textMenu.image)
+                imageSaveDialog.selectedFile = Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(mail.imageName(textMenu.image))
                 imageSaveDialog.open()
             }
         }
@@ -754,7 +755,7 @@ Rectangle {
             onTriggered: {
                 saveDialog.index = attachmentMenu.index
                 saveDialog.messageId = attachmentMenu.messageId
-                saveDialog.selectedFile = "file:///" + attachmentMenu.name
+                saveDialog.selectedFile = Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(attachmentMenu.name)
                 saveDialog.open()
             }
         }
@@ -765,6 +766,7 @@ Rectangle {
 
     FileDialog {
         id: imageSaveDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
         property string url
         fileMode: FileDialog.SaveFile
         onAccepted: mail.saveImage(url, selectedFile.toString())
@@ -772,16 +774,19 @@ Rectangle {
 
     FileDialog {
         id: emlDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
         fileMode: FileDialog.SaveFile
         onAccepted: mail.saveMessage(reader.m.messageId, selectedFile.toString())
     }
     FolderDialog {
         id: folderDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
         onAccepted: mail.saveAllAttachments(reader.m.messageId, selectedFolder.toString())
     }
 
     FileDialog {
         id: saveDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
         property int index: -1
         property int messageId: 0
         fileMode: FileDialog.SaveFile

@@ -1,6 +1,7 @@
 // A project of the Work mode, made or set, as in Claude and ChatGPT: its name, where its files are (a folder of the
 // Drive, seen from every device, or a folder of this computer, or none), the instructions Ornis follows in each of its
 // conversations, and whether Ornis remembers its other conversations (project memory).
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -185,6 +186,7 @@ ODialog {
     }
     FolderDialog {
         id: localPick
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.project_where_local
         onAccepted: dlg.localPath = app.localPath(selectedFolder)
     }

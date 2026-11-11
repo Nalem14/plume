@@ -258,6 +258,67 @@ def _resolve_local(ref: str, bases) -> Path | None:
     return None
 
 
+_PREVIEW_BYTES = 400 * 1024
+_PREVIEW_LINES = 6000
+_IMAGE_EXT = ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "avif")
+_TEXT_EXT = {"txt", "log", "csv", "tsv", "json", "jsonl", "yml", "yaml", "toml", "ini", "cfg", "conf", "env", "xml",
+             "html", "htm", "css", "js", "mjs", "ts", "tsx", "jsx", "py", "sh", "bash", "zsh", "php", "rb", "go", "rs",
+             "java", "kt", "swift", "c", "h", "cpp", "hpp", "cs", "qml", "sql", "lua", "pl", "r", "vue", "svelte",
+             "dart", "scala", "gradle", "properties", "lock", "gitignore", "dockerfile", "makefile", "tex", "srt", "vtt",
+             "ics", "vcf", "rst", "org", "adoc", "diff", "patch", ""}
+_IMAGE_HINT = re.compile(r"\.(?:" + "|".join(_IMAGE_EXT) + r")\b", re.I)
+_IMG_PATH = r"[^\s`'\"<>|()\[\]]{1,240}?\.(?:" + "|".join(_IMAGE_EXT) + r")"
+_IMAGE_REF = re.compile(
+    r"!\[[^\]\n]{0,200}\]\(\s*<?([^)>\n]{1,260}?)>?\s*\)"                                   # ![…](path)
+    r"|\[[^\]\n]{0,200}\]\(\s*<?([^)>\n]{1,260}?\.(?:" + "|".join(_IMAGE_EXT) + r"))>?\s*\)"   # [la photo](path.png)
+    r"|`([^`\n]{1,260}?\.(?:" + "|".join(_IMAGE_EXT) + r"))`"                          # `img/plan.png`
+    r"|file://(" + _IMG_PATH + r")"                                                # file:///…/x.png
+    r"|(?<![\w/.~:-])((?:~|/)" + _IMG_PATH + r")(?![\w])",                          # /home/…/x.png, ~/…/x.png
+    re.I)
+
+
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(\s*<?([^)>\s]+)>?\s*\)")
+
+
+def _local_images_as_paths(text: str) -> str:
+    """![plan](img/plan.png) of a reply: Qt would draw a broken picture (a relative file it cannot find). It becomes
+    the path as a link (`img/plan.png`), and the picture is shown under the reply (localImages)."""
+    return _MD_IMAGE.sub(lambda m: m.group(0) if re.match(r"^(?:https?|data|qrc):", m.group(2), re.I)
+                         else "`" + unquote(m.group(2).replace("file://", "")) + "`", text)
+
+
+def _local_kind(ext: str) -> str:
+    if ext in _IMAGE_EXT:
+        return "image"
+    if ext in ("md", "markdown"):
+        return "markdown"
+    if ext == "pdf":
+        return "pdf"
+    return "text" if ext in _TEXT_EXT else "other"
+
+
+def _size_text(size: int, lang: str = "fr") -> str:
+    units = ("o", "Ko", "Mo", "Go") if lang == "fr" else ("B", "KB", "MB", "GB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            text = f"{value:.0f}" if unit == units[0] or value >= 100 else f"{value:.1f}"
+            return (text.replace(".", ",") if lang in ("fr", "de") else text) + " " + unit
+        value /= 1024
+    return str(size)
+
+
+def _image_refs(text: str):
+    """The paths of pictures a text names, in order (web addresses left out)."""
+    for match in _IMAGE_REF.finditer(text):
+        ref = next((g for g in match.groups() if g), "").strip()
+        if not ref or re.match(r"^(?:https?|data|ftp):", ref, re.I):
+            continue
+        if ref.startswith("file://"):
+            ref = QUrl(ref).toLocalFile()
+        yield unquote(ref)
+
+
 class App(QObject):
     accountChanged = Signal()
     notificationClicked = Signal(str)       # the conversation of a notification the user clicked
@@ -265,6 +326,7 @@ class App(QObject):
     computerChanged = Signal()                  # the permissions of Ornis on this computer (ornis_consent)
     undoChanged = Signal()
     previewRequested = Signal(str, str, str)    # title, lang, code
+    localRequested = Signal(str, bool)          # a file or folder of a message, for the panel on the right (path, folder?)
     toast = Signal(str)
     raiseRequested = Signal()
     actionRequested = Signal(str, str)      # "session" | "ask" | "draft" | "new" | "scheduled" | "code" | "mode", value
@@ -278,6 +340,8 @@ class App(QObject):
         self.path_bases = lambda: []     # the folders a relative path of a message is read from (bundle.py)
         self._html = {}                  # markdown() cache: (text, colours, size) → HTML
         self._blocks = {}                # messageBlocks() cache: text → blocks
+        self._images = {}                # localImages() cache: (text, folders) → pictures
+        self._local_taken = False
         self._lang = language()
         try:
             self._config = json.loads(CONFIG.read_text())
@@ -698,21 +762,150 @@ class App(QObject):
             cloud.open_url(cloud.cloud_link(url))
         elif url.startswith(("https://", "http://", "mailto:")):
             cloud.open_url(url)
+        elif not re.match(r"^[a-z][a-z0-9+.-]*:", url, re.I) or re.match(r"^[A-Za-z]:[\\/]", url):
+            self.openLocal(unquote(url))         # [le rapport](docs/rapport.md): a path, as `docs/rapport.md`
 
     @Slot(str)
     def openLocal(self, ref):
-        """A file or folder named in a message: a file in the system's preview (Quick Look on a Mac; elsewhere the app
-        that opens it), a folder in the file manager. A relative path is read from the conversation's folders
-        (the project, the bot's folder and profile, the group's shared folder: `path_bases`, set by the bundle)."""
+        """A file or folder named in a message: in the panel on the right of the view showing it (Code and Bots: their
+        Fichiers when inside the folder; the Chat and the groups: the file panel, FilePane.qml), a picture shown there
+        at once. A relative path is read from the conversation's folders (the project, the bot's folder and profile,
+        the group's shared folder: `path_bases`, set by the bundle). Nobody to take it (Plume's side panel): a file
+        in the system's preview (Quick Look on a Mac; elsewhere the app that opens it), a folder in the file manager."""
         found = _resolve_local(ref, self.path_bases())
         if found is None:
             self.toast.emit(self._t["path_missing"].replace("%1", str(ref)))
+            return
+        self._local_taken = False
+        self.localRequested.emit(str(found), found.is_dir())     # a view calls localTaken() while it is emitted
+        if self._local_taken:
             return
         if found.is_file() and system.MACOS and Path("/usr/bin/qlmanage").exists():
             subprocess.Popen(["/usr/bin/qlmanage", "-p", str(found)], stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
             return
         system.open_url(str(found))
+
+    @Slot()
+    def localTaken(self):
+        self._local_taken = True
+
+    @Slot(result=bool)
+    def localIsTaken(self):
+        return self._local_taken
+
+    # ---- the file panel (FilePane.qml): a file or folder of this computer ---------------------------------------
+    @Slot(str, result="QVariantMap")
+    def localInfo(self, path):
+        """What the panel shows of a path: {path, name, dir, kind (image | markdown | text | other), ext, url, size,
+        sizeText, modified, parent}; a text file with its lines (the start of a long one), a folder with its count."""
+        target = Path(str(path or "")).expanduser()
+        try:
+            st = target.stat()
+        except OSError:
+            return {"missing": True, "path": str(target), "name": target.name}
+        is_dir = target.is_dir()
+        ext = "" if is_dir else target.suffix.lower().lstrip(".")
+        info = {"path": str(target), "name": target.name or str(target), "dir": is_dir, "ext": ext,
+                "kind": "dir" if is_dir else _local_kind(ext), "url": QUrl.fromLocalFile(str(target)).toString(),
+                "size": 0 if is_dir else st.st_size, "sizeText": "" if is_dir else _size_text(st.st_size, self._lang),
+                "modified": time.strftime("%d/%m/%Y %H:%M", time.localtime(st.st_mtime)),
+                "parent": str(target.parent) if target.parent != target else ""}
+        if info["kind"] in ("text", "markdown"):
+            try:
+                with target.open("rb") as handle:
+                    data = handle.read(_PREVIEW_BYTES)
+            except OSError:
+                data = b"\0"
+            if b"\0" in data[:8000]:
+                info["kind"] = "other"
+            else:
+                text = data.decode("utf-8", "replace")
+                lines = text.splitlines()
+                info["text"] = text if len(text) < 120_000 else ""
+                info["lines"] = lines[:_PREVIEW_LINES]
+                info["truncated"] = st.st_size > _PREVIEW_BYTES or len(lines) > _PREVIEW_LINES
+        return info
+
+    @Slot(str, result="QVariantList")
+    def localFolder(self, path):
+        """A folder's entries for the panel: the folders first, then the files, by name; hidden ones left out."""
+        folder = Path(str(path or "")).expanduser()
+        out = []
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            return out
+        for entry in entries:
+            if entry.name.startswith(".") or entry.name in ("__pycache__", "node_modules"):
+                continue
+            try:
+                is_dir = entry.is_dir()
+                size = 0 if is_dir else entry.stat().st_size
+            except OSError:
+                continue
+            ext = "" if is_dir else Path(entry.name).suffix.lower().lstrip(".")
+            kind = "dir" if is_dir else _local_kind(ext)
+            out.append({"path": entry.path, "name": entry.name, "dir": is_dir, "ext": ext, "kind": kind,
+                        "url": QUrl.fromLocalFile(entry.path).toString() if kind == "image" else "",
+                        "sizeText": "" if is_dir else _size_text(size, self._lang)})
+        out.sort(key=lambda e: (not e["dir"], e["name"].lower()))
+        return out[:3000]
+
+    @Slot(str)
+    def revealLocal(self, path):
+        """The file selected in the system's file manager (the folder itself for a folder)."""
+        if path and Path(path).exists():
+            system.reveal(str(path))
+
+    @Slot(str)
+    def openLocalApp(self, path):
+        """The file in the app of this computer that opens it, a folder in the file manager."""
+        if path and Path(path).exists():
+            system.open_url(str(path))
+
+    @Slot(str, str, result=bool)
+    def saveLocalCopy(self, path, dest):
+        """« Enregistrer sous… »: a copy of the file where the system's picker said (a file:// URL or a path)."""
+        import shutil  # noqa: PLC0415
+        source = Path(str(path or ""))
+        target = Path(QUrl(dest).toLocalFile() if str(dest).startswith("file:") else str(dest or ""))
+        if not source.is_file() or not str(target) or target.resolve() == source.resolve():
+            return False
+        try:
+            shutil.copy2(source, target)
+        except OSError as error:
+            print("ornis: save a copy:", error, flush=True)
+            self.toast.emit(self._t["lp_save_failed"])
+            return False
+        self.toast.emit(self._t["lp_saved"].replace("%1", target.name))
+        return True
+
+    @Slot(str, result="QVariantList")
+    def localImages(self, text):
+        """The pictures of this computer a reply names (`img/plan.png`, ![](…), [la photo](…), file://…, a full path):
+        shown under it as vignettes, [{path, name, url}]. Kept in a small cache: a reply is laid out again often."""
+        raw = str(text or "")
+        if not raw or not _IMAGE_HINT.search(raw):
+            return []
+        bases = tuple(self.path_bases())
+        key = (raw, bases)
+        cached = self._images.get(key)
+        if cached is not None:
+            return cached
+        out, seen = [], set()
+        for ref in _image_refs(raw):
+            found = _resolve_local(ref, bases)
+            if found is None or not found.is_file() or str(found) in seen:
+                continue
+            seen.add(str(found))
+            out.append({"path": str(found), "name": found.name, "url": QUrl.fromLocalFile(str(found)).toString()})
+            if len(out) >= 12:
+                break
+        self._images[key] = out
+        while len(self._images) > 300:
+            self._images.pop(next(iter(self._images)))
+        return out
 
     @Slot(str)
     def openCloud(self, path):
@@ -776,7 +969,7 @@ class App(QObject):
         font.setPixelSize(size)
         doc.setDefaultFont(font)
         doc.setIndentWidth(22)
-        doc.setMarkdown(ornis_chat.plain_math(text or ""), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
+        doc.setMarkdown(_local_images_as_paths(ornis_chat.plain_math(text or "")), QTextDocument.MarkdownFeature.MarkdownDialectGitHub)
         cursor = QTextCursor(doc)
         tables, codes = [], []                     # code blocks: [last block position, their text]
         block = doc.begin()

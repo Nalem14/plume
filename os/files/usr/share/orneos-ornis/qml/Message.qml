@@ -20,6 +20,8 @@ Item {
     property int version: -1
     readonly property bool olderShown: version >= 0 && version < versions.length - 1
     readonly property string answer: olderShown ? String(versions[version].content || "") : String(message.content || "")
+    onAnswerChanged: Qt.callLater(picturesLoader.look)          // its pictures (picturesLoader), once the text is set
+    onStreamingChanged: Qt.callLater(picturesLoader.look)
     onVersionsChanged: version = -1
     property bool streaming
     // Bot chat: only the « is typing » pose — no tools, thoughts or computer cards
@@ -636,6 +638,23 @@ Item {
                         }
                     }
                 }
+            }
+
+            Loader {                     // the pictures of this computer the answer names: shown at once (Meet's way)
+                id: picturesLoader
+                property var pictures: []
+                // looked for once the row is drawn, not while it is made: a long session scrolls as before
+                function look() {
+                    const text = msg.answer
+                    pictures = msg.streaming || msg.mine || msg.compactCard || text.length > 60000
+                               || !/\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)\b/i.test(text) ? [] : app.localImages(text)
+                }
+                Component.onCompleted: Qt.callLater(look)
+                active: pictures.length > 0          // made only then
+                visible: active
+                Layout.fillWidth: true
+                Layout.topMargin: 2
+                sourceComponent: LocalPictures { maxWidth: msg.width * 0.8; pictures: picturesLoader.pictures }
             }
 
             RowLayout {                  // a memory stored while answering, as « Memory updated » elsewhere: see or forget it

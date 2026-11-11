@@ -22,6 +22,8 @@ de notification (les deux restent d'accord, `plume.autostart`). `system.set_auto
 toujours avec `--background` (zone de notification seule). Au lancement, une entrée existante est réécrite : elle suit
 Plume s'il a changé de place (nouvelle AppImage).
 
+Sélecteurs de fichiers (Joindre, Importer, Enregistrer sous…) : ceux du système partout (`system.native_dialogs()`, appelé avant l'app par chaque programme). Windows et macOS les ont toujours ; sous Linux, Qt passe par le thème de son bureau (KDE, GTK), que l'AppImage et le `.deb` n'embarquent pas : il dessinait alors son propre sélecteur, à la racine du disque. Plume y choisit le portail (`QT_QPA_PLATFORMTHEME=xdgdesktopportal`, plugin embarqué : le sélecteur de KDE, GNOME…) quand le thème du bureau manque ; sans portail, Qt reprend le sien. Chaque sélecteur part d'un dossier (`QtCore.StandardPaths`, importé `as Std` : son `Settings` masquerait celui d'Ornis) : Téléchargements pour enregistrer, avec le nom du fichier ; le dossier personnel (Images pour une photo) pour joindre. Ne préremplis jamais `"file:///" + nom` : c'est la racine du disque.
+
 Mots de passe hors d'Orneos OS : la clé de la copie chiffrée va dans le trousseau du système (Gestionnaire
 d'identifiants, Trousseau macOS, Secret Service), et le verrou demande le mot de passe du compte Windows
 (`LogonUser`, pas le code PIN) ou Mac (`dscl -authonly`), ou Windows Hello (PowerShell, `UserConsentVerifier`) ou Touch ID (`plume-touchid`, `plume/macos/touchid.swift`, compilé par la CI dans `Plume.app/Contents/MacOS`). Le Wi-Fi (NetworkManager) et la lecture d'un QR code

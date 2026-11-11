@@ -2,6 +2,7 @@
 // share), « Rechercher dans la note » (Ctrl+F) under it, the date and the words above the text, a banner when a
 // sync kept another version, the text itself, then its images, its files and the notes that link to it.
 // A note from « Récemment supprimées » shows read-only, with « Restaurer ».
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -638,6 +639,7 @@ Rectangle {
 
     FileDialog {
         id: filePicker
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.attach
         fileMode: FileDialog.OpenFiles
         onAccepted: {
@@ -652,7 +654,8 @@ Rectangle {
         title: kind === "pdf" ? app.t.export_pdf : app.t.export_md
         nameFilters: kind === "pdf" ? ["PDF (*.pdf)"] : ["Markdown (*.md)"]
         defaultSuffix: kind === "pdf" ? "pdf" : "md"
-        selectedFile: "file://" + notes.exportName(pane.key) + (kind === "pdf" ? ".pdf" : ".md")
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DocumentsLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DocumentsLocation) + "/" + encodeURIComponent(notes.exportName(pane.key).split(/[\\/]/).pop() + (kind === "pdf" ? ".pdf" : ".md"))
         onAccepted: toastRequest(notes.exportFile(pane.key, selectedFile.toString()) ? app.t.exported : app.t.export_failed)
     }
 
@@ -679,7 +682,8 @@ Rectangle {
         property string ref
         fileMode: FileDialog.SaveFile
         title: app.t.save_as
-        selectedFile: "file://" + notes.exportName(pane.key).replace(/[^/]*$/, "") + notes.attachmentName(ref)
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(notes.attachmentName(ref))
         onAccepted: notes.saveAttachment(pane.key, ref, selectedFile.toString())
     }
 

@@ -5,6 +5,7 @@
 // Files for Ornis to read: the "+" (this computer or the Drive), Ctrl+V of an image or of copied files, or a drop
 // anywhere on the conversation (Conversation.qml). Each shows above the text, a vignette or a pill, and leaves with
 // its cross; they upload at once, so sending never waits for them.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -830,6 +831,7 @@ Rectangle {
     }
     FileDialog {
         id: picker
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.attach
         fileMode: FileDialog.OpenFiles
         onAccepted: { chat.addFiles(selectedFiles); input.forceActiveFocus() }

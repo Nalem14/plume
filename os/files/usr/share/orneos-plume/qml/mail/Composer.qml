@@ -1,6 +1,7 @@
 // Writing a message, in its own window: identity, recipients, subject, formatted text, the signature of
 // the address it leaves from, the quoted message, attachments. Ctrl+Enter sends (a few seconds to cancel);
 // closing keeps a draft in the Drafts folder. A heavy file can go as an Orneos link instead.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -600,6 +601,7 @@ Window {
 
     FileDialog {
         id: picker
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         fileMode: FileDialog.OpenFiles
         onAccepted: composer.attach(selectedFiles)
     }

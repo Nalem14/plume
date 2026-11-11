@@ -149,6 +149,7 @@ def main():
     # the Wayland app id: the window goes with its own dock pin (Courrier, Agenda, Contacts or Plume)
     app_id = f"eu.orneos.{edition}" if edition else "eu.orneos.plume"
     QGuiApplication.setDesktopFileName(app_id)
+    system.native_dialogs()              # « Joindre », « Enregistrer sous »: the system's file picker, not Qt's own
     # Mail bodies render in Chromium (no JavaScript, nothing remote unless allowed): set up before the app
     if os.environ.get("PLUME_NO_WEBENGINE") != "1":
         # the bots' browsers work unseen (Plume in the tray, a routine at 8 h): Chromium must not slow their pages down

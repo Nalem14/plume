@@ -1,5 +1,6 @@
 // A picture of the chat over the window: the cloud's preview at once, then the original once here. Échap or a
 // click beside closes it; copy it, save it, open it with this computer's app (buttons, or a right click on it).
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -98,7 +99,8 @@ Popup {
         id: saver
         fileMode: FileDialog.SaveFile
         title: app.t.save_as
-        currentFile: "file:///" + (viewer.file.name || "")
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DownloadLocation) + "/" + encodeURIComponent(viewer.file.name || "")
         onAccepted: meet.saveFile(viewer.file, String(selectedFile))
     }
 }

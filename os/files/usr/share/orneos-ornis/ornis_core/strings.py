@@ -3027,6 +3027,38 @@ for _lang, _t in {
     TEXT[_lang].update(_t)
 
 
+# ---- 11/11: files and folders named in a message open in the panel on the right ---------------------------------------
+for _lang, _t in {
+    "fr": dict(
+        lp_title="Aperçu", lp_save="Enregistrer sous…", lp_saved="Enregistré : %1", lp_save_failed="Impossible d’enregistrer ici",
+        lp_folder="Ouvrir le dossier", lp_reveal="Afficher dans le gestionnaire de fichiers", lp_open="Ouvrir avec l’application",
+        lp_copy_path="Copier le chemin", lp_up="Dossier parent", lp_back="Retour", lp_close="Fermer",
+        lp_empty="Dossier vide", lp_items="%1 élément|%1 éléments", lp_no_preview="Pas d’aperçu pour ce fichier",
+        lp_no_preview_sub="Ouvrez-le avec son application, ou enregistrez-en une copie ailleurs.",
+        lp_truncated="Fichier long : le début seulement.", lp_enlarge="Agrandir", lp_grid="Grille", lp_list="Liste",
+        lp_mention="Mentionner dans le message", lp_modified="Modifié %1", lp_render="Aperçu", lp_source="Texte",
+    ),
+    "en": dict(
+        lp_title="Preview", lp_save="Save as…", lp_saved="Saved: %1", lp_save_failed="Could not save there",
+        lp_folder="Open the folder", lp_reveal="Show in the file manager", lp_open="Open with its app",
+        lp_copy_path="Copy the path", lp_up="Parent folder", lp_back="Back", lp_close="Close",
+        lp_empty="Empty folder", lp_items="%1 item|%1 items", lp_no_preview="No preview for this file",
+        lp_no_preview_sub="Open it with its app, or save a copy elsewhere.",
+        lp_truncated="Long file: only its start.", lp_enlarge="Enlarge", lp_grid="Grid", lp_list="List",
+        lp_mention="Mention in the message", lp_modified="Modified %1", lp_render="Preview", lp_source="Text",
+    ),
+    "de": dict(
+        lp_title="Vorschau", lp_save="Speichern unter…", lp_saved="Gespeichert: %1", lp_save_failed="Konnte dort nicht speichern",
+        lp_folder="Ordner öffnen", lp_reveal="Im Dateimanager zeigen", lp_open="Mit der App öffnen",
+        lp_copy_path="Pfad kopieren", lp_up="Übergeordneter Ordner", lp_back="Zurück", lp_close="Schließen",
+        lp_empty="Leerer Ordner", lp_items="%1 Element|%1 Elemente", lp_no_preview="Keine Vorschau für diese Datei",
+        lp_no_preview_sub="Öffnen Sie sie mit ihrer App oder speichern Sie eine Kopie woanders.",
+        lp_truncated="Lange Datei: nur der Anfang.", lp_enlarge="Vergrößern", lp_grid="Raster", lp_list="Liste",
+        lp_mention="In der Nachricht erwähnen", lp_modified="Geändert %1", lp_render="Vorschau", lp_source="Text",
+    ),
+}.items():
+    TEXT[_lang].update(_t)
+
 def language():
     lang = QLocale().name()[:2]
     return lang if lang in TEXT else "fr"

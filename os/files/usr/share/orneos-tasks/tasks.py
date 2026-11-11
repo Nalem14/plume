@@ -32,6 +32,7 @@ from tasks_core import bundle  # noqa: E402
 def main():
     args = sys.argv[1:]
     QGuiApplication.setDesktopFileName("eu.orneos.tasks")
+    system.native_dialogs()          # the system's file picker, not Qt's own
     qt = QGuiApplication(sys.argv)
     qt.setApplicationName("Tâches")
     qt.setOrganizationName("Orneos")

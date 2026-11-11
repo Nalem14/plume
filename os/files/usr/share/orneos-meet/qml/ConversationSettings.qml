@@ -3,6 +3,7 @@
 // favourite, archive), then the moderators' pages: who may come in (accounts, guests by link, password, e-mail
 // invitations, lobby), what the participants may do, the messages (ephemeral, history), the bots, and at the
 // end leave or delete. A page only shows what this cloud and this role can change; only the open page is built.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -821,12 +822,14 @@ Popup {
     EmojiPicker { id: emojiPicker; onPicked: e => { dialog.emoji = e; meet.setAvatarEmoji(e, dialog.emojiColor) } }
     FileDialog {
         id: pictureDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.PicturesLocation)
         title: app.t.rs_avatar_picture
         nameFilters: [app.t.rs_images + " (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.heic *.avif)"]
         onAccepted: { dialog.emoji = ""; meet.setAvatarFile(String(selectedFile)) }
     }
     FileDialog {
         id: csvDialog
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.rs_csv
         nameFilters: ["CSV (*.csv)"]
         onAccepted: meet.importEmails(String(selectedFile), true)

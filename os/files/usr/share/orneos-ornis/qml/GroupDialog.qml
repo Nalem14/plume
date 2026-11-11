@@ -1,5 +1,6 @@
 // Create or edit a group of bots: a room where several bots work with the person, each one as itself (its SOUL,
 // memory and skills); the lead answers what names nobody, or every member answers (ornis_bots groups).
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -65,6 +66,7 @@ ODialog {
     }
     FolderDialog {
         id: folderPick
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.bots_folder_pick
         onAccepted: folderField.text = app.localPath(selectedFolder)
     }

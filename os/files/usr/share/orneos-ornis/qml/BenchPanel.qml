@@ -9,7 +9,7 @@ import "components"
 
 Rectangle {
     id: bench
-    property string tab: "files"            // routines | files | changes | plan | terminal | browser
+    property string tab: "files"            // routines | files | changes | plan | terminal | browser | local
     property bool maximized: false
     signal closeRequested()
     signal maximizeRequested()
@@ -20,12 +20,15 @@ Rectangle {
     readonly property bool narrow: width < 360
     readonly property bool compact: width < 600            // the tabs not chosen: their icon only
     // StackLayout order is fixed; the Routines tab button only appears for bots.
-    readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal", "browser"]
+    readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal", "browser", "local"]
     color: c.chrome
     clip: true
 
     // Routines only on a bot; Plan never on a bot (always the classic Agent): both fall back on Fichiers
-    function allowed(name) { return code.bot === "" ? name !== "routines" : name !== "plan" }
+    function allowed(name) {
+        if (name === "local") return localPane.path !== ""     // Aperçu: only once something outside the folder was opened
+        return code.bot === "" ? name !== "routines" : name !== "plan"
+    }
     function show(name) {
         if (!allowed(name)) name = "files"
         tab = name
@@ -38,6 +41,18 @@ Rectangle {
     }
     // from the conversation: a file to read, or what changed in it (a turn's card, a tool's card)
     function openFile(path) { show("files"); filesPane.open(path) }
+    // a folder of the project named in a message: Fichiers with the tree unfolded down to it
+    function openFolder(rel) {
+        show("files")
+        filesPane.openPath = ""
+        bench.b.closeDiff()
+        const parts = String(rel).split("/").filter(x => x !== "")
+        const want = parts.map((_, i) => parts.slice(0, i + 1).join("/"))
+        filesPane.expanded = filesPane.expanded.concat(want.filter(p => filesPane.expanded.indexOf(p) < 0))
+        filesPane.reveal(want.length ? want[want.length - 1] : "")
+    }
+    // a file or folder outside the project (a bot's profile, another bot's file, the home folder): Aperçu
+    function openLocal(path) { localPane.show(path); show("local") }
     function openDiff(scope, ref, path) { show("changes"); changesPane.scope = scope === "turn" ? 0 : scope === "work" ? 1 : 2; changesPane.openDiff(scope, ref, path) }
 
     Rectangle {
@@ -75,6 +90,8 @@ Rectangle {
                         )
                         if (browser)
                             rows.push({ key: "browser", label: app.t.bench_browser, icon: "globe", badge: 0, dot: false })
+                        if (localPane.path !== "")
+                            rows.push({ key: "local", label: app.t.lp_title, icon: "eye", badge: 0, dot: false })
                         return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
                     }
                     AbstractButton {
@@ -167,6 +184,14 @@ Rectangle {
                 property var preview: ({})
                 property bool showDiff: false
                 readonly property var rows: { bench.b.fileCount; bench.b.status; return bench.b.rows(filesPane.expanded, filesPane.query) }
+                function reveal(path) {
+                    Qt.callLater(() => {
+                        const at = rows.findIndex(r => r.path === path)
+                        if (at >= 0) { tree.positionViewAtIndex(at, ListView.Center); tree.currentIndex = at; flash = path }
+                    })
+                }
+                property string flash: ""               // the row a message pointed at: tinted a moment
+                Timer { running: filesPane.flash !== ""; interval: 2400; onTriggered: filesPane.flash = "" }
                 function toggle(path) {
                     const at = expanded.indexOf(path)
                     expanded = at >= 0 ? expanded.filter(p => p !== path) : expanded.concat([path])
@@ -261,7 +286,8 @@ Rectangle {
                             }
                             background: Rectangle {
                                 x: 6; width: parent.width - 12; radius: 6
-                                color: node.hovered ? bench.c.hover : "transparent"
+                                color: filesPane.flash === node.modelData.path ? bench.c.tint : node.hovered ? bench.c.hover : "transparent"
+                                Behavior on color { ColorAnimation { duration: 300 } }
                             }
                             contentItem: RowLayout {
                                 spacing: 6
@@ -982,6 +1008,15 @@ Rectangle {
             // ---- Navigateur: the browser of the bot (or the person's), live -------------------------------------------
             BrowserPane {
                 shownNow: bench.visible && bench.tab === "browser"
+            }
+
+            // ---- Aperçu: a file or folder outside the project, named in a message (FilePane) ----------------------------
+            FilePane {
+                id: localPane
+                open: true
+                closable: false
+                mentionable: code.bot === ""
+                onMentionRequested: path => bench.mentionRequested(path)
             }
         }
     }

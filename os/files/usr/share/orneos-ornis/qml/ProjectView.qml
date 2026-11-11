@@ -1,5 +1,6 @@
 // A project's page, as in ChatGPT and Claude: its name and folder, a box to start a conversation in it, its
 // instructions and files side by side (files dropped here go into its folder), and its conversations.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -304,6 +305,7 @@ Rectangle {
     }
     FileDialog {
         id: filePick
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
         title: app.t.project_add_files
         fileMode: FileDialog.OpenFiles
         onAccepted: projects.addFiles(selectedFiles)

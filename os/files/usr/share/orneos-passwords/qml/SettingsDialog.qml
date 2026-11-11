@@ -1,4 +1,5 @@
 // Settings: the lock, the clipboard, import and export, the account. Short: the defaults are the right ones.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -98,7 +99,8 @@ ODialog {
         fileMode: FileDialog.SaveFile
         nameFilters: ["CSV (*.csv)"]
         defaultSuffix: "csv"
-        currentFile: "file://" + vault.exportName()
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.DocumentsLocation)
+        selectedFile: Std.StandardPaths.writableLocation(Std.StandardPaths.DocumentsLocation) + "/" + encodeURIComponent(vault.exportName().split(/[\\/]/).pop())
         onAccepted: app.toast(vault.exportCsv(selectedFile.toString()) ? app.t.export_done : app.t.export_failed)
     }
 }

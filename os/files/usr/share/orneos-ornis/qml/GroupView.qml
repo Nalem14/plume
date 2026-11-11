@@ -11,7 +11,7 @@ Item {
     id: view
     readonly property var c: theme.c
     readonly property var g: bots.group
-    readonly property int column: Math.min(width - 48, 760)
+    readonly property int column: Math.min((filePane.open && !fileOver ? width - filePane.width : width) - 48, 760)
     property bool stick: true
     signal editRequested(string id)
     signal botRequested(string id)
@@ -80,8 +80,14 @@ Item {
         }
     }
 
+    // a file or folder named in the room (OrnisView hands it here), the shared folder too: the file panel on the right
+    function showLocal(path, isDir) { filePane.show(path); return true }
+    readonly property string gid: g.id || ""                   // another room: the panel of the one before closes
+    onGidChanged: if (filePane.open) filePane.close()
+
     ColumnLayout {
-        anchors.fill: parent
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom
+                  right: filePane.open && !view.fileOver ? filePane.left : parent.right }
         spacing: 0
 
         // ---- the head: the members' faces, the name, who is there --------------------------------------------
@@ -118,7 +124,7 @@ Item {
                 OButton {                          // the shared folder: where they work on the same files
                     kind: "quiet"; iconName: "folder"; iconSize: 17; height_: 32
                     tip: app.t.groups_folder_open + (view.g.folder ? " — " + view.g.folder : "")
-                    onClicked: if (view.g.folder) app.openFolder(view.g.folder)
+                    onClicked: if (view.g.folder) { if (filePane.open && filePane.path === view.g.folder) filePane.close(); else filePane.show(view.g.folder) }
                 }
                 OButton {
                     kind: "quiet"; iconName: "settings"; iconSize: 17; height_: 32
@@ -376,6 +382,20 @@ Item {
     }
 
     // Échap: the bots answering stop (as Code and the Discussions)
+    readonly property bool fileOver: width < 820              // narrow: the panel lies over the room
+    Rectangle {
+        anchors.fill: parent
+        visible: filePane.open && view.fileOver
+        color: view.c.scrim
+        z: 9
+        MouseArea { anchors.fill: parent; onClicked: filePane.close() }
+    }
+    FilePane {
+        id: filePane
+        z: 10
+        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+        width: view.fileOver ? Math.min(view.width - 24, 460) : Math.max(340, Math.min(540, Math.round(view.width * 0.42)))
+    }
     Shortcut { sequence: "Esc"; enabled: view.visible && bots.typing.length > 0 && !mentionPopup.opened; onActivated: bots.stopGroup() }
     Connections {                           // dictation: what is said comes into the box
         target: chat.voice
@@ -470,6 +490,7 @@ Item {
         signal faceClicked(string id)
         readonly property bool mine: !!entry.mine
         implicitHeight: Math.max(bubbleBox.height + (nameText.visible ? nameText.implicitHeight + 3 : 0)
+                                 + (picturesBox.active ? picturesBox.implicitHeight + 6 : 0)
                                  + (timeText.visible ? timeText.implicitHeight + 2 : 0), 10)
         Text {
             id: nameText
@@ -532,10 +553,20 @@ Item {
                 onLinkActivated: link => app.openLink(link)
             }
         }
+        Loader {                              // the pictures of this computer the message names, under its bubble
+            id: picturesBox
+            readonly property var found: b.mine || !/\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)\b/i.test(b.entry.text || "") ? [] : app.localImages(b.entry.text || "")
+            active: found.length > 0
+            visible: active
+            x: bubbleBox.x
+            anchors.top: bubbleBox.bottom; anchors.topMargin: 6
+            width: Math.max(bubbleBox.width, Math.min(b.maxWidth, 380))
+            sourceComponent: LocalPictures { width: picturesBox.width; maxWidth: b.maxWidth; pictures: picturesBox.found }
+        }
         Text {
             id: timeText
             visible: !!b.entry.last
-            anchors.top: bubbleBox.bottom; anchors.topMargin: 2
+            anchors.top: picturesBox.active ? picturesBox.bottom : bubbleBox.bottom; anchors.topMargin: 2
             x: b.mine ? b.width - implicitWidth - 4 : 44
             text: b.entry.time || ""
             font.family: "Schibsted Grotesk"; font.pixelSize: 11
