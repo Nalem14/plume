@@ -12,7 +12,7 @@ import system
 
 def is_orneos():
     try:
-        return 'ORNEOS_BUILD=' in Path('/etc/os-release').read_text() or Path('/usr/share/orneos/os.json').is_file()
+        return 'ORNEOS_BUILD=' in Path('/etc/os-release').read_text(encoding="utf-8") or Path('/usr/share/orneos/os.json').is_file()
     except OSError:
         return False
 

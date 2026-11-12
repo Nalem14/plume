@@ -55,7 +55,7 @@ def save(server, user, password):
 def managed_here():
     """True when Plume signed this computer in (not Orneos Connect): Plume may sign it out."""
     try:
-        return json.loads(cloud.CFG.read_text()).get("by") == "plume"
+        return json.loads(cloud.CFG.read_text(encoding="utf-8")).get("by") == "plume"
     except (OSError, ValueError):
         return False
 

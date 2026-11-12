@@ -366,16 +366,8 @@ class CodeChat(QObject):
         self._scheduling = False               # runScheduled opening its bot: never takes a worker's turn (adopt)
         self._unread_mark = 0                  # a bot opened with N answers not read: the bar goes before them
         self.changed.connect(self.statusChanged)   # busy, bot or name changed: the bubble is read again
-        try:
-            self._history = json.loads(HISTORY.read_text())
-        except (OSError, ValueError):
-            self._history = {}
-        try:
-            self._index = json.loads(INDEX.read_text())
-        except (OSError, ValueError):
-            self._index = {}
-        if not isinstance(self._index, dict):
-            self._index = {}
+        self._history = system.read_json(HISTORY, {}, repair=True)
+        self._index = system.read_json(INDEX, {}, repair=True)
         self._flush = QTimer(self)       # streamed text is written to its card ~20 times a second, not per piece
         self._flush.setInterval(50)
         self._flush.setSingleShot(True)
@@ -723,10 +715,7 @@ class CodeChat(QObject):
     @Slot()
     def reloadIndex(self):
         """Re-read sessions.json (a cron run just wrote one)."""
-        try:
-            self._index = json.loads(INDEX.read_text())
-        except (OSError, ValueError):
-            self._index = {}
+        self._index = system.read_json(INDEX, {})
         self.changed.emit()
 
     @Property("QVariantList", notify=changed)

@@ -90,7 +90,7 @@ class Projects(QObject):
 
     def _read_cache(self, key):
         try:
-            data = json.loads(CACHE.read_text()).get(key) or {}
+            data = json.loads(CACHE.read_text(encoding="utf-8")).get(key) or {}
         except (OSError, ValueError, AttributeError):
             data = {}
         return {"projects": [p for p in data.get("projects") or [] if isinstance(p, dict)],
@@ -98,7 +98,7 @@ class Projects(QObject):
 
     def _write_cache(self):
         try:
-            all_ = json.loads(CACHE.read_text()) if CACHE.exists() else {}
+            all_ = json.loads(CACHE.read_text(encoding="utf-8")) if CACHE.exists() else {}
         except (OSError, ValueError):
             all_ = {}
         all_[self._account] = self._data

@@ -97,8 +97,8 @@ def load_file(name, path):
 
 def account():
     try:
-        cfg = json.loads((CONFIG / "connect.json").read_text())
-        token = (CONFIG / "notify.token").read_text().strip("\n")
+        cfg = json.loads((CONFIG / "connect.json").read_text(encoding="utf-8"))
+        token = (CONFIG / "notify.token").read_text(encoding="utf-8").strip("\n")
         if cfg.get("user") and cfg.get("server") and token:
             return cfg["server"].rstrip("/"), cfg["user"], token
     except (OSError, ValueError):
@@ -254,7 +254,7 @@ def read_agenda(acc, start_iso, days):
         fcntl.flock(lock, fcntl.LOCK_EX)
         cached = None
         try:
-            cached = json.loads(path.read_text())
+            cached = json.loads(path.read_text(encoding="utf-8"))
             if time.time() - cached["at"] < 60:
                 return cached
         except (OSError, ValueError, KeyError):
@@ -518,7 +518,7 @@ def read_news(acc, source, unread_only, lang):
         fcntl.flock(lock, fcntl.LOCK_EX)
         cached = None
         try:
-            cached = json.loads(path.read_text())
+            cached = json.loads(path.read_text(encoding="utf-8"))
             if time.time() - cached["at"] < 120:
                 return cached
         except (OSError, ValueError, KeyError):
@@ -727,7 +727,7 @@ def read_photos(acc, source):
         fcntl.flock(lock, fcntl.LOCK_EX)
         cached = None
         try:
-            cached = json.loads(path.read_text())
+            cached = json.loads(path.read_text(encoding="utf-8"))
             if time.time() - cached["at"] < 600 and all(Path(i["image"]).exists() for i in cached["items"]):
                 return cached
         except (OSError, ValueError, KeyError):

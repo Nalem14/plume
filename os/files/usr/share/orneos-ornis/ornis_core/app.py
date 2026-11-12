@@ -344,7 +344,7 @@ class App(QObject):
         self._local_taken = False
         self._lang = language()
         try:
-            self._config = json.loads(CONFIG.read_text())
+            self._config = json.loads(CONFIG.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             self._config = {}
         if not isinstance(self._config, dict):

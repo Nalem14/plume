@@ -663,7 +663,7 @@ def prepare_project(folder, language: str = "fr") -> None:
                 (root / name).write_text(text, encoding="utf-8")
         ignore = root / ".gitignore"
         for line in ("SOUL.md", "history.jsonl"):
-            if line not in ignore.read_text().splitlines():
+            if line not in ignore.read_text(encoding="utf-8").splitlines():
                 with ignore.open("a") as out:
                     out.write(f"\n{line}\n")
         limit = time.time() - TMP_DAYS * 86400
@@ -1885,7 +1885,7 @@ class Checkpoints:
         objects = self.store / "objects"
         cache_file = self.store / "cache.json"
         try:
-            cache = json.loads(cache_file.read_text())
+            cache = json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             cache = {}
         out, fresh = {}, {}
@@ -1921,7 +1921,7 @@ class Checkpoints:
 
     def _manifest(self, rev) -> dict:
         try:
-            return json.loads((self.store / "manifests" / f"{rev}.json").read_text())
+            return json.loads((self.store / "manifests" / f"{rev}.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             raise RuntimeError("unknown checkpoint")
 

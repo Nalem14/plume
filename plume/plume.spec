@@ -91,8 +91,10 @@ a.datas = [entry for entry in a.datas if wanted(entry[0])]
 pyz = PYZ(a.pure)
 
 icon = {"win32": "plume.ico", "darwin": "plume.icns"}.get(sys.platform, "plume.png")
+# Python's UTF-8 mode: open() and read_text() without an encoding read UTF-8, never the code page of Windows
+# (cp1252 doubled every accent of Ornis's sessions.json at each save, up to 9 GB, 12/11)
 exe = EXE(
-    pyz, a.scripts, [],
+    pyz, a.scripts, [("X utf8_mode=1", None, "OPTION")],
     exclude_binaries=True,
     name="Plume",
     console=False,

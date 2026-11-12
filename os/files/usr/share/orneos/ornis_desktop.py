@@ -167,17 +167,17 @@ def status():
             pass
     for bat in sorted(Path("/sys/class/power_supply").glob("BAT*")):
         try:
-            out["battery"] = {"percent": int((bat / "capacity").read_text().strip()),
-                              "state": (bat / "status").read_text().strip().lower()}
+            out["battery"] = {"percent": int((bat / "capacity").read_text(encoding="utf-8").strip()),
+                              "state": (bat / "status").read_text(encoding="utf-8").strip().lower()}
         except (OSError, ValueError):
             pass
         break
     try:
-        mem = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines() if ":" in line)
+        mem = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines() if ":" in line)
         total = int(mem["MemTotal"].split()[0]) / 1e6
         avail = int(mem["MemAvailable"].split()[0]) / 1e6
         out["memory"] = {"total_gb": round(total, 1), "available_gb": round(avail, 1)}
-        out["uptime_hours"] = round(float(Path("/proc/uptime").read_text().split()[0]) / 3600, 1)
+        out["uptime_hours"] = round(float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0]) / 3600, 1)
     except (OSError, KeyError, ValueError, IndexError):
         pass
     if shutil.which("nmcli"):
@@ -870,8 +870,8 @@ def _my_processes():
         try:
             if entry.stat().st_uid != uid:
                 continue
-            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
-            name = (entry / "comm").read_text().strip()
+            fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+            name = (entry / "comm").read_text(encoding="utf-8").strip()
             args = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()
             rss = int(fields[21]) * os.sysconf("SC_PAGE_SIZE") // 1024
             cpu = (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")

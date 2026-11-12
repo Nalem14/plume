@@ -115,7 +115,7 @@ def _clean_workspace(raw: str) -> str:
 def settings() -> dict:
     """{mode, until (0: no end), rules: [{kind, value, label, at}], workspace, workspace_auto, sandbox}."""
     try:
-        data = json.loads(CONFIG.read_text())
+        data = json.loads(CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
@@ -234,7 +234,7 @@ def log(entry: dict) -> str:
     entry = {"id": f"{time.time():.6f}", "at": int(time.time()), **entry}
     try:
         STATE.mkdir(parents=True, exist_ok=True)
-        lines = JOURNAL.read_text().splitlines() if JOURNAL.exists() else []
+        lines = JOURNAL.read_text(encoding="utf-8").splitlines() if JOURNAL.exists() else []
         lines = lines[-(JOURNAL_KEEP - 1):] + [json.dumps(entry, ensure_ascii=False)]
         tmp = JOURNAL.with_suffix(".tmp")
         tmp.write_text("\n".join(lines) + "\n")
@@ -246,7 +246,7 @@ def log(entry: dict) -> str:
 
 def finish(entry_id: str, **fields) -> None:
     try:
-        lines = JOURNAL.read_text().splitlines()
+        lines = JOURNAL.read_text(encoding="utf-8").splitlines()
     except OSError:
         return
     out = []
@@ -268,7 +268,7 @@ def finish(entry_id: str, **fields) -> None:
 
 def journal(limit: int = 100) -> list[dict]:
     try:
-        lines = JOURNAL.read_text().splitlines()
+        lines = JOURNAL.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
     out = []

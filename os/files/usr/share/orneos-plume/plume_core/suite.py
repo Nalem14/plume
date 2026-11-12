@@ -119,7 +119,7 @@ class Suite(QObject):
     def apps(self):
         """The grid: [{name, apps: [{key, name, url, icon}]}] by group, from the list of Orneos OS (apps.json)."""
         try:
-            catalogue = json.loads(CATALOGUE.read_text())
+            catalogue = json.loads(CATALOGUE.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return []
         lang = self._plume.lang

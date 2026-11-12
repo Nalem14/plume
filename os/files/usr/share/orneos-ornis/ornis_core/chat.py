@@ -730,7 +730,7 @@ class Chat(QObject):
     def _all_versions(self):
         if not hasattr(self, "_versions"):
             try:
-                self._versions = json.loads(self.VERSIONS.read_text())
+                self._versions = json.loads(self.VERSIONS.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 self._versions = {}
         return self._versions

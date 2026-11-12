@@ -66,14 +66,14 @@ def _write_private(path, data: bytes):
 
 def _key_from_file(user):
     try:
-        return base64.b64decode(json.loads(KEY_FILE.read_text()).get(user.lower(), ""))
+        return base64.b64decode(json.loads(KEY_FILE.read_text(encoding="utf-8")).get(user.lower(), ""))
     except (OSError, ValueError, json.JSONDecodeError):
         return b""
 
 
 def _key_to_file(user, key):
     try:
-        data = json.loads(KEY_FILE.read_text())
+        data = json.loads(KEY_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         data = {}
     data[user.lower()] = base64.b64encode(key).decode()

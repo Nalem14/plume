@@ -17,7 +17,7 @@ def _entry(address):
 
 def _file():
     try:
-        return json.loads(FALLBACK.read_text())
+        return json.loads(FALLBACK.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 

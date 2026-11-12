@@ -175,7 +175,7 @@ def status(job, wait=0, on_output=None):
     if not done:
         done = not alive(int(meta.get('supervisor', 0)))
     try:
-        code = int((folder / 'exit').read_text()) if done else None
+        code = int((folder / 'exit').read_text(encoding="utf-8")) if done else None
     except (ValueError, OSError):
         code = -1
     return dict(note='' if done else 'Still running: follow this job with computer_command_status; do not start it again.', job=job, label=meta['label'], command=meta['command'], kind=meta['kind'], output=output,

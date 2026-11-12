@@ -231,7 +231,7 @@ def sync() -> list[str]:
 
 def prefs() -> dict:
     try:
-        return json.loads(CONFIG.read_text())
+        return json.loads(CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 

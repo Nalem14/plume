@@ -35,12 +35,12 @@ def secret_entry(server, user):
 def account():
     """(server, user, app password) of the account Connect (or Plume) signed in, or None."""
     try:
-        data = json.loads(CFG.read_text())
+        data = json.loads(CFG.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     user, server = data.get("user"), data.get("server")
     try:
-        password = TOKEN.read_text().strip("\n")
+        password = TOKEN.read_text(encoding="utf-8").strip("\n")
     except OSError:
         password = ""
     if not password and data.get("keychain") and user and server:
@@ -603,7 +603,7 @@ def _forget_legacy_badge() -> bool:
     home = Path.home() / ".local" / "share"
     desktop = home / "applications" / f"{LEGACY_BADGE_APP}.desktop"
     try:
-        if desktop.is_file() and "mail-dock-icon" in desktop.read_text():
+        if desktop.is_file() and "mail-dock-icon" in desktop.read_text(encoding="utf-8"):
             desktop.unlink()
             removed = True
     except OSError:
@@ -642,7 +642,7 @@ def _mail_desktop_override(icon_path: Path | None) -> bool:
     if not src.is_file():
         return False
     try:
-        text = src.read_text()
+        text = src.read_text(encoding="utf-8")
     except OSError:
         return False
     target_line = f"Icon={icon_path}"
@@ -658,7 +658,7 @@ def _mail_desktop_override(icon_path: Path | None) -> bool:
         lines.append(target_line)
     new_text = "\n".join(lines) + "\n"
     try:
-        if dest.is_file() and dest.read_text() == new_text:
+        if dest.is_file() and dest.read_text(encoding="utf-8") == new_text:
             return False
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(".desktop.tmp")
@@ -731,7 +731,7 @@ def _mail_icon_badge(count: int, legacy: bool = False) -> bool:
     if count <= 0:
         prev = ""
         try:
-            prev = stamp.read_text().strip()
+            prev = stamp.read_text(encoding="utf-8").strip()
         except OSError:
             pass
         changed = clear_override()
@@ -745,10 +745,10 @@ def _mail_icon_badge(count: int, legacy: bool = False) -> bool:
 
     try:
         if (
-            stamp.read_text().strip() == key
+            stamp.read_text(encoding="utf-8").strip() == key
             and dock_png.is_file()
             and user_desktop.is_file()
-            and f"Icon={dock_png}" in user_desktop.read_text()
+            and f"Icon={dock_png}" in user_desktop.read_text(encoding="utf-8")
         ):
             if legacy:
                 _refresh_sycoca(icon_root)
@@ -852,9 +852,9 @@ def mail_badge_owner(pid):
     path = STATE / "mail.badge.plume"
     try:
         if pid is None:
-            if path.is_file() and path.read_text().strip() == str(os.getpid()):
+            if path.is_file() and path.read_text(encoding="utf-8").strip() == str(os.getpid()):
                 path.unlink(missing_ok=True)
-        elif not path.is_file() or path.read_text().strip() != str(pid):
+        elif not path.is_file() or path.read_text(encoding="utf-8").strip() != str(pid):
             STATE.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{pid}\n")
     except OSError:
@@ -864,7 +864,7 @@ def mail_badge_owner(pid):
 def mail_badge_owned():
     """True while a running Plume keeps the badge."""
     try:
-        pid = int((STATE / "mail.badge.plume").read_text().strip())
+        pid = int((STATE / "mail.badge.plume").read_text(encoding="utf-8").strip())
         return b"plume" in Path(f"/proc/{pid}/cmdline").read_bytes()
     except (OSError, ValueError):
         return False
@@ -876,9 +876,9 @@ def talk_owner(pid):
     path = STATE / "talk.notify.meet"
     try:
         if pid is None:
-            if path.is_file() and path.read_text().strip() == str(os.getpid()):
+            if path.is_file() and path.read_text(encoding="utf-8").strip() == str(os.getpid()):
                 path.unlink(missing_ok=True)
-        elif not path.is_file() or path.read_text().strip() != str(pid):
+        elif not path.is_file() or path.read_text(encoding="utf-8").strip() != str(pid):
             STATE.mkdir(parents=True, exist_ok=True)
             path.write_text(f"{pid}\n")
     except OSError:
@@ -888,7 +888,7 @@ def talk_owner(pid):
 def talk_owned():
     """True while a running Meet (or Plume) tells Talk's chats and calls."""
     try:
-        pid = int((STATE / "talk.notify.meet").read_text().strip())
+        pid = int((STATE / "talk.notify.meet").read_text(encoding="utf-8").strip())
         cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
         return b"meet" in cmdline or b"plume" in cmdline
     except (OSError, ValueError):

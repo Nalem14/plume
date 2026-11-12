@@ -4,12 +4,16 @@ The only place that knows the system. Everything is chosen by what is there (kwa
 a tray), not by the name of the system: the Plume .rpm on Fedora takes the KDE path when KDE is there.
 Packaged (PyInstaller), the files of /usr/share sit next to the executable (sys._MEIPASS), in the same tree.
 """
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+_NON_ASCII = re.compile(r"[^\x00-\x7f]+")
 
 WINDOWS = sys.platform == "win32"
 MACOS = sys.platform == "darwin"
@@ -292,6 +296,50 @@ def private_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+
+def _unmangle(text: str) -> str:
+    """Undo UTF-8 read as cp1252 (« Ã© » for « é »), as many times as it happened: each run of non-ASCII letters is
+    encoded back and decoded again until it no longer changes. A genuine « é » or an emoji stops at once."""
+    def fix(match):
+        s = match.group()
+        while True:
+            try:
+                t = s.encode("cp1252").decode("utf-8")
+            except UnicodeError:
+                return s
+            if t == s:
+                return s
+            s = t
+    return _NON_ASCII.sub(fix, text)
+
+
+def _unmangle_tree(value):
+    if isinstance(value, str):
+        return _unmangle(value)
+    if isinstance(value, list):
+        return [_unmangle_tree(v) for v in value]
+    if isinstance(value, dict):
+        return {_unmangle(str(k)): _unmangle_tree(v) for k, v in value.items()}
+    return value
+
+
+def read_json(path: Path, default, limit: int = 64 << 20, repair: bool = False):
+    """A JSON file written by private_write, read as UTF-8 (never the system's code page: on Windows, Plume before
+    1.3.2 read Ornis's sessions.json as cp1252 and wrote it back as UTF-8, each accent doubling at every save, until
+    a 9 GB file that no longer fitted in memory, 12/11). Past `limit`, the file is unusable: it is set aside as
+    .broken (replacing an older one) and `default` comes back. `repair` undoes that old double encoding."""
+    try:
+        if path.stat().st_size > limit:
+            os.replace(path, path.with_suffix(path.suffix + ".broken"))
+            return default
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+    except (OSError, ValueError):
+        return default
+    if repair and ("Ã" in text or "Â" in text):
+        data = _unmangle_tree(data)
+    return data if isinstance(data, type(default)) else default
+
 # ---- notifications ---------------------------------------------------------------------------------
 _notifier = None
 
@@ -341,7 +389,7 @@ def integrate_appimage() -> None:
         return
     data = _xdg("XDG_DATA_HOME", ".local", "share")
     try:
-        entry = (Path(appdir) / f"{AUTOSTART_NAME}.desktop").read_text()
+        entry = (Path(appdir) / f"{AUTOSTART_NAME}.desktop").read_text(encoding="utf-8")
         icon_svg = (SHARE / "icons" / "hicolor" / "scalable" / "apps" / f"{AUTOSTART_NAME}.svg").read_bytes()
     except OSError:
         return
@@ -350,7 +398,7 @@ def integrate_appimage() -> None:
     target = data / "applications" / f"{AUTOSTART_NAME}.desktop"
     icon = data / "icons" / "hicolor" / "scalable" / "apps" / f"{AUTOSTART_NAME}.svg"
     try:
-        if target.is_file() and target.read_text() == entry:
+        if target.is_file() and target.read_text(encoding="utf-8") == entry:
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         icon.parent.mkdir(parents=True, exist_ok=True)

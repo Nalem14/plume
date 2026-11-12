@@ -47,7 +47,7 @@ def package():
     """How this Plume was installed: windows, mac, appimage, deb, rpm, or "" (from the sources, Orneos OS's own)."""
     marker = system.SHARE / "orneos" / "package"          # written by the .deb and the .rpm
     try:
-        written = marker.read_text().strip()
+        written = marker.read_text(encoding="utf-8").strip()
     except OSError:
         written = ""
     if written in ("deb", "rpm"):

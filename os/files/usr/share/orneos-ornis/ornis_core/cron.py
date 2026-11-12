@@ -1064,10 +1064,7 @@ class Cron(QObject):
     def _register_session(self, folder, session, title, cron_id):
         try:
             idx = ornis_code.ROOT / "sessions.json"
-            try:
-                data = json.loads(idx.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                data = {}
+            data = system.read_json(idx, {})
             rows = data.setdefault(folder, [])
             found = next((s for s in rows if s.get("id") == session), None)
             if found is None:

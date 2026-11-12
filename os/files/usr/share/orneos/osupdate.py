@@ -40,9 +40,9 @@ def detect_variant() -> str:
     best = "standard"
     for dev in Path("/sys/bus/pci/devices").glob("*"):
         try:
-            vendor = (dev / "vendor").read_text().strip()
-            klass = (dev / "class").read_text().strip()
-            device = int((dev / "device").read_text().strip(), 16)
+            vendor = (dev / "vendor").read_text(encoding="utf-8").strip()
+            klass = (dev / "class").read_text(encoding="utf-8").strip()
+            device = int((dev / "device").read_text(encoding="utf-8").strip(), 16)
         except (OSError, ValueError):
             continue
         if vendor != "0x10de" or not klass.startswith("0x03"):

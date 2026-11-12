@@ -102,7 +102,7 @@ class Plume(QObject):
             if account:
                 threading.Thread(target=self._load_profile, args=(account,), daemon=True).start()
         try:
-            unread = int((cloud.STATE / "mail.badge").read_text().strip() or 0)
+            unread = int((cloud.STATE / "mail.badge").read_text(encoding="utf-8").strip() or 0)
         except (OSError, ValueError):
             unread = 0
         if unread != self._unread:

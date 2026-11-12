@@ -345,7 +345,7 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     try:  # a finished child of this process that nobody waited for is a zombie: not alive
-        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
         return state != "Z"
     except (OSError, IndexError):
         return True
