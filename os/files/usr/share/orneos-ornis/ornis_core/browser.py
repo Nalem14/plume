@@ -50,6 +50,7 @@ class Browser(QObject):
     annotation = Signal(str, str)                 # owner, the message an annotation makes
     consentRequested = Signal(str, str)           # owner, its name: allow the Trousseau once
     addressWanted = Signal(str)                   # owner: Ctrl+L in the page, the panel's address bar takes the focus
+    filesWanted = Signal(str, int, "QVariantList", str)   # owner, mode (0 one, 1 several, 2 a folder, 3 save), types, name
     _call = Signal(str, str, str, str)            # a tool's call, from a bridge thread to this one
 
     def __init__(self, app, theme=None):
@@ -148,6 +149,30 @@ class Browser(QObject):
     @Slot(str, str)
     def downloaded(self, owner, name):
         self._note(owner, self._t("browser_downloaded", "Téléchargé : %1").replace("%1", name))
+
+    @Slot(QObject, float, float)
+    def press(self, window, x, y):
+        """A real click of the mouse at a point of the browser's window, for browser_upload: Chromium opens a file
+        chooser only for one. Sent to the window: it goes through Qt like the person's (the veil lets it by)."""
+        from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt  # noqa: PLC0415
+        from PySide6.QtGui import QMouseEvent  # noqa: PLC0415
+        pos = QPointF(x, y)
+        left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+        for kind, button, buttons in ((QEvent.Type.MouseMove, none, none), (QEvent.Type.MouseButtonPress, left, left),
+                                      (QEvent.Type.MouseButtonRelease, left, none)):
+            QCoreApplication.sendEvent(window, QMouseEvent(kind, pos, pos, button, buttons,
+                                                           Qt.KeyboardModifier.NoModifier))
+
+    @Slot(str, int, "QVariantList", str)
+    def askFiles(self, owner, mode, types, name):
+        """The person clicked a file field of the page: the panel opens the picker (over Plume, not the page's window)."""
+        self.filesWanted.emit(owner, int(mode), list(types or []), name or "")
+
+    @Slot(str, "QVariantList")
+    def filesChosen(self, owner, files):
+        """The panel's picker answered: the files (URLs) go to the field, none cancels it."""
+        if owner in self._windows:
+            self._fire(owner, "files", {"files": [str(f) for f in (files or [])]})
 
     @Slot(str, result=str)
     def downloadDir(self, owner):
@@ -522,7 +547,7 @@ class Browser(QObject):
             if not path.is_file():
                 return f"Error: no such file {path}"
             out = self.call(owner, "upload", {"path": QUrl.fromLocalFile(str(path)).toString(),
-                                              "code": self.agentCall("click", [a.get("ref")])}, 30)
+                                              "ref": a.get("ref"), "name": path.name}, 30)
             return _done(out, None)
         if name == "browser_login":
             return self._login(owner, a)

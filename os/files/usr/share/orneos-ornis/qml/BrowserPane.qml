@@ -2,9 +2,11 @@
 // the browser's own window (BrowserWindow.qml) embedded here: you watch the bot work, take the control back, simulate a
 // phone, and Annoter places of the page to ask for changes. A tool to check renderings and let bots work, not a
 // browser for everything: tabs, an address, a few keys. Closing the panel leaves the browser working unseen.
+import QtCore as Std               // StandardPaths only: its Settings would hide ours
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
+import QtQuick.Dialogs
 import "components"
 
 Item {
@@ -17,6 +19,30 @@ Item {
     readonly property bool agentDrives: pane.st.control === "agent"
     readonly property bool personDrives: pane.st.control === "person"
     readonly property bool canDrive: !agentDrives
+    property string filesFor: ""                   // whose page asked for files, until the picker answers
+    readonly property var extensions: ({
+        "image/*": "*.jpg *.jpeg *.png *.gif *.webp *.heic *.heif *.avif *.bmp *.tif *.tiff *.svg",
+        "video/*": "*.mp4 *.mov *.webm *.mkv *.avi *.m4v *.3gp", "audio/*": "*.mp3 *.m4a *.aac *.ogg *.opus *.wav *.flac",
+        "image/jpeg": "*.jpg *.jpeg", "image/png": "*.png", "image/gif": "*.gif", "image/webp": "*.webp",
+        "image/heic": "*.heic", "image/heif": "*.heif", "image/avif": "*.avif", "image/svg+xml": "*.svg",
+        "video/mp4": "*.mp4", "video/quicktime": "*.mov", "video/webm": "*.webm", "application/pdf": "*.pdf",
+        "text/plain": "*.txt", "text/csv": "*.csv", "application/zip": "*.zip" })
+    // what the field accepts (accept="image/*,.pdf"), then every file: a type left unknown here never hides a file
+    function filters(types) {
+        const all = app.t.browser_files_all + " (*)"
+        const known = []
+        for (const t of types || []) {
+            const k = String(t).trim().toLowerCase()
+            const e = k.startsWith(".") ? "*" + k : (pane.extensions[k] || "")
+            for (const one of e.split(" ")) if (one && known.indexOf(one) < 0) known.push(one)
+        }
+        return known.length ? [app.t.browser_files_ok + " (" + known.join(" ") + ")", all] : [all]
+    }
+    function filesChosen(urls) {
+        const who = pane.filesFor
+        pane.filesFor = ""
+        if (who !== "" && browser) browser.filesChosen(who, urls.map(u => u.toString()))
+    }
     function refresh() {
         st = browser ? browser.stateOf(owner) : ({})
         if (!presets.length && st.presets) presets = st.presets
@@ -51,6 +77,16 @@ Item {
     Connections {
         target: browser
         function onChanged() { pane.refresh() }
+        // a file field clicked in the page: the picker opens here, over Plume's window (the page's own window is a
+        // child of the panel, a dialog made from it never shows), and the files go back to the field
+        function onFilesWanted(who, mode, types, name) {
+            pane.filesFor = who
+            if (mode === 2) { folderPicker.open(); return }
+            filePicker.fileMode = mode === 3 ? FileDialog.SaveFile : mode === 1 ? FileDialog.OpenFiles : FileDialog.OpenFile
+            filePicker.nameFilters = pane.filters(types)
+            filePicker.selectedFile = mode === 3 && name ? filePicker.currentFolder + "/" + name : ""
+            filePicker.open()
+        }
         function onAddressWanted(who) { if (who === pane.owner && pane.shownNow) { address.forceActiveFocus(); address.selectAll() } }
     }
     // A dialog or menu of the window opened over the panel would be drawn under the page (a native window above the
@@ -388,6 +424,20 @@ Item {
                        text: app.t.browser_unavailable; font.family: "Schibsted Grotesk"; font.pixelSize: 13; color: pane.c.muted }
             }
         }
+    }
+    FileDialog {
+        id: filePicker
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.PicturesLocation)
+        title: app.t.browser_files
+        onAccepted: pane.filesChosen(fileMode === FileDialog.OpenFiles ? Array.from(selectedFiles) : [selectedFile])
+        onRejected: pane.filesChosen([])
+    }
+    FolderDialog {
+        id: folderPicker
+        currentFolder: Std.StandardPaths.writableLocation(Std.StandardPaths.HomeLocation)
+        title: app.t.browser_folder
+        onAccepted: pane.filesChosen([selectedFolder])
+        onRejected: pane.filesChosen([])
     }
     // the same keys when the focus is in the panel's bar (the page's window has its own: BrowserWindow.qml)
     Shortcut { sequence: "Ctrl+Shift+D"; enabled: pane.shownNow && !!browser; onActivated: browser.annotate(pane.owner, !pane.st.annotating) }

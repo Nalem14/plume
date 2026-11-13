@@ -222,6 +222,32 @@ window.__oa = (function () {
         hit.click();
         return JSON.stringify({ ok: true, clicked: nameOf(el) || roleOf(el), at: p, box: box(el) });
     }
+    // browser_upload: where a real click of the mouse opens the file field (Chromium opens no file chooser for a
+    // script's click). A file field the site hides (Instagram, X: a button opens it) comes on top of the page, nearly
+    // transparent, for that click only (unaim). Its button, given instead, is clicked where it is.
+    function aim(id) {
+        const el = get(id);
+        if (el.tagName === "INPUT" && String(el.type).toLowerCase() === "file") {
+            window.__oaAimed = { el: el, style: el.getAttribute("style") };
+            const put = { position: "fixed", left: "0", top: "0", width: "160px", height: "48px", display: "block",
+                          visibility: "visible", opacity: "0.01", "z-index": "2147483647", "pointer-events": "auto",
+                          transform: "none", clip: "auto", "clip-path": "none", margin: "0" };
+            for (const k in put) el.style.setProperty(k, put[k], "important");
+            if (document.elementFromPoint(80, 24) !== el) {
+                unaim();
+                throw new Error("this file field cannot be reached (hidden with its section): give the ref of the button that opens it");
+            }
+            return JSON.stringify({ ok: true, field: nameOf(el) || "file", at: { x: 80, y: 24 }, box: { x: 0, y: 0, w: 160, h: 48 } });
+        }
+        const p = point(el);
+        return JSON.stringify({ ok: true, field: nameOf(el) || roleOf(el), at: p, box: box(el) });
+    }
+    function unaim() {
+        const a = window.__oaAimed;
+        window.__oaAimed = null;
+        if (a) { if (a.style === null) a.el.removeAttribute("style"); else a.el.setAttribute("style", a.style); }
+        return "{}";
+    }
     function hover(id) {
         const el = get(id);
         const p = point(el);
@@ -376,5 +402,5 @@ window.__oa = (function () {
     return { snapshot: guard(snapshot), text: guard(text), click: guard(click), hover: guard(hover), type: guard(type),
              press: guard(press), choose: guard(choose), scroll: guard(scroll), find: guard(find), fields: guard(fields),
              fill: guard(fill), read: guard(read), pick: guard(pick), rect: guard(rect),
-             rects: guard(rects), changes: guard(changes) };
+             rects: guard(rects), changes: guard(changes), aim: guard(aim), unaim: guard(unaim) };
 })();

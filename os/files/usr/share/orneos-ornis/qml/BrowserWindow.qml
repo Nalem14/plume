@@ -27,6 +27,10 @@ Window {
     property bool mobile: false
     property string baseUA: ""
     property string uploadPath: ""             // a file the agent chose for the next file field it clicks
+    property string uploadCid: ""              // the agent's browser_upload, until the page asks for the file
+    property string uploadName: ""
+    property bool pressing: false              // a real click of the agent passes through the veil
+    property var fileRequest: null             // a file field the person clicked, until the panel's picker answers
     property bool annotating: false
     property var waiters: []
     property var dialogs: []                   // what the pages asked while the agent drove, until it reads them
@@ -116,14 +120,25 @@ Window {
                                                         request.destination === WebEngineNewWindowRequest.InNewBackgroundTab)
             onPermissionRequested: permission => permission.deny()
             onFileDialogRequested: request => {
+                request.accepted = true
                 if (win.uploadPath !== "") {
-                    request.accepted = true
                     request.dialogAccept([win.uploadPath])
                     win.uploadPath = ""
-                } else if (win.owner !== "you" && !(win.embedded && win.control === "person")) {
-                    request.accepted = true
-                    request.dialogReject()
-                }
+                    uploadWait.stop()
+                    win.view.runJavaScript(host.agentCall("unaim", []), WebEngineScript.ApplicationWorld)
+                    if (win.uploadCid !== "") {
+                        const cid = win.uploadCid
+                        win.uploadCid = ""
+                        win.settle(cid, () => JSON.stringify({ ok: true, uploaded: String(win.uploadName) }), 600)
+                    }
+                } else if (win.embedded && win.control !== "agent") {
+                    // the person clicked « Ajouter un fichier »: Qt's own dialog, child of this window embedded in
+                    // the panel, is made but never shown (13/11, Instagram, X…). The panel opens Plume's picker, over
+                    // Plume's window, and gives the files back (chooseFiles).
+                    if (win.fileRequest) win.fileRequest.dialogReject()
+                    win.fileRequest = request
+                    host.askFiles(win.owner, request.mode, request.acceptedMimeTypes || [], request.defaultFileName || "")
+                } else request.dialogReject()      // the agent's page, nobody to choose: browser_upload says which
             }
         }
     }
@@ -236,7 +251,36 @@ Window {
                 win.control = a.mode || ""
                 if (a.who) win.who = a.who
                 host.done(cid, "{}"); break
-            case "upload": win.uploadPath = a.path; win.agentJs(cid, a.code); break
+            case "files":                          // the panel's picker answered (no file: cancelled)
+                if (win.fileRequest) {
+                    if (a.files && a.files.length) win.fileRequest.dialogAccept(a.files)
+                    else win.fileRequest.dialogReject()
+                    win.fileRequest = null
+                }
+                host.done(cid, "{}"); break
+            case "upload": {
+                // a real click where the field is: Chromium opens a file chooser only for one (a script's click opens
+                // nothing, 13/11), and onFileDialogRequested gives it the file
+                if (!win.view) { host.done(cid, JSON.stringify({ error: "no tab" })); break }
+                if (win.uploadCid !== "") host.done(win.uploadCid, JSON.stringify({ error: "replaced by another upload" }))
+                win.uploadPath = a.path; win.uploadName = a.name || ""; win.uploadCid = cid
+                win.view.runJavaScript(host.agentCall("aim", [a.ref]), WebEngineScript.ApplicationWorld, r => {
+                    let o = null
+                    try { o = JSON.parse(String(r)) } catch (e) {}
+                    if (!o || o.error || !o.at) {
+                        win.uploadPath = ""; win.uploadCid = ""
+                        host.done(cid, JSON.stringify({ error: o && o.error ? o.error : "the page did not answer" }))
+                        return
+                    }
+                    if (o.box) cursor.show(o.at, o.box, true)
+                    win.pressing = true
+                    const at = win.view.mapToItem(null, o.at.x * win.zoom, o.at.y * win.zoom)
+                    host.press(win, at.x, at.y)
+                    win.pressing = false
+                    uploadWait.restart()
+                })
+                break
+            }
             case "annotate": win.setAnnotating(!!a.on); host.done(cid, JSON.stringify(win.state())); break
             case "screenshot":
                 stage.grabToImage(r => host.done(cid, JSON.stringify({ ok: r.saveToFile(a.path), path: a.path })))
@@ -360,6 +404,18 @@ Window {
     }
 
     // ---- who drives: the agent holds the page, the person can take it ------------------------------------------------
+    Timer {                                    // the agent's click opened no file chooser: it is told so
+        id: uploadWait
+        interval: 2500
+        onTriggered: {
+            win.uploadPath = ""
+            if (win.view) win.view.runJavaScript(host.agentCall("unaim", []), WebEngineScript.ApplicationWorld)
+            if (win.uploadCid !== "") {
+                host.done(win.uploadCid, JSON.stringify({ error: "the click opened no file chooser: give the ref of the file field, or of the button that adds a file" }))
+                win.uploadCid = ""
+            }
+        }
+    }
     Item {
         id: veil
         anchors.fill: parent
@@ -375,6 +431,7 @@ Window {
         }
         MouseArea {
             anchors.fill: parent
+            enabled: !win.pressing
             acceptedButtons: Qt.AllButtons
             hoverEnabled: true
             onWheel: wheel => wheel.accepted = true
