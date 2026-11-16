@@ -55,9 +55,11 @@ class Words:
 
     def span(self, first, last):
         """« 12–15 août 2025 », « 30 juil. – 2 août 2025 »."""
-        if first == last:
-            return self.day(first, today=date(1, 1, 1)).split(" ", 1)[1] if self.lang != "en" else self.day(first)
         m1, m2 = self.months[first.month - 1], self.months[last.month - 1]
+        if first == last:                        # « 12 août 2025 », « 12. August 2025 », « August 12, 2025 »
+            if self.lang == "en":
+                return f"{m1} {first.day}, {first.year}"
+            return f"{first.day}{'.' if self.lang == 'de' else ''} {m1} {first.year}"
         if self.lang == "en":
             if first.month == last.month:
                 return f"{m1} {first.day}–{last.day}, {last.year}"
