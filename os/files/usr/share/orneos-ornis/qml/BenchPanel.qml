@@ -9,6 +9,7 @@ import "components"
 
 Rectangle {
     id: bench
+    objectName: "benchPanel"
     property string tab: "files"            // routines | files | changes | plan | terminal | browser | local
     property bool maximized: false
     signal closeRequested()
@@ -18,7 +19,19 @@ Rectangle {
     readonly property var c: theme.c
     readonly property var b: code.bench
     readonly property bool narrow: width < 360
-    readonly property bool compact: width < 600            // the tabs not chosen: their icon only
+    // the tabs not chosen: their icon only, when all their names do not fit
+    readonly property bool compact: {
+        let full = 0
+        for (let i = 0; i < tabRep.count; i++) {
+            const it = tabRep.itemAt(i)
+            if (it) full += it.fullWidth + 2
+        }
+        return full > tabsBox.width
+    }
+    // Plan: only while there is one going on (the Plan mode, a plan to run, steps not done); Fichiers otherwise
+    readonly property bool planLive: code.bot === "" && (code.planMode || code.planReady
+                                     || code.plan.some(p => p.status !== "completed")
+                                     || (!!b.planDoc.path && (app.prefs.plans_built || []).indexOf(b.planDoc.path) < 0))
     // StackLayout order is fixed; the Routines tab button only appears for bots.
     readonly property var tabKeys: ["routines", "files", "changes", "plan", "terminal", "browser", "local"]
     color: c.chrome
@@ -53,6 +66,36 @@ Rectangle {
     }
     // a file or folder outside the project (a bot's profile, another bot's file, the home folder): Aperçu
     function openLocal(path) { localPane.show(path); show("local") }
+    // Git from Modifications: Ornis writes the commits (it reads what changed, the message in this repository's style);
+    // push and pull run in a terminal of the panel, the person's own (their SSH keys, their credentials: Ornis's sandbox
+    // has neither). « Commit et push »: the push once Ornis's turn is over and something was committed.
+    property int pushAfter: 0               // 1: asked, Ornis not started yet; 2: its turn going on
+    readonly property bool busyNow: code.busy
+    onBusyNowChanged: if (busyNow && pushAfter === 1) pushAfter = 2
+    function shellArg(v) { return /^[A-Za-z0-9._\/@:+-]+$/.test(v) ? v : "'" + String(v).replace(/'/g, "'\\''") + "'" }
+    function pushCommand() {
+        const r = b.remote
+        return r.upstream ? "git push" : "git push -u " + shellArg(r.remote || "origin") + " " + shellArg(b.branch)
+    }
+    function git(action) {
+        if (action === "commit" || action === "commitPush" || action === "commitBranch") {
+            pushAfter = action === "commitPush" ? 1 : 0
+            code.send(action === "commitBranch" ? app.t.bench_git_ask_branch : app.t.bench_git_ask_commit)
+            return
+        }
+        const command = action === "push" ? pushCommand() : action === "pull" ? "git pull" : ""
+        if (command && !termPane.run(command))       // no built-in terminal here: Ornis tries (HTTPS may work)
+            code.send(app.t.bench_git_ask_run.replace("%1", command))
+    }
+    Connections {
+        target: code.bench
+        enabled: bench.pushAfter === 2
+        function onChanged() {
+            if (code.busy || bench.b.loading) return
+            bench.pushAfter = 0
+            if (bench.b.remote.ahead > 0 || (bench.b.remote.remote && !bench.b.remote.upstream)) bench.git("push")
+        }
+    }
     function openDiff(scope, ref, path) { show("changes"); changesPane.scope = scope === "turn" ? 0 : scope === "work" ? 1 : 2; changesPane.openDiff(scope, ref, path) }
 
     Rectangle {
@@ -74,93 +117,128 @@ Rectangle {
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 10; anchors.rightMargin: 8
-                spacing: 2
-                Repeater {
-                    model: {
-                        const rows = []
-                        if (code.bot !== "")
-                            rows.push({ key: "routines", label: app.t.bots_routines, icon: "clock",
-                                        badge: routinesPane.count, dot: false })
-                        rows.push(
-                            { key: "files", label: app.t.bench_files, icon: "folder", badge: 0, dot: false },
-                            { key: "changes", label: app.t.bench_changes, icon: "history",
-                              badge: bench.b.status.length || (bench.b.turn.files || []).length, dot: false },
-                            { key: "plan", label: app.t.bench_plan, icon: "list", badge: 0, dot: code.planReady },
-                            { key: "terminal", label: app.t.bench_terminal, icon: "terminal", badge: 0, dot: false }
-                        )
-                        if (browser)
-                            rows.push({ key: "browser", label: app.t.bench_browser, icon: "globe", badge: 0, dot: false })
-                        if (localPane.path !== "")
-                            rows.push({ key: "local", label: app.t.lp_title, icon: "eye", badge: 0, dot: false })
-                        return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
-                    }
-                    AbstractButton {
-                        id: tabBtn
-                        required property var modelData
-                        readonly property bool on: bench.tab === modelData.key
-                        Layout.preferredHeight: 32
-                        implicitWidth: tabRow.implicitWidth + 20
-                        hoverEnabled: true
-                        onClicked: bench.show(modelData.key)
-                        Accessible.role: Accessible.PageTab
-                        Accessible.name: modelData.label
-                        Accessible.selected: on
-                        ToolTip.visible: (bench.narrow || bench.compact && !on) && hovered
-                        ToolTip.text: modelData.label
-                        ToolTip.delay: 400
-                        background: Rectangle {
-                            radius: 9
-                            color: tabBtn.on ? bench.c.card : tabBtn.hovered ? bench.c.hover : "transparent"
-                            border.width: tabBtn.on ? 1 : 0; border.color: bench.c.line
-                            Behavior on color { ColorAnimation { duration: 120 } }
-                        }
-                        contentItem: Item {
-                            Row {
-                                id: tabRow
-                                anchors.centerIn: parent
-                                spacing: 6
-                                Item {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 16; height: 16
-                                    Icon { anchors.centerIn: parent; name: tabBtn.modelData.icon; size: 15
-                                           color: tabBtn.on ? bench.c.famCommunicate : bench.c.muted }
-                                    Rectangle {
-                                        visible: tabBtn.modelData.dot
-                                        x: 11; y: -2; width: 7; height: 7; radius: 3.5
-                                        color: bench.c.saffron
-                                        border.width: 1.5; border.color: bench.c.chrome
+                spacing: 4
+                // the tabs: their names while they all fit, else the chosen one's only; slid sideways when even
+                // their icons do not (the panel's own buttons, on the right, always stay in view)
+                Item {
+                    id: tabsBox
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.minimumWidth: 0
+                    implicitWidth: 0
+                    clip: true
+                    Flickable {
+                        id: tabsFlick
+                        anchors.fill: parent
+                        contentWidth: tabsRow.implicitWidth
+                        contentHeight: height
+                        interactive: contentWidth > width
+                        flickableDirection: Flickable.HorizontalFlick
+                        boundsBehavior: Flickable.StopAtBounds
+                        Row {
+                            id: tabsRow
+                            height: tabsFlick.height
+                            spacing: 2
+                            Repeater {
+                                id: tabRep
+                                model: {
+                                    const rows = []
+                                    if (code.bot !== "")
+                                        rows.push({ key: "routines", label: app.t.bots_routines, icon: "clock",
+                                                    badge: routinesPane.count, dot: false })
+                                    rows.push(
+                                        { key: "files", label: app.t.bench_files, icon: "folder", badge: 0, dot: false },
+                                        { key: "changes", label: app.t.bench_changes, icon: "history",
+                                          badge: bench.b.status.length || (bench.b.turn.files || []).length, dot: false },
+                                        { key: "terminal", label: app.t.bench_terminal, icon: "terminal", badge: 0, dot: false }
+                                    )
+                                    if (bench.planLive || bench.tab === "plan")    // no plan going on: no Plan tab
+                                        rows.splice(rows.length - 1, 0, { key: "plan", label: app.t.bench_plan, icon: "list", badge: 0, dot: code.planReady })
+                                    if (browser)
+                                        rows.push({ key: "browser", label: app.t.bench_browser, icon: "globe", badge: 0, dot: false })
+                                    if (localPane.path !== "")
+                                        rows.push({ key: "local", label: app.t.lp_title, icon: "eye", badge: 0, dot: false })
+                                    return code.bot !== "" ? rows.filter(r => r.key !== "plan") : rows   // bots: no Plan mode
+                                }
+                                AbstractButton {
+                                    id: tabBtn
+                                    required property var modelData
+                                    readonly property bool on: bench.tab === modelData.key
+                                    anchors.verticalCenter: parent ? parent.verticalCenter : undefined
+                                    height: 32
+                                    implicitWidth: tabRow.implicitWidth + 20
+                                    // as wide as with its label: whether every tab fits with its name (bench.compact)
+                                    readonly property real fullWidth: 16 + 6 + tabLabel.implicitWidth + 20
+                                        + (modelData.badge > 0 ? 6 + Math.max(18, badgeText.implicitWidth + 10) : 0)
+                                    onOnChanged: if (on) Qt.callLater(() => {     // the chosen tab: slid into view
+                                        const x0 = tabBtn.x, x1 = tabBtn.x + tabBtn.width
+                                        if (x0 < tabsFlick.contentX) tabsFlick.contentX = x0
+                                        else if (x1 > tabsFlick.contentX + tabsFlick.width) tabsFlick.contentX = x1 - tabsFlick.width
+                                    })
+                                    hoverEnabled: true
+                                    onClicked: bench.show(modelData.key)
+                                    Accessible.role: Accessible.PageTab
+                                    Accessible.name: modelData.label
+                                    Accessible.selected: on
+                                    ToolTip.visible: (bench.narrow || bench.compact && !on) && hovered
+                                    ToolTip.text: modelData.label
+                                    ToolTip.delay: 400
+                                    background: Rectangle {
+                                        radius: 9
+                                        color: tabBtn.on ? bench.c.card : tabBtn.hovered ? bench.c.hover : "transparent"
+                                        border.width: tabBtn.on ? 1 : 0; border.color: bench.c.line
+                                        Behavior on color { ColorAnimation { duration: 120 } }
                                     }
-                                }
-                                Text {
-                                    visible: !bench.narrow && (tabBtn.on || !bench.compact)
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: tabBtn.modelData.label
-                                    font.family: "Schibsted Grotesk"; font.pixelSize: 13
-                                    font.weight: tabBtn.on ? Font.DemiBold : Font.Medium
-                                    color: tabBtn.on ? bench.c.text : bench.c.muted
-                                }
-                                Rectangle {
-                                    visible: tabBtn.modelData.badge > 0
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: Math.max(18, badgeText.implicitWidth + 10); height: 18; radius: 9
-                                    color: tabBtn.on ? bench.c.tint : bench.c.hover
-                                    Text {
-                                        id: badgeText
-                                        anchors.centerIn: parent
-                                        text: tabBtn.modelData.badge > 99 ? "99+" : tabBtn.modelData.badge
-                                        font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
-                                        font.features: { "tnum": 1 }
-                                        color: tabBtn.on ? bench.c.tintText : bench.c.muted
+                                    contentItem: Item {
+                                        Row {
+                                            id: tabRow
+                                            anchors.centerIn: parent
+                                            spacing: 6
+                                            Item {
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: 16; height: 16
+                                                Icon { anchors.centerIn: parent; name: tabBtn.modelData.icon; size: 15
+                                                       color: tabBtn.on ? bench.c.famCommunicate : bench.c.muted }
+                                                Rectangle {
+                                                    visible: tabBtn.modelData.dot
+                                                    x: 11; y: -2; width: 7; height: 7; radius: 3.5
+                                                    color: bench.c.saffron
+                                                    border.width: 1.5; border.color: bench.c.chrome
+                                                }
+                                            }
+                                            Text {
+                                                id: tabLabel
+                                                visible: !bench.narrow && (tabBtn.on || !bench.compact)
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                text: tabBtn.modelData.label
+                                                font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                                                font.weight: tabBtn.on ? Font.DemiBold : Font.Medium
+                                                color: tabBtn.on ? bench.c.text : bench.c.muted
+                                            }
+                                            Rectangle {
+                                                visible: tabBtn.modelData.badge > 0
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: Math.max(18, badgeText.implicitWidth + 10); height: 18; radius: 9
+                                                color: tabBtn.on ? bench.c.tint : bench.c.hover
+                                                Text {
+                                                    id: badgeText
+                                                    anchors.centerIn: parent
+                                                    text: tabBtn.modelData.badge > 99 ? "99+" : tabBtn.modelData.badge
+                                                    font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.DemiBold
+                                                    font.features: { "tnum": 1 }
+                                                    color: tabBtn.on ? bench.c.tintText : bench.c.muted
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-                Item { Layout.fillWidth: true }
                 OButton { kind: "quiet"; iconName: bench.maximized ? "minimize" : "maximize"; iconSize: 15; height_: 30
                           tip: bench.maximized ? app.t.bench_restore : app.t.bench_maximize; onClicked: bench.maximizeRequested() }
-                OButton { kind: "quiet"; iconName: "close"; iconSize: 15; height_: 30; tip: app.t.bench_close; onClicked: bench.closeRequested() }
+                OButton { objectName: "benchClose"; kind: "quiet"; iconName: "close"; iconSize: 15; height_: 30; tip: app.t.bench_close; onClicked: bench.closeRequested() }
             }
         }
 
@@ -196,7 +274,25 @@ Rectangle {
                     const at = expanded.indexOf(path)
                     expanded = at >= 0 ? expanded.filter(p => p !== path) : expanded.concat([path])
                 }
+                // an edit not saved: asked before it is dropped (another file, back to the tree)
+                property var after: null
+                function leave(then) {
+                    if (editor.dirty) {
+                        after = then
+                        dropEdit.ask(app.t.bench_discard_title, app.t.bench_discard,
+                                     [{ id: "cancel", text: app.t.cancel }, { id: "drop", text: app.t.bench_discard_go, kind: "danger" },
+                                      { id: "save", text: app.t.bench_save, kind: "primary" }], key => {
+                            if (key === "save") { editor.save(); if (editor.editing) return }
+                            else editor.cancel()
+                            const next = filesPane.after; filesPane.after = null
+                            if (next) next()
+                        })
+                    }
+                    else { editor.editing = false; then() }
+                }
                 function open(path) {
+                    if (editor.dirty && path !== openPath) { leave(() => open(path)); return }
+                    if (path !== openPath) editor.editing = false
                     openPath = path
                     preview = bench.b.read(path)
                     const changed = bench.b.status.some(s => s.path === path)
@@ -340,7 +436,7 @@ Rectangle {
                         Layout.margins: 8
                         spacing: 4
                         OButton { kind: "quiet"; iconName: "chevronLeft"; iconSize: 15; height_: 30; tip: app.t.bench_back
-                                  onClicked: { filesPane.openPath = ""; bench.b.closeDiff() } }
+                                  onClicked: filesPane.leave(() => { filesPane.openPath = ""; bench.b.closeDiff() }) }
                         FileGlyph { ext: filesPane.openPath.indexOf(".") >= 0 ? filesPane.openPath.split(".").pop().toLowerCase() : "" }
                         Text {
                             Layout.fillWidth: true
@@ -370,45 +466,13 @@ Rectangle {
                         visible: !filesPane.showDiff
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        ListView {
-                            id: lines
+                        CodeEditor {
+                            id: editor
                             anchors.fill: parent
                             visible: !!filesPane.preview.lines
-                            clip: true
-                            model: filesPane.preview.lines || []
-                            boundsBehavior: Flickable.StopAtBounds
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                            topMargin: 6; bottomMargin: 10
-                            readonly property real gutter: Math.max(28, String(count).length * 8 + 14)
-                            delegate: Row {
-                                required property string modelData
-                                required property int index
-                                width: ListView.view.width
-                                Text {
-                                    width: lines.gutter; rightPadding: 10
-                                    horizontalAlignment: Text.AlignRight
-                                    text: index + 1
-                                    font.family: "JetBrains Mono"; font.pixelSize: 11
-                                    color: bench.c.faint
-                                    topPadding: 1
-                                }
-                                Text {
-                                    width: parent.width - lines.gutter - 8
-                                    text: modelData === "" ? " " : modelData
-                                    textFormat: Text.PlainText
-                                    wrapMode: Text.WrapAnywhere
-                                    font.family: "JetBrains Mono"; font.pixelSize: 12
-                                    color: bench.c.text
-                                }
-                            }
-                            footer: Text {
-                                visible: !!filesPane.preview.truncated
-                                width: lines.width; height: visible ? 30 : 0
-                                leftPadding: lines.gutter; verticalAlignment: Text.AlignVCenter
-                                text: app.t.bench_truncated
-                                font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.italic: true
-                                color: bench.c.muted
-                            }
+                            path: filesPane.openPath
+                            preview: filesPane.preview
+                            onSavedFile: filesPane.preview = bench.b.read(filesPane.openPath)
                         }
                         Image {
                             anchors.fill: parent
@@ -428,6 +492,10 @@ Rectangle {
                     }
                 }
 
+                ChoiceDialog {
+                    id: dropEdit
+                    parent: Overlay.overlay
+                }
                 OMenu {
                     id: fileMenu
                     property string path: ""
@@ -529,8 +597,16 @@ Rectangle {
                                     added: bench.b.status.reduce((n, s) => n + (s.added || 0), 0)
                                     removed: bench.b.status.reduce((n, s) => n + (s.removed || 0), 0)
                                 }
-                                OButton { kind: "primary"; iconName: "check"; text: app.t.code_commit + "…"; height_: 32
-                                          enabled: !code.busy; onClicked: bench.commitRequested() }
+                                // Commit: Ornis reads the changes and writes the commits (the message in this repository's
+                                // style); « … » the rest: and push, on a new branch, the message written by hand
+                                Row {
+                                    spacing: 0
+                                    OButton { kind: "primary"; iconName: "ornis"; text: app.t.bench_git_commit; height_: 32
+                                              tip: app.t.bench_git_commit_tip; onClicked: bench.git("commit") }
+                                    Item { width: 1; height: 32 }
+                                    OButton { kind: "primary"; iconName: "chevronDown"; iconSize: 13; height_: 32
+                                              tip: app.t.bench_git_more; onClicked: commitMenu.popup() }
+                                }
                             }
                         }
                     }
@@ -632,6 +708,49 @@ Rectangle {
                             color: bench.c.muted
                         }
                     }
+
+                    // the branch and its remote: commits to send, to fetch (as last fetched), a branch never pushed
+                    Rectangle {
+                        id: syncBar
+                        readonly property var r: bench.b.remote
+                        readonly property bool fresh: r.remote !== "" && r.upstream === "" && bench.b.branch !== "" && bench.b.branch !== "HEAD"
+                        visible: bench.b.isGit && changesPane.scope > 0 && r.remote !== undefined && r.remote !== ""
+                                 && (r.ahead > 0 || r.behind > 0 || fresh)
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 52
+                        color: bench.c.card
+                        Rectangle { width: parent.width; height: 1; color: bench.c.hairline }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 14; anchors.rightMargin: 10
+                            spacing: 8
+                            Icon { name: syncBar.r.behind > 0 && !syncBar.r.ahead ? "import" : "export"; size: 14; color: bench.c.famCommunicate }
+                            Text {
+                                Layout.fillWidth: true
+                                text: syncBar.fresh ? app.t.bench_git_unpublished.replace("%1", syncBar.r.remote)
+                                      : [syncBar.r.ahead > 0 ? app.plural("bench_git_ahead", syncBar.r.ahead) : "",
+                                         syncBar.r.behind > 0 ? app.plural("bench_git_behind", syncBar.r.behind) : ""].filter(x => x).join(" · ")
+                                elide: Text.ElideRight
+                                font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Medium
+                                color: bench.c.text
+                            }
+                            OButton { visible: syncBar.r.behind > 0; kind: "secondary"; iconName: "import"; height_: 30
+                                      text: app.t.bench_git_pull; tip: app.t.bench_git_in_terminal; onClicked: bench.git("pull") }
+                            OButton { visible: syncBar.r.ahead > 0 || syncBar.fresh; kind: syncBar.r.behind > 0 ? "secondary" : "primary"
+                                      iconName: "export"; height_: 30
+                                      text: syncBar.fresh ? app.t.bench_git_publish : app.t.bench_git_push
+                                      tip: app.t.bench_git_in_terminal; onClicked: bench.git("push") }
+                        }
+                    }
+                }
+
+                OMenu {
+                    id: commitMenu
+                    implicitWidth: 300
+                    OMenuItem { text: app.t.bench_git_commit_push; iconName: "export"; visible: bench.b.remote.remote !== ""
+                                onTriggered: bench.git("commitPush") }
+                    OMenuItem { text: app.t.bench_git_commit_branch; iconName: "branch"; onTriggered: bench.git("commitBranch") }
+                    OMenuItem { text: app.t.bench_git_own_message; iconName: "edit"; enabled: !code.busy; onTriggered: bench.commitRequested() }
                 }
 
                 ColumnLayout {                       // a file's diff
@@ -723,7 +842,7 @@ Rectangle {
                                     StepMark { mark: modelData.status === "completed" ? "done" : modelData.status === "in_progress" ? "now" : "todo" }
                                     Text {
                                         Layout.fillWidth: true
-                                        text: modelData.content || ""
+                                        text: modelData.text || modelData.content || ""
                                         wrapMode: Text.Wrap
                                         font.family: "Schibsted Grotesk"; font.pixelSize: 13
                                         font.strikeout: modelData.status === "completed"
@@ -897,8 +1016,26 @@ Rectangle {
             Item {
                 id: termPane
                 property string current: ""
-                readonly property var terms: code.terminals.list
+                // this project's terminals only: one opened in another session's folder stays with that session
+                readonly property var terms: code.terminals.list.filter(t => t.folder === code.folder)
                 readonly property bool usable: code.terminals.available && termView.status !== Loader.Error
+                readonly property string folder: code.folder
+                onFolderChanged: { current = ""; if (bench.tab === "terminal") ensure() }
+                // a command of the person's own (git push, pull…): in a new terminal of the folder, where their keys
+                // and their SSH agent are (Ornis's sandbox has neither)
+                function run(command) {
+                    bench.show("terminal")
+                    if (!usable) return false
+                    const id = code.terminals.start(code.folder, 100, 30)
+                    if (!id) return false
+                    choose(id)
+                    code.terminals.write(id, command + "\r")
+                    refreshSoon.restart()
+                    return true
+                }
+                Timer { id: refreshSoon; interval: 6000; repeat: true; property int left: 4
+                        onRunningChanged: if (running) left = 4
+                        onTriggered: { bench.b.refresh(); if (--left <= 0) stop() } }
                 function ensure() {
                     if (!usable) return
                     if (terms.length === 0) add()
@@ -954,12 +1091,17 @@ Rectangle {
                                         AbstractButton {
                                             id: tClose
                                             anchors.verticalCenter: parent.verticalCenter
-                                            width: 16; height: 16
+                                            width: 18; height: 18
+                                            padding: 0
                                             opacity: tTab.hovered || tTab.on ? 1 : 0
                                             onClicked: termPane.close(tTab.modelData.id)
                                             Accessible.name: app.t.bench_term_close
-                                            background: Rectangle { radius: 4; color: tClose.hovered ? bench.c.hover : "transparent" }
-                                            contentItem: Icon { name: "close"; size: 10; color: bench.c.muted }
+                                            ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: app.t.bench_term_close
+                                            background: Rectangle { radius: 5; color: tClose.hovered ? bench.c.hover : "transparent" }
+                                            contentItem: Item {
+                                                Icon { anchors.centerIn: parent; name: "close"; size: 10
+                                                       color: tClose.hovered ? bench.c.text : bench.c.muted }
+                                            }
                                         }
                                     }
                                 }

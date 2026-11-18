@@ -1,6 +1,8 @@
 """The Code panel on the right of a session (as Cursor's): the folder's files, what changed (this turn, not committed,
 the commits), the plan, the terminals. Read off the window's thread, handed back by signals; nothing here writes in the
-project except what the user asks (a commit goes through CodeChat.commit, an undo through its checkpoints)."""
+project except what the user asks (a commit goes through CodeChat.commit, an undo through its checkpoints, a file the
+person edits in Fichiers through write(), refused when it changed on disk since it was read)."""
+import os
 import re
 import subprocess
 import threading
@@ -11,6 +13,7 @@ from PySide6.QtCore import QObject, QUrl, Property, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 
 import ornis_code
+from .highlight import Highlighter, family
 
 MAX_DIFF_LINES = 4000
 MAX_PREVIEW = 400 * 1024
@@ -107,6 +110,8 @@ class Bench(QObject):
         self._commits: list = []
         self._is_git = False
         self._branch = ""
+        self._remote = {}                # {remote, upstream, ahead, behind}
+        self._highlighters: dict = {}    # id of a QML text's document -> its Highlighter (kept alive)
         self._plan: dict = {}
         self._diff: dict = {}
         self._commit: dict = {}
@@ -123,7 +128,7 @@ class Bench(QObject):
         if folder != self._folder:
             self._folder = folder
             self._files, self._tree, self._status, self._dirty_dirs, self._commits = [], {}, {}, set(), []
-            self._is_git, self._plan, self._diff, self._commit = False, {}, {}, {}
+            self._is_git, self._plan, self._diff, self._commit, self._remote = False, {}, {}, {}, {}
             self.changed.emit()
             self.diffChanged.emit()
             self.commitChanged.emit()
@@ -145,10 +150,11 @@ class Bench(QObject):
     def _collect(self, folder) -> dict:
         self._code._file_list_for = ""                       # the list again: files made since
         files = self._code._list_files(folder)
-        status, commits, git, branch = {}, [], False, ""
+        status, commits, git, branch, remote = {}, [], False, "", {}
         if (Path(folder) / ".git").exists() and ornis_code.git_usable():
             git = True
             branch = (_git(folder, "rev-parse", "--abbrev-ref", "HEAD") or "").strip()
+            remote = _remote_state(folder)
             porcelain = _git(folder, "status", "--porcelain=v1", "-z", "--untracked-files=all") or ""
             parts = porcelain.split("\0")
             i = 0
@@ -177,7 +183,8 @@ class Bench(QObject):
                 if len(bits) >= 5:
                     commits.append({"sha": bits[0], "short": bits[1], "subject": bits[2], "author": bits[3],
                                     "time": int(bits[4] or 0), "refs": bits[5] if len(bits) > 5 else ""})
-        return {"files": files, "status": status, "commits": commits, "git": git, "branch": branch, "plan": plan_doc(folder)}
+        return {"files": files, "status": status, "commits": commits, "git": git, "branch": branch, "plan": plan_doc(folder),
+                "remote": remote}
 
     def _on_loaded(self, folder, data):
         if folder != self._folder:
@@ -200,6 +207,7 @@ class Bench(QObject):
         self._status = data["status"]
         self._dirty_dirs = {"/".join(p.split("/")[:i]) for p in self._status for i in range(1, len(p.split("/")))}
         self._commits, self._is_git, self._branch, self._plan = data["commits"], data["git"], data["branch"], data["plan"]
+        self._remote = data.get("remote") or {}
         self._stamp = time.time()
         self.changed.emit()
 
@@ -215,6 +223,12 @@ class Bench(QObject):
     @Property(str, notify=changed)
     def branch(self):
         return self._branch
+
+    @Property("QVariantMap", notify=changed)
+    def remote(self):
+        """Where the branch is sent: {remote (its name, "" without one), upstream (origin/main, "" when the branch was
+        never pushed), ahead, behind (commits, as last fetched)}."""
+        return self._remote
 
     @Property(int, notify=changed)
     def fileCount(self):
@@ -313,9 +327,69 @@ class Bench(QObject):
             return {"missing": True}
         if b"\0" in data[:8000]:
             return {"binary": True, "size": size}
-        lines = data.decode("utf-8", "replace").splitlines()
-        return {"lines": lines[:MAX_PREVIEW_LINES], "size": size,
-                "truncated": size > MAX_PREVIEW or len(lines) > MAX_PREVIEW_LINES, "count": len(lines)}
+        text = data.decode("utf-8", "replace").replace("\r\n", "\n")   # the editor's; write() puts CRLF back
+        lines = text.splitlines()
+        truncated = size > MAX_PREVIEW or len(lines) > MAX_PREVIEW_LINES
+        if truncated:
+            text = "\n".join(lines[:MAX_PREVIEW_LINES])
+        try:
+            data.decode("utf-8")
+            utf8 = True
+        except UnicodeDecodeError:
+            utf8 = False
+        return {"lines": lines[:MAX_PREVIEW_LINES], "text": text, "size": size, "truncated": truncated,
+                "count": len(lines), "family": family(rel), "mtime": str(path.stat().st_mtime_ns),
+                "editable": not truncated and utf8, "crlf": b"\r\n" in data[:8000]}
+
+    @Slot(str, str, str, result=str)
+    def write(self, rel, text, mtime):
+        """Save a file the person edited in Fichiers: "" when done, else why not (« changed »: someone, often Ornis,
+        wrote it since it was read; « error »). Line endings as the file had them; written beside, then moved."""
+        path = self._inside(rel)
+        if not path or not path.is_file():
+            return "error"
+        try:
+            if mtime and str(path.stat().st_mtime_ns) != str(mtime):
+                return "changed"
+            with path.open("rb") as handle:
+                crlf = b"\r\n" in handle.read(8000)
+            body = text.replace("\r\n", "\n")
+            if crlf:
+                body = body.replace("\n", "\r\n")
+            spare = path.with_name(f".{path.name}.ornis-save")
+            with spare.open("wb") as handle:
+                handle.write(body.encode("utf-8"))
+            try:
+                os.chmod(spare, path.stat().st_mode & 0o7777)
+            except OSError:
+                pass
+            os.replace(spare, path)
+        except OSError as error:
+            print("Ornis bench write:", type(error).__name__, error)
+            return "error"
+        self.refresh()
+        return ""
+
+    @Slot(QObject, str, "QVariantMap")
+    def highlight(self, quick_document, name, colors):
+        """Colour a QML text (its textDocument) as the file `name` (by its extension); again with other colours when
+        the theme changes. A file of no known language stays plain."""
+        try:
+            document = quick_document.textDocument()
+        except (AttributeError, RuntimeError):
+            return
+        key = id(document)
+        current = self._highlighters.get(key)
+        fam = family(name)
+        if current is not None and current[1] == fam:
+            current[0].set_colors(colors)
+            return
+        if current is not None:
+            current[0].setDocument(None)
+            self._highlighters.pop(key, None)
+        if fam:
+            self._highlighters[key] = (Highlighter(document, fam, colors), fam)
+            document.destroyed.connect(lambda *_a, k=key: self._highlighters.pop(k, None))
 
     @Slot(str)
     def openFile(self, rel):
@@ -416,6 +490,23 @@ class Bench(QObject):
     def openPlan(self):
         if self._plan.get("path"):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._plan["path"]))
+
+
+def _remote_state(folder) -> dict:
+    """Where this branch goes: no network here (ahead/behind as last fetched)."""
+    remotes = (_git(folder, "remote") or "").split()
+    if not remotes:
+        return {"remote": "", "upstream": "", "ahead": 0, "behind": 0}
+    upstream = (_git(folder, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}") or "").strip()
+    ahead = behind = 0
+    if upstream:
+        counts = (_git(folder, "rev-list", "--left-right", "--count", "@{u}...HEAD") or "").split()
+        if len(counts) == 2 and all(c.isdigit() for c in counts):
+            behind, ahead = int(counts[0]), int(counts[1])
+    else:                                    # never pushed: every commit of the branch is to send
+        ahead = int((_git(folder, "rev-list", "--count", "HEAD", "--not", "--remotes") or "0").strip() or 0)
+    name = upstream.split("/", 1)[0] if upstream else ("origin" if "origin" in remotes else remotes[0])
+    return {"remote": name, "upstream": upstream, "ahead": ahead, "behind": behind}
 
 
 def home_folder() -> str:

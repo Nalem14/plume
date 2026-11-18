@@ -203,10 +203,12 @@ class Terminals(QObject):
 
     @Slot(str, int, int, result=str)
     def start(self, cwd, cols=100, rows=30):
-        """A new shell in that folder: its id ("" when it cannot start)."""
+        """A new shell in that folder: its id ("" when it cannot start). Each terminal keeps the folder it was asked
+        for (`folder`): the panel shows a session only the terminals of its own project."""
         if not available():
             return ""
         ident = uuid.uuid4().hex[:8]
+        folder = cwd or ""
         cwd = cwd if cwd and os.path.isdir(cwd) else os.path.expanduser("~")
         try:
             kind = _Windows if WINDOWS else _Posix
@@ -216,8 +218,8 @@ class Terminals(QObject):
         except Exception as error:  # noqa: BLE001
             print("Ornis terminal:", type(error).__name__, error)
             return ""
-        number = 1 + max([t.get("number", 0) for t in self._order] + [0])
-        self._order.append({"id": ident, "number": number, "cwd": cwd, "alive": True})
+        number = 1 + max([t.get("number", 0) for t in self._order if t.get("folder") == folder] + [0])
+        self._order.append({"id": ident, "number": number, "cwd": cwd, "folder": folder, "alive": True})
         self._buffer[ident] = ""
         self.listChanged.emit()
         return ident

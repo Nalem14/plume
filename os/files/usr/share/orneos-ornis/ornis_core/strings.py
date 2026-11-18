@@ -2877,6 +2877,57 @@ for _lang, _t in {
     TEXT[_lang].update(_t)
 
 
+# The Code panel, 18/11/2026: a file read and edited in Fichiers, Git from Modifications (Ornis commits; push and pull
+# in the person's own terminal)
+for _lang, _t in {
+    "fr": dict(bench_git_commit="Commit", bench_edit="Modifier", bench_edit_tip="Modifier ce fichier ici", bench_save="Enregistrer",
+               bench_saved="Fichier enregistré", bench_editing="Modification en cours", bench_unsaved="Non enregistré",
+               bench_save_changed="Ce fichier a changé depuis que vous le modifiez (sans doute Ornis). Rechargez-le pour voir sa version, vos changements seront perdus.",
+               bench_save_error="Impossible d'enregistrer ce fichier.", bench_reload="Recharger",
+               bench_discard_title="Changements non enregistrés", bench_discard="Vous avez modifié ce fichier sans l'enregistrer.",
+               bench_discard_go="Abandonner",
+               bench_git_commit_tip="Ornis relit les modifications et fait les commits, avec des messages dans le style du dépôt",
+               bench_git_more="Autres actions", bench_git_commit_push="Commit et push", bench_git_commit_branch="Commit sur une nouvelle branche",
+               bench_git_own_message="Écrire le message moi-même…", bench_git_push="Push", bench_git_pull="Pull",
+               bench_git_publish="Publier la branche", bench_git_unpublished="Branche pas encore envoyée sur %1",
+               bench_git_ahead="%1 commit à envoyer|%1 commits à envoyer", bench_git_behind="%1 commit à récupérer|%1 commits à récupérer",
+               bench_git_in_terminal="Dans un terminal du panneau, avec vos propres accès",
+               bench_git_ask_commit="Fais un commit de mes modifications non validées : relis-les, regroupe-les en un ou plusieurs commits cohérents, avec des messages clairs dans le style de ce dépôt. Ne pousse rien.",
+               bench_git_ask_branch="Crée une nouvelle branche au nom adapté à ces modifications, puis fais-y un commit de mes modifications non validées, avec des messages clairs dans le style de ce dépôt. Ne pousse rien.",
+               bench_git_ask_run="Lance « %1 » dans ce dossier et dis-moi le résultat."),
+    "en": dict(bench_git_commit="Commit", bench_edit="Edit", bench_edit_tip="Edit this file here", bench_save="Save",
+               bench_saved="File saved", bench_editing="Editing", bench_unsaved="Not saved",
+               bench_save_changed="This file changed while you were editing it (probably Ornis). Reload it to see that version; your changes will be lost.",
+               bench_save_error="This file could not be saved.", bench_reload="Reload",
+               bench_discard_title="Unsaved changes", bench_discard="You changed this file without saving it.",
+               bench_discard_go="Discard",
+               bench_git_commit_tip="Ornis reads the changes and commits them, with messages in the repository's style",
+               bench_git_more="More actions", bench_git_commit_push="Commit and push", bench_git_commit_branch="Commit on a new branch",
+               bench_git_own_message="Write the message myself…", bench_git_push="Push", bench_git_pull="Pull",
+               bench_git_publish="Publish branch", bench_git_unpublished="Branch not sent to %1 yet",
+               bench_git_ahead="%1 commit to push|%1 commits to push", bench_git_behind="%1 commit to pull|%1 commits to pull",
+               bench_git_in_terminal="In a terminal of the panel, with your own access",
+               bench_git_ask_commit="Commit my uncommitted changes: review them, group them into one or more coherent commits, with clear messages in this repository's style. Do not push.",
+               bench_git_ask_branch="Create a new branch named after these changes, then commit my uncommitted changes on it, with clear messages in this repository's style. Do not push.",
+               bench_git_ask_run="Run “%1” in this folder and tell me the result."),
+    "de": dict(bench_git_commit="Commit", bench_edit="Bearbeiten", bench_edit_tip="Diese Datei hier bearbeiten", bench_save="Speichern",
+               bench_saved="Datei gespeichert", bench_editing="Wird bearbeitet", bench_unsaved="Nicht gespeichert",
+               bench_save_changed="Diese Datei hat sich geändert, während Sie sie bearbeitet haben (vermutlich durch Ornis). Laden Sie sie neu, um diese Fassung zu sehen; Ihre Änderungen gehen verloren.",
+               bench_save_error="Diese Datei konnte nicht gespeichert werden.", bench_reload="Neu laden",
+               bench_discard_title="Nicht gespeicherte Änderungen", bench_discard="Sie haben diese Datei geändert, ohne sie zu speichern.",
+               bench_discard_go="Verwerfen",
+               bench_git_commit_tip="Ornis liest die Änderungen und committet sie, mit Nachrichten im Stil des Repositorys",
+               bench_git_more="Weitere Aktionen", bench_git_commit_push="Commit und Push", bench_git_commit_branch="Commit auf einem neuen Branch",
+               bench_git_own_message="Nachricht selbst schreiben…", bench_git_push="Push", bench_git_pull="Pull",
+               bench_git_publish="Branch veröffentlichen", bench_git_unpublished="Branch noch nicht an %1 gesendet",
+               bench_git_ahead="%1 Commit zu senden|%1 Commits zu senden", bench_git_behind="%1 Commit abzuholen|%1 Commits abzuholen",
+               bench_git_in_terminal="In einem Terminal des Bereichs, mit Ihren eigenen Zugängen",
+               bench_git_ask_commit="Committe meine nicht committeten Änderungen: lies sie durch, fasse sie zu einem oder mehreren stimmigen Commits zusammen, mit klaren Nachrichten im Stil dieses Repositorys. Pushe nichts.",
+               bench_git_ask_branch="Lege einen neuen Branch mit passendem Namen an und committe dort meine nicht committeten Änderungen, mit klaren Nachrichten im Stil dieses Repositorys. Pushe nichts.",
+               bench_git_ask_run="Führe „%1“ in diesem Ordner aus und sag mir das Ergebnis."),
+}.items():
+    TEXT[_lang].update(_t)
+
 # Code-mode bots (Sessions | Bots): durable chats with SOUL, routines, peer pills
 for _lang, _t in {
     "fr": dict(
