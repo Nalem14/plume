@@ -13,17 +13,18 @@ AbstractButton {
     property int height_: 34
     property string tip                  // tooltip (and accessible name) of an icon-only button
     property bool danger
+    property bool pill                   // fully rounded: a button inside a rounded bar (Navigateur's bars)
 
     readonly property var c: theme.c
     implicitHeight: height_
-    implicitWidth: row.implicitWidth + (text ? 24 : 16)
+    implicitWidth: row.implicitWidth + (text ? (pill ? 32 : 24) : 16)
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: text || tip || ToolTip.text
     opacity: enabled ? 1 : 0.45          // not yet possible: seen at once (a form still to fill)
 
     background: Rectangle {
-        radius: 6
+        radius: b.pill ? height / 2 : 6
         color: b.kind === "primary" ? (b.hovered ? b.c.actionHover : b.c.action)
              : b.kind === "danger" ? b.c.danger
              : b.kind === "quiet" ? (b.hovered ? b.c.hover : "transparent")
@@ -34,7 +35,7 @@ AbstractButton {
         Behavior on color { ColorAnimation { duration: 120; easing.type: Easing.OutCubic } }
         Rectangle {                      // focus ring: saffron, like the site
             anchors.fill: parent; anchors.margins: -3
-            radius: 8; color: "transparent"
+            radius: b.pill ? height / 2 : 8; color: "transparent"
             border.width: 2; border.color: b.c.saffron
             visible: b.visualFocus
         }

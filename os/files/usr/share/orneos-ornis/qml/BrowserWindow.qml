@@ -416,18 +416,51 @@ Window {
             }
         }
     }
+    // What the agent is doing (« Ornis clique »), and whether one of its actions waits for the person
+    onAgentDrivesChanged: {
+        if (agentDrives && !annotating) veil.forceActiveFocus()
+        else if (embedded && !annotating && view) view.forceActiveFocus()
+    }
+    property string doing: ""
+    property bool waiting: false
+    Connections {
+        target: host
+        function onChanged() { win.doing = host.doingOf(win.owner); win.waiting = host.waitingFor(win.owner) }
+    }
+    Timer { interval: 1000; repeat: true; running: win.embedded && win.control !== ""
+            onTriggered: { win.doing = host.doingOf(win.owner); win.waiting = host.waitingFor(win.owner) } }
+
+    // The agent drives: the page in a living frame of its colour, a light veil (the page reads well, takes no click),
+    // and at the bottom its presence (who, what it does now) with « Prendre le contrôle » (or Échap).
     Item {
         id: veil
         anchors.fill: parent
         z: 30
-        visible: win.agentDrives && !win.annotating
-        onVisibleChanged: if (visible) forceActiveFocus()
-        focus: visible
-        Keys.onPressed: event => event.accepted = true          // the page gets no key while the agent drives
-        Rectangle {                             // a frame of its colour: someone else drives
-            anchors.fill: parent
-            color: "transparent"; border.width: 3; border.color: win.c.action
-            opacity: 0.85
+        visible: opacity > 0
+        opacity: win.agentDrives && !win.annotating ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: win.motion ? 220 : 0 } }
+        focus: win.agentDrives && !win.annotating
+        Keys.onPressed: event => {                               // the page gets no key while the agent drives
+            if (event.key === Qt.Key_Escape) host.takeControl(win.owner)
+            event.accepted = true
+        }
+        Rectangle {                             // a light veil: someone else drives
+            x: stage.x; y: stage.y
+            width: stage.width * stage.fit; height: stage.height * stage.fit
+            color: Qt.rgba(win.ink.r, win.ink.g, win.ink.b, 0.035)
+        }
+        Rectangle {                             // its frame, breathing
+            id: liveFrame
+            x: stage.x; y: stage.y
+            width: stage.width * stage.fit; height: stage.height * stage.fit
+            color: "transparent"; border.width: 2; border.color: win.ink
+            SequentialAnimation on opacity {
+                running: veil.visible && win.motion; loops: Animation.Infinite
+                NumberAnimation { to: 0.45; duration: 1400; easing.type: Easing.InOutSine }
+                NumberAnimation { to: 1; duration: 1400; easing.type: Easing.InOutSine }
+            }
+            Rectangle { anchors.fill: parent; anchors.margins: 2; color: "transparent"
+                        border.width: 6; border.color: win.tint(0.10) }
         }
         MouseArea {
             anchors.fill: parent
@@ -439,58 +472,151 @@ Window {
         RectangularShadow {
             anchors.fill: pill
             radius: pill.radius
-            blur: 30; offset.y: 10
+            blur: 32; offset.y: 12
             color: win.c.shadow
         }
         Rectangle {
             id: pill
             objectName: "browserVeil"
-            anchors.centerIn: parent
-            width: pillRow.implicitWidth + 28; height: 64; radius: 32
+            x: (win.width - width) / 2
+            y: win.height - height - (win.agentDrives ? 18 : 2)
+            Behavior on y { NumberAnimation { duration: win.motion ? 260 : 0; easing.type: Easing.OutCubic } }
+            width: Math.min(pillRow.implicitWidth + 16, win.width - 24); height: 60; radius: 30
             color: win.c.overlay
             border.width: 1; border.color: win.c.overlayLine
+            clip: true
             Row {
                 id: pillRow
-                anchors.centerIn: parent
-                spacing: 14
-                Item {
-                    width: 12; height: 40
-                    Rectangle {                 // it is working
+                anchors.verticalCenter: parent.verticalCenter
+                x: 8
+                spacing: 12
+                Item {                          // who drives: its mark, with a ring that goes out like a pulse
+                    width: 44; height: 44
+                    anchors.verticalCenter: parent.verticalCenter
+                    Rectangle {
+                        id: pulse
                         anchors.centerIn: parent
-                        width: 10; height: 10; radius: 5; color: win.c.action
-                        SequentialAnimation on opacity {
-                            running: veil.visible; loops: Animation.Infinite
-                            NumberAnimation { to: 0.25; duration: 700; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 1; duration: 700; easing.type: Easing.InOutSine }
+                        width: 44; height: 44; radius: width / 2
+                        color: "transparent"; border.width: 2; border.color: win.ink
+                        SequentialAnimation {
+                            running: veil.visible && win.motion; loops: Animation.Infinite
+                            ParallelAnimation {
+                                NumberAnimation { target: pulse; property: "scale"; from: 0.8; to: 1.25; duration: 1400; easing.type: Easing.OutCubic }
+                                NumberAnimation { target: pulse; property: "opacity"; from: 0.7; to: 0; duration: 1400 }
+                            }
+                            PauseAnimation { duration: 300 }
                         }
+                    }
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 36; height: 36; radius: 18
+                        color: win.ink
+                        Icon { anchors.centerIn: parent; visible: win.owner === "you"; name: "ornis"; size: 19; color: win.c.actionText }
+                        Text { anchors.centerIn: parent; visible: win.owner !== "you"
+                               text: (win.who || "?").charAt(0).toUpperCase()
+                               font.family: "Schibsted Grotesk"; font.pixelSize: 16; font.weight: Font.Bold; color: win.c.actionText }
                     }
                 }
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 1
+                    spacing: 2
                     Text { text: (app.t.browser_control_agent || "%1 a le contrôle").replace("%1", win.who)
                            font.family: "Schibsted Grotesk"; font.pixelSize: 14; font.weight: Font.DemiBold; color: win.c.text }
-                    Text { text: app.t.browser_control_hint || ""
+                    Text { text: win.doing || app.t.browser_control_hint || ""
+                           width: Math.min(implicitWidth, Math.max(120, win.width - 360)); elide: Text.ElideRight
                            font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: win.c.muted }
                 }
                 OButton {
-                    objectName: "browserTake"
+                    objectName: "browserTake"; pill: true
                     anchors.verticalCenter: parent.verticalCenter
-                    kind: "primary"; iconName: "hand"; iconSize: 16; height_: 40
+                    kind: "primary"; iconName: "hand"; iconSize: 16; height_: 44
                     text: app.t.browser_control_take || "Prendre le contrôle"
+                    tip: (app.t.browser_control_take || "Prendre le contrôle") + "  (Échap)"
                     onClicked: host.takeControl(win.owner)
                 }
             }
         }
     }
 
-    // ---- Annoter: point at places, say what to change, send them together --------------------------------------------
+    // The person took it: the page is theirs again, a small bar says the agent waits and gives it back in one click.
+    RectangularShadow {
+        anchors.fill: handBar
+        visible: handBar.visible
+        opacity: handBar.opacity
+        z: 29
+        radius: handBar.radius
+        blur: 26; offset.y: 10
+        color: win.c.shadow
+    }
+    Rectangle {
+        id: handBar
+        objectName: "browserHandBar"
+        z: 29.5
+        visible: opacity > 0
+        opacity: win.embedded && win.control === "person" && !win.annotating ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: win.motion ? 200 : 0 } }
+        x: (win.width - width) / 2
+        y: win.height - height - 18
+        width: Math.min(handRow.implicitWidth + 14 + 6, win.width - 24); height: 48; radius: 24
+        color: win.c.overlay
+        border.width: 1; border.color: win.c.overlayLine
+        clip: true
+        Row {
+            id: handRow
+            anchors.verticalCenter: parent.verticalCenter
+            x: 14
+            spacing: 10
+            Rectangle { width: 9; height: 9; radius: 5; color: win.c.ok; anchors.verticalCenter: parent.verticalCenter }
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                Text { text: app.t.browser_control_you || "Vous avez le contrôle"
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold; color: win.c.text }
+                Text { visible: win.waiting
+                       text: (app.t.browser_doing_wait || "%1 attend que vous rendiez le contrôle").replace("%1", win.who)
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: win.c.muted }
+            }
+            Row {                               // it waits: three dots
+                visible: win.waiting
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 3
+                Repeater {
+                    model: 3
+                    Rectangle {
+                        required property int index
+                        width: 5; height: 5; radius: 3; color: win.ink
+                        SequentialAnimation on opacity {
+                            running: handBar.visible && win.waiting && win.motion; loops: Animation.Infinite
+                            PauseAnimation { duration: index * 160 }
+                            NumberAnimation { to: 0.2; duration: 380 }
+                            NumberAnimation { to: 1; duration: 380 }
+                            PauseAnimation { duration: (2 - index) * 160 }
+                        }
+                    }
+                }
+            }
+            OButton {
+                objectName: "browserGiveInPage"; pill: true
+                anchors.verticalCenter: parent.verticalCenter
+                kind: win.waiting ? "primary" : "secondary"; iconName: "ornis"; iconSize: 15; height_: 36
+                text: (app.t.browser_control_give || "Rendre à %1").replace("%1", win.who)
+                onClicked: host.releaseControl(win.owner)
+            }
+        }
+    }
+
+    // ---- Annoter: point at places (or frame a zone), say what to change, send them together -------------------------
+    // The page is framed in the colour of the action, the element under the pointer is outlined with its name (as a
+    // browser's inspector does), each place gets a numbered pin, its note a card pointing at it, and a bar at the bottom
+    // holds the batch. Alt picks the exact element under the pointer (else: the button or link it belongs to).
     property var marks: []                      // [{ element, note, box }]: the places annotated, numbered
     property int editing: -1                    // the mark whose note is open (marks.length: a new one)
     property var picked: ({})
+    readonly property color ink: c.action
+    readonly property bool motion: Qt.styleHints.reduceMotion !== true
+    function tint(a) { return Qt.rgba(ink.r, ink.g, ink.b, a) }
     function setAnnotating(on) {
         annotating = on
-        if (!on) { note.visible = false; hoverBox.width = 0 }
+        if (!on) { note.visible = false; editing = -1; hoverBox.width = 0; zone.active = false }
         // while annotating, the keys are ours (the page would keep Échap); then the page's again
         if (embedded) { if (on) annotKeys.forceActiveFocus(); else if (view) view.forceActiveFocus() }
         changed()
@@ -499,16 +625,32 @@ Window {
         id: annotKeys
         Keys.onPressed: event => win.pageKey(event)
     }
+    function describeEl(el) {                   // « button · Se connecter », « Zone · 320 × 140 »
+        if (!el) return ""
+        if (el.kind === "area") return (app.t.browser_annotate_zone || "Zone") + "  ·  " + el.rect.w + " × " + el.rect.h
+        const kind = el.role || el.tag || ""
+        const name = (el.name || el.text || "").trim()
+        return kind + (name ? (kind ? "  ·  " : "") + name : "")
+    }
     function openNote(i, element) {
         editing = i
         picked = element
         noteText.text = i < marks.length ? marks[i].note : ""
-        const b = i < marks.length ? marks[i].box : element.rect
-        const bx = wx(b.x), by = wy(b.y), bh = b.h * zoom * stage.fit
-        note.x = Math.max(8, Math.min(win.width - note.width - 8, bx))
-        note.y = by + bh + 10 + note.height < win.height - 8 ? by + bh + 10 : Math.max(8, by - note.height - 10)
+        placeNote()
         note.visible = true
+        noteIn.restart()
         noteText.forceActiveFocus()
+    }
+    function placeNote() {                      // under the place, else above it; the caret points at its middle
+        if (editing < 0) return
+        const b = editing < marks.length ? marks[editing].box : picked.rect
+        if (!b) return
+        const bx = wx(b.x), by = wy(b.y), bw = b.w * zoom * stage.fit, bh = b.h * zoom * stage.fit
+        const below = by + bh + 14 + note.height < win.height - 80 || by - note.height - 14 < 8
+        note.x = Math.max(12, Math.min(win.width - note.width - 12, bx + bw / 2 - 40))
+        note.y = below ? Math.min(win.height - note.height - 8, by + bh + 14) : by - note.height - 14
+        note.below = below
+        note.aim = Math.max(18, Math.min(note.width - 18, bx + Math.min(bw, 80) / 2 - note.x))
     }
     function keepNote() {                       // the open note joins the batch (an empty new one is dropped)
         const text = noteText.text.trim()
@@ -544,13 +686,65 @@ Window {
             const boxes = JSON.parse(r)
             if (!Array.isArray(boxes) || boxes.length !== win.marks.length) return
             win.marks = win.marks.map((m, i) => boxes[i] ? Object.assign({}, m, { box: boxes[i] }) : m)
+            if (note.visible && win.editing < win.marks.length) win.placeNote()
         })
     }
-    Rectangle {
+
+    Rectangle {                                 // Annoter is on: the page framed in the action's colour
+        z: 9
+        x: stage.x; y: stage.y
+        width: stage.width * stage.fit; height: stage.height * stage.fit
+        color: "transparent"
+        border.width: 2; border.color: win.tint(0.55)
+        opacity: win.annotating ? 1 : 0
+        visible: opacity > 0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        Rectangle {                             // a soft glow inside the edge
+            anchors.fill: parent; anchors.margins: 2
+            color: "transparent"; border.width: 4; border.color: win.tint(0.10)
+        }
+    }
+    Rectangle {                                 // what the pointer is on
         id: hoverBox
-        visible: win.annotating && width > 0
-        color: Qt.alpha(win.c.action, 0.10); border.color: win.c.action; border.width: 2; radius: 4
+        objectName: "annotationHover"
+        property string label: ""
+        property bool moving: false             // no glide from nothing: it appears where it is
+        visible: win.annotating && width > 0 && !zone.active
         z: 10
+        color: win.tint(0.07); border.color: win.ink; border.width: 1.5; radius: 6
+        Behavior on x { enabled: hoverBox.moving && win.motion; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on y { enabled: hoverBox.moving && win.motion; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on width { enabled: hoverBox.moving && win.motion; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on height { enabled: hoverBox.moving && win.motion; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Rectangle {                             // its name and size, as an inspector shows them
+            visible: hoverBox.label !== "" && !note.visible
+            x: Math.min(0, win.width - hoverBox.x - width - 8)
+            y: hoverBox.y > height + 8 ? -height - 6 : hoverBox.height + 6
+            width: Math.min(tagRow.implicitWidth + 16, 360); height: 24; radius: 7
+            color: win.ink
+            clip: true
+            Row {
+                id: tagRow
+                anchors.verticalCenter: parent.verticalCenter
+                x: 8
+                spacing: 8
+                Text { text: hoverBox.label; color: win.c.actionText
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold }
+                Text { text: Math.round(hoverBox.width / win.zoom / stage.fit) + " × " + Math.round(hoverBox.height / win.zoom / stage.fit)
+                       color: win.c.actionText; opacity: 0.7
+                       font.family: "JetBrains Mono"; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+            }
+        }
+    }
+    Rectangle {                                 // a zone being framed
+        id: zone
+        property bool active: false
+        property real x0: 0
+        property real y0: 0
+        visible: active
+        z: 10
+        color: win.tint(0.10); radius: 4
+        border.width: 1.5; border.color: win.ink
     }
     MouseArea {
         x: stage.x; y: stage.y
@@ -560,20 +754,52 @@ Window {
         hoverEnabled: true
         cursorShape: Qt.CrossCursor
         property real lastAsk: 0
+        property bool pressedHere: false
         function boxFor(r) {
+            if (!r || r.w === undefined) return
+            hoverBox.moving = hoverBox.width > 0
             hoverBox.x = win.wx(r.x); hoverBox.y = win.wy(r.y)
             hoverBox.width = r.w * win.zoom * stage.fit; hoverBox.height = r.h * win.zoom * stage.fit
+            if (r.label !== undefined) hoverBox.label = r.label
         }
         function css(m) { return [Math.round(m.x / stage.fit / win.zoom), Math.round(m.y / stage.fit / win.zoom)] }
-        onPositionChanged: mouse => {
-            if (!win.view || Date.now() - lastAsk < 90 || note.visible) return
-            lastAsk = Date.now()
-            win.view.runJavaScript(host.agentCall("rect", css(mouse)), WebEngineScript.ApplicationWorld, r => { if (r) boxFor(JSON.parse(r)) })
+        function exact(m) { return !!(m.modifiers & Qt.AltModifier) }
+        onPressed: mouse => {
+            pressedHere = !note.visible
+            zone.x0 = mouse.x + x; zone.y0 = mouse.y + y
         }
-        onClicked: mouse => {
+        onPositionChanged: mouse => {
+            if (pressed && pressedHere) {
+                const px = mouse.x + x, py = mouse.y + y
+                if (!zone.active && Math.abs(px - zone.x0) + Math.abs(py - zone.y0) > 10) zone.active = true
+                if (zone.active) {
+                    zone.x = Math.min(px, zone.x0); zone.y = Math.min(py, zone.y0)
+                    zone.width = Math.abs(px - zone.x0); zone.height = Math.abs(py - zone.y0)
+                }
+                return
+            }
+            if (!win.view || Date.now() - lastAsk < 70 || note.visible) return
+            lastAsk = Date.now()
+            win.view.runJavaScript(host.agentCall("rect", css(mouse).concat([exact(mouse)])), WebEngineScript.ApplicationWorld,
+                                   r => { if (r) boxFor(JSON.parse(r)) })
+        }
+        onExited: if (!note.visible) hoverBox.width = 0
+        onReleased: mouse => {
             if (!win.view) return
-            if (note.visible) { win.keepNote(); return }         // a click elsewhere keeps the note and moves on
-            win.view.runJavaScript(host.agentCall("pick", css(mouse)), WebEngineScript.ApplicationWorld, r => {
+            if (zone.active) {                  // a zone: what is in it
+                zone.active = false
+                const sx = (zone.x - stage.x) / stage.fit / win.zoom, sy = (zone.y - stage.y) / stage.fit / win.zoom
+                const sw = zone.width / stage.fit / win.zoom, sh = zone.height / stage.fit / win.zoom
+                win.view.runJavaScript(host.agentCall("area", [sx, sy, sw, sh]), WebEngineScript.ApplicationWorld, r => {
+                    const el = r ? JSON.parse(r) : ({})
+                    if (!el.rect) return
+                    boxFor({ x: el.rect.x, y: el.rect.y, w: el.rect.w, h: el.rect.h, label: "" })
+                    win.openNote(win.marks.length, el)
+                })
+                return
+            }
+            if (!pressedHere) { if (note.visible) win.keepNote(); return }   // a click elsewhere keeps the note
+            win.view.runJavaScript(host.agentCall("pick", css(mouse).concat([exact(mouse)])), WebEngineScript.ApplicationWorld, r => {
                 const el = r ? JSON.parse(r) : ({})
                 if (!el.rect) return
                 boxFor(el.rect)
@@ -584,80 +810,137 @@ Window {
     Repeater {                                  // the numbered places
         model: win.annotating ? win.marks : []
         Item {
+            id: mark
             required property var modelData
             required property int index
-            z: 12
+            readonly property bool current: win.editing === index
+            z: current ? 12.5 : 12
             x: win.wx(modelData.box.x); y: win.wy(modelData.box.y)
             width: modelData.box.w * win.zoom * stage.fit; height: modelData.box.h * win.zoom * stage.fit
             Rectangle {
                 anchors.fill: parent
-                radius: 4; color: Qt.alpha(win.c.action, 0.06)
-                border.width: 2; border.color: win.c.action
-                opacity: win.editing === parent.index ? 1 : 0.7
+                radius: 6; color: win.tint(mark.current ? 0.10 : 0.05)
+                border.width: 1.5; border.color: win.ink
+                opacity: mark.current || pinMouse.containsMouse ? 1 : 0.65
+            }
+            RectangularShadow {
+                anchors.fill: pin
+                radius: pin.radius; blur: 10; offset.y: 3
+                color: win.c.shadow
+                scale: pin.scale
             }
             Rectangle {
+                id: pin
                 objectName: "annotationPin"
-                x: -10; y: -10
-                width: 22; height: 22; radius: 11
-                color: win.c.action
+                x: -13; y: -13
+                width: 26; height: 26; radius: 13
+                color: win.ink
                 border.width: 2; border.color: win.c.overlay
-                Text { anchors.centerIn: parent; text: parent.parent.index + 1
-                       font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.Bold; color: win.c.actionText }
-                MouseArea { anchors.fill: parent; anchors.margins: -4; cursorShape: Qt.PointingHandCursor
-                            onClicked: { win.keepNote(); win.openNote(parent.parent.index, parent.parent.modelData.element) } }
+                scale: pinMouse.containsMouse ? 1.12 : 1
+                Behavior on scale { enabled: win.motion; NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
+                NumberAnimation on scale { running: win.motion; from: 0.3; to: 1; duration: 280; easing.type: Easing.OutBack }
+                Text { anchors.centerIn: parent; text: mark.index + 1
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Bold; color: win.c.actionText }
+                MouseArea { id: pinMouse; anchors.fill: parent; anchors.margins: -4; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { win.keepNote(); win.openNote(mark.index, mark.modelData.element) } }
+            }
+            Rectangle {                         // its note, under the pointer
+                visible: pinMouse.containsMouse && !mark.current && mark.modelData.note !== ""
+                x: 20; y: -13
+                width: Math.min(280, peek.implicitWidth + 22); height: peek.implicitHeight + 14; radius: 9
+                color: win.c.night1
+                Text { id: peek; x: 11; y: 7; width: Math.min(258, implicitWidth); wrapMode: Text.Wrap; maximumLineCount: 4
+                       elide: Text.ElideRight; text: mark.modelData.note; color: win.c.onNight
+                       font.family: "Schibsted Grotesk"; font.pixelSize: 12 }
             }
         }
     }
+
+    // ---- the note of one place: a card pointing at it ----------------------------------------------------------------
     RectangularShadow {
         anchors.fill: note
         visible: note.visible
-        z: 12
+        opacity: note.opacity
+        z: 12.8
         radius: note.radius
-        blur: 28; offset.y: 10
+        blur: 36; offset.y: 14
         color: win.c.shadow
     }
-    Rectangle {                                 // the note of one place
-        id: note
-        objectName: "annotationNote"
-        visible: false
-        z: 13
-        width: Math.min(360, win.width - 16); height: noteCol.implicitHeight + 24
-        radius: 12
+    Rectangle {                                 // the caret, half under the card
+        visible: note.visible
+        opacity: note.opacity
+        z: 12.9
+        width: 14; height: 14; rotation: 45
+        x: note.x + note.aim - 7
+        y: note.below ? note.y - 7 : note.y + note.height - 7
         color: win.c.overlay
         border.width: 1; border.color: win.c.overlayLine
+    }
+    Rectangle {
+        id: note
+        objectName: "annotationNote"
+        property bool below: true
+        property real aim: 24
+        visible: false
+        z: 13
+        width: Math.min(400, win.width - 24); height: noteCol.implicitHeight + 28
+        radius: 14
+        color: win.c.overlay
+        border.width: 1; border.color: win.c.overlayLine
+        transformOrigin: below ? Item.Top : Item.Bottom
+        onHeightChanged: if (visible) win.placeNote()
+        ParallelAnimation {
+            id: noteIn
+            NumberAnimation { target: note; property: "opacity"; from: 0; to: 1; duration: win.motion ? 160 : 0 }
+            NumberAnimation { target: note; property: "scale"; from: 0.96; to: 1; duration: win.motion ? 200 : 0; easing.type: Easing.OutCubic }
+        }
+        Rectangle {                             // the card's caret is covered by its fill: the edge stays visible
+            x: note.aim - 8; y: note.below ? 0 : note.height - 1
+            width: 16; height: 1; color: win.c.overlay
+        }
         Column {
             id: noteCol
-            x: 12; y: 12
-            width: parent.width - 24
-            spacing: 10
+            x: 14; y: 14
+            width: parent.width - 28
+            spacing: 12
             Row {
                 width: parent.width
-                spacing: 8
+                spacing: 10
                 Rectangle {
-                    width: 22; height: 22; radius: 11; color: win.c.action
-                    Text { anchors.centerIn: parent; text: win.editing + 1
-                           font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.Bold; color: win.c.actionText }
-                }
-                Text {
-                    width: parent.width - 30 - 30
+                    width: 28; height: 28; radius: 14; color: win.ink
                     anchors.verticalCenter: parent.verticalCenter
-                    text: {
-                        const el = win.picked || {}
-                        const kind = el.role || el.tag || ""
-                        const name = (el.name || el.text || "").trim()
-                        return (kind ? kind : "") + (name ? (kind ? " · " : "") + name : "")
-                    }
-                    elide: Text.ElideRight
-                    font.family: "Schibsted Grotesk"; font.pixelSize: 12; color: win.c.muted
+                    Text { anchors.centerIn: parent; text: win.editing + 1
+                           font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.Bold; color: win.c.actionText }
                 }
-                OButton { kind: "quiet"; iconName: "close"; iconSize: 13; height_: 24; tip: app.t.cancel
+                Column {
+                    width: parent.width - 28 - 10 - 34
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 1
+                    Text {
+                        width: parent.width
+                        text: win.describeEl(win.editing < win.marks.length ? win.marks[win.editing].element : win.picked)
+                        elide: Text.ElideRight
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold; color: win.c.text
+                    }
+                    Text {
+                        readonly property var el: win.editing >= 0 && win.editing < win.marks.length ? win.marks[win.editing].element : win.picked
+                        width: parent.width
+                        visible: text !== ""
+                        text: el ? (el.kind === "area" ? (el.within || "") : (el.selector || "")) : ""
+                        elide: Text.ElideMiddle
+                        font.family: "JetBrains Mono"; font.pixelSize: 11; color: win.c.faint
+                    }
+                }
+                OButton { kind: "quiet"; iconName: "close"; iconSize: 13; height_: 28; tip: app.t.cancel
+                          anchors.verticalCenter: parent.verticalCenter
                           onClicked: win.editing < win.marks.length ? win.keepNote() : win.dropNote() }
             }
             OTextArea {
                 id: noteText
                 objectName: "annotationText"
                 width: parent.width
-                height: Math.max(76, Math.min(160, implicitHeight))
+                height: Math.max(84, Math.min(170, implicitHeight))
                 font.pixelSize: 14
                 placeholderText: app.t.browser_annotate_ph
                 Keys.onReturnPressed: event => {
@@ -672,7 +955,7 @@ Window {
                 OButton {
                     anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
                     visible: win.editing < win.marks.length
-                    kind: "quiet"; iconName: "trash"; iconSize: 14; height_: 32; tip: app.t.browser_annotate_remove
+                    kind: "quiet"; iconName: "trash"; iconSize: 14; height_: 32; text: app.t.browser_annotate_remove
                     onClicked: win.dropNote()
                 }
                 OButton {
@@ -684,45 +967,105 @@ Window {
                     enabled: noteText.text.trim() !== ""
                     onClicked: win.keepNote()
                 }
+                Text {
+                    anchors.right: sendBtn.left; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                    visible: parent.width > 330
+                    text: "⏎"
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 13; color: win.c.faint
+                }
                 OButton {
+                    id: sendBtn
                     objectName: "annotationSend"
                     anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     kind: "primary"; iconName: "send"; iconSize: 14; height_: 32
                     readonly property int count: win.marks.length + (win.editing >= win.marks.length && noteText.text.trim() !== "" ? 1 : 0)
-                    text: app.t.browser_annotate_send + (count > 1 ? "  " + count : "")
+                    text: (app.t.browser_annotate_send_to || "Envoyer à %1").replace("%1", win.who || "Ornis") + (count > 1 ? "  ·  " + count : "")
                     enabled: count > 0
                     onClicked: win.sendMarks()
                 }
             }
         }
     }
-    Rectangle {                                 // the batch, while no note is open
+
+    // ---- the bar of Annoter: what to do, the batch, send -------------------------------------------------------------
+    RectangularShadow {
+        anchors.fill: tray
+        visible: tray.visible
+        opacity: tray.opacity
+        z: 13
+        radius: tray.radius
+        blur: 32; offset.y: 12
+        color: win.c.shadow
+    }
+    Rectangle {
         id: tray
         objectName: "annotationTray"
-        visible: win.annotating
-        z: 13
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom; anchors.bottomMargin: 16
-        width: trayRow.implicitWidth + 20; height: 44; radius: 22
+        visible: opacity > 0
+        opacity: win.annotating ? 1 : 0
+        z: 13.5
+        x: (win.width - width) / 2
+        y: win.height - height - (win.annotating ? 18 : 2)
+        Behavior on opacity { NumberAnimation { duration: win.motion ? 180 : 0 } }
+        Behavior on y { NumberAnimation { duration: win.motion ? 240 : 0; easing.type: Easing.OutCubic } }
+        width: Math.min(trayRow.implicitWidth + 16, win.width - 24); height: 56; radius: 28
         color: win.c.overlay
         border.width: 1; border.color: win.c.overlayLine
+        clip: true
         Row {
             id: trayRow
-            anchors.centerIn: parent
-            spacing: 8
-            Icon { anchors.verticalCenter: parent.verticalCenter; name: "edit"; size: 15; color: win.c.action }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: win.marks.length === 0 ? app.t.browser_annotate_start
-                      : (win.marks.length === 1 ? app.t.browser_annotate_one : app.t.browser_annotate_many.replace("%1", win.marks.length))
-                font.family: "Schibsted Grotesk"; font.pixelSize: 13; color: win.c.text
-                rightPadding: 4
+            anchors.verticalCenter: parent.verticalCenter
+            x: 8
+            spacing: 10
+            Rectangle {
+                width: 40; height: 40; radius: 20
+                color: win.tint(0.12)
+                Icon { anchors.centerIn: parent; name: "edit"; size: 17; color: win.ink }
             }
-            OButton { visible: win.marks.length > 0 && !note.visible; kind: "quiet"; height_: 30; text: app.t.browser_annotate_clear
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 1
+                Text {
+                    text: win.marks.length === 0 ? app.t.browser_annotate
+                          : (win.marks.length === 1 ? app.t.browser_annotate_one : app.t.browser_annotate_many.replace("%1", win.marks.length))
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold; color: win.c.text
+                }
+                Text {
+                    text: app.t.browser_annotate_hint || app.t.browser_annotate_start
+                    visible: win.width > 640 || win.marks.length === 0
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: win.c.muted
+                }
+            }
+            Row {                               // the places, small: one click opens a note again
+                anchors.verticalCenter: parent.verticalCenter
+                visible: win.marks.length > 0
+                spacing: -6
+                leftPadding: 4
+                Repeater {
+                    model: Math.min(win.marks.length, 6)
+                    Rectangle {
+                        required property int index
+                        width: 24; height: 24; radius: 12
+                        color: win.editing === index ? win.c.actionHover : win.ink
+                        border.width: 2; border.color: win.c.overlay
+                        Text { anchors.centerIn: parent; text: parent.index + 1
+                               font.family: "Schibsted Grotesk"; font.pixelSize: 11; font.weight: Font.Bold; color: win.c.actionText }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: { win.keepNote(); win.openNote(parent.index, win.marks[parent.index].element) } }
+                    }
+                }
+            }
+            Rectangle { width: 1; height: 26; color: win.c.line; anchors.verticalCenter: parent.verticalCenter
+                        visible: win.marks.length > 0 }
+            OButton { pill: true; visible: win.marks.length > 0 && !note.visible; kind: "quiet"; height_: 36; text: app.t.browser_annotate_clear
+                      anchors.verticalCenter: parent.verticalCenter
                       onClicked: { win.marks = []; win.changed() } }
-            OButton { visible: win.marks.length > 0 && !note.visible; kind: "primary"; iconName: "send"; iconSize: 13; height_: 30
-                      text: app.t.browser_annotate_send; onClicked: win.sendMarks() }
-            OButton { kind: "quiet"; iconName: "close"; iconSize: 13; height_: 30; tip: app.t.browser_annotate_quit
+            OButton { objectName: "annotationTraySend"; pill: true
+                      visible: win.marks.length > 0 && !note.visible; kind: "primary"; iconName: "send"; iconSize: 14; height_: 40
+                      anchors.verticalCenter: parent.verticalCenter
+                      text: (app.t.browser_annotate_send_to || "Envoyer à %1").replace("%1", win.who || "Ornis")
+                      onClicked: win.sendMarks() }
+            OButton { pill: true; kind: "quiet"; iconName: "close"; iconSize: 14; height_: 40; tip: app.t.browser_annotate_quit
+                      anchors.verticalCenter: parent.verticalCenter
                       onClicked: win.setAnnotating(false) }
         }
     }

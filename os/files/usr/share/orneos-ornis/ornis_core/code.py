@@ -245,6 +245,23 @@ def _forget_reads(bot: str, session: str):
         pass
 
 
+def _k(n: int) -> str:
+    """48 213 → « 48 k »."""
+    return f"{round(n / 1000)} k" if n >= 1000 else str(n)
+
+
+def _said(bot: str, session: str):
+    """The user just read a sentence of the agent, or sent a message: the hook's silent stretch starts again
+    (ornis_code_hook.progress). Never for a bot, which has its own way of talking."""
+    if bot or not session:
+        return
+    try:
+        import ornis_code_hook  # noqa: PLC0415
+        ornis_code_hook.said(str(ornis_code.home(bot)), session)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _bot_usage(bot: str, used: int):
     try:
         import ornis_bots  # noqa: PLC0415
@@ -313,6 +330,16 @@ class CodeChat(QObject):
         self._bot = ""             # durable Code bot id (ornis_bots); empty for ordinary project sessions
         self._bot_brief = False    # next user message should carry the bot identity block
         self._title = ""
+        self._said_at = 0.0                  # when the hook was last told the user read a sentence (_said)
+        # the provider's cache (18/11/2026, Claude Code's clock and idle compaction): when the last turn ended, and a big
+        # conversation summed up just before the cache forgets it, if the user is away (preference code_idle_compact)
+        self._cache_at = 0.0
+        self._cache_session = ""             # the conversation that _cache_at is about (another one: unknown)
+        self._idle_compacting = False
+        self._idle_before = 0
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setSingleShot(True)
+        self._idle_timer.timeout.connect(self._idle_compact)
         self._state = "idle"       # idle | installing | starting | ready | error
         self._error = ""
         self._progress_pc = -1
@@ -574,7 +601,10 @@ class CodeChat(QObject):
         files = ornis_context.inventory(self._folder) if self._folder else []
         tips = ornis_context.tips(files, measured, getattr(self._app, "_lang", "fr"), self._dismissed_tips)
         return {"files": files, "tips": tips, "tokens": used, "limit": limit, "percent": min(100, round(used * 100 / limit)) if limit else 0,
-                "parts": rows if used else []}
+                "parts": rows if used else [],
+                "cache": {} if self._bot else {"at": self._cache_at if self._cache_session == self._session else 0, "ttl": ornis_code.cache_ttl(), "input": used,
+                                               "cached": int(self._parts.get("cached") or 0),
+                                               "idle": self.idleCompact, "idleMin": ornis_code.IDLE_MIN}}
 
     def _fetch_parts(self):
         """The gateway measured the last request of this computer (system, tools, results, conversation: numbers only);
@@ -630,6 +660,36 @@ class CodeChat(QObject):
         if self._session and not self._busy:
             self.send("/compact")
 
+    @Property(bool, notify=usageChanged)
+    def idleCompact(self):
+        return self._app.pref("code_idle_compact") is not False
+
+    @Slot(bool)
+    def setIdleCompact(self, on):
+        self._app.setPref("code_idle_compact", bool(on))
+        if not on:
+            self._idle_timer.stop()
+        else:
+            self._arm_idle()
+        self.usageChanged.emit()
+
+    def _arm_idle(self):
+        """The cache forgets the conversation's start ttl after the last step: a little before, it is summed up."""
+        self._idle_timer.stop()
+        if self._bot or not self._cache_at or not self.idleCompact:
+            return
+        wait = max(30, ornis_code.cache_ttl() - ornis_code.IDLE_LEAD) - (time.time() - self._cache_at)
+        self._idle_timer.start(int(max(1, wait) * 1000))
+
+    def _idle_compact(self):
+        tokens = int(self._parts.get("tokens") or self._usage.get("used") or 0)
+        if (self._bot or self._busy or not self._session or self._session != self._cache_session
+                or not self.idleCompact or self._host is not None
+                or tokens < ornis_code.IDLE_MIN or self._asked is not None):
+            return
+        self._idle_compacting, self._idle_before = True, tokens
+        self.compact()
+
     @Property("QVariantList", notify=planChanged)
     def plan(self):
         return self._plan
@@ -648,7 +708,8 @@ class CodeChat(QObject):
             return {}
         r = self._items.rows[at]
         return {"row": at, "tool": r.get("tool") or "", "icon": r.get("icon") or "sparkle", "title": r.get("title") or "",
-                "command": r.get("command") or "", "path": r.get("path") or "", "diff": (r.get("diff") or [])[:400],
+                "command": r.get("shown") or r.get("command") or "", "note": r.get("note") or "",
+                "path": r.get("path") or "", "diff": (r.get("diff") or [])[:400],
                 "options": r["permission"].get("options") or [], "approvalTitle": r["permission"].get("title", "")}
 
     @Property("QVariantList", notify=changed)
@@ -1857,6 +1918,9 @@ class CodeChat(QObject):
         folder = self._folder
         bot = self._bot
         self._turn_rev = ""
+        if text != "/compact":
+            self._idle_timer.stop()
+            self._idle_compacting = False
 
         def work():
             session = sid
@@ -1874,6 +1938,7 @@ class CodeChat(QObject):
                     session = created.get("sessionId", "")
                     self._done.emit(session, {"created": True, "_bot": bot})
                     agent.set_mode(session, mode)
+                _said(bot, session)
                 result = agent.prompt(session, blocks)
                 self._done.emit(session, dict(result or {}, _bot=bot))
             except Exception as error:  # noqa: BLE001
@@ -1988,11 +2053,18 @@ class CodeChat(QObject):
             else:
                 self._launch_host()
                 return
+        was_compacting = self._compacting
         if self._compacting:
             self._invalidate_parts()
             self._compacting = False
             if self._bot:
                 self._bot_brief = True           # next turn re-reads SOUL / memory after a compact
+            if self._idle_compacting and not result.get("error"):
+                after = int(self._usage.get("used") or 0)
+                self._items.append({"kind": "notice", "key": "code_idle_compacted", "id": f"notice-{time.time()}",
+                                    "content": f"{_k(self._idle_before)} → {_k(after)}" if after else _k(self._idle_before)})
+            self._idle_compacting = False
+            self._cache_at = 0.0                 # a new start: the provider has not seen it yet
         self._write_text()
         self._busy = False
         for row in self._items.rows:         # what was still asked for is moot now
@@ -2018,6 +2090,10 @@ class CodeChat(QObject):
             self._continue(why)                  # the same turn for « Annuler »: its checkpoint stays
             return
         self._remember(self._session, self._title)
+        if not self._bot and not was_compacting and not result.get("loaded"):
+            self._cache_at, self._cache_session = time.time(), self._session   # the last step: the cache has it
+            self._arm_idle()
+            self.usageChanged.emit()
         if self._bot and not error and result.get("stopReason") != "cancelled":   # stopped: no empty answer kept
             self._bot_preview()
             _bot_record(self._bot, self._turn_asked, self._last_answer())
@@ -2433,6 +2509,9 @@ class CodeChat(QObject):
             self._pending_text.setdefault(at, []).append(text)
             if self._bot and role in ("agent", "thought") and not self._replaying:
                 self._status_tick()                   # « écrit… » / « réfléchit… » without waiting for the flush
+            if role == "agent" and not self._bot and not self._replaying and text.strip() and time.time() - self._said_at > 5:
+                self._said_at = time.time()           # the user reads something: the silent stretch starts again
+                _said(self._bot, self._session)
             if self._replaying:
                 pass                                  # written when the row changes, and at the end of the replay
             elif not self._flush.isActive():
@@ -2603,6 +2682,12 @@ class CodeChat(QObject):
                 text = _text(content)
                 if text:
                     row["output"] = (row.get("output", "") + text)[-MAX_OUTPUT:] if row["tool"] == "execute" else text[-MAX_OUTPUT:]
+        if row.get("tool") == "execute" and row.get("command"):
+            # what it does as the card's title (the model's `# …` line, else the shared table), the command under it
+            import ornis_describe  # noqa: PLC0415
+            note, body = ornis_describe.split_note(row["command"])
+            row["shown"] = body or row["command"]
+            row["note"] = note or ornis_describe.describe(body, getattr(self._app, "_lang", "fr"))
         if row.get("tool") == "execute":
             row["retryOutside"] = (row.get("status") == "failed" and tid not in self._retry_ids
                                     and ornis_code.retry_outside(row.get("command", ""), row.get("output", ""), self._folder, self.sandbox))
@@ -2621,7 +2706,10 @@ class CodeChat(QObject):
             if tool_kind in ("edit", "delete", "move"):
                 self._repeats.clear()             # an edit starts a new round of checks
             elif tool_kind not in ("other", "think"):
-                what = json.dumps(row.get("raw") or {"command": row.get("command"), "path": row.get("path"), "title": row.get("title")}, sort_keys=True)
+                raw = row.get("raw") or {"command": row.get("command"), "path": row.get("path"), "title": row.get("title")}
+                if row.get("shown") and isinstance(raw.get("command"), str):
+                    raw = dict(raw, command=row["shown"])          # the `# what it does` line is not the call
+                what = json.dumps(raw, sort_keys=True)
                 if what:
                     key = (tool_kind, what)
                     fingerprint = hashlib.sha256(str(row.get("output") or "").encode("utf-8", "replace")).hexdigest()

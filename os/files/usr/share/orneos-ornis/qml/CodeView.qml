@@ -630,7 +630,7 @@ Item {
                             id: c7
                             x: (list.width - view.column) / 2; width: view.column
                             spacing: 8
-                            Icon { name: d7.item.key === "bots_group_turn" ? "people" : "refresh"; size: 13; color: view.c.muted }
+                            Icon { name: d7.item.key === "bots_group_turn" ? "people" : d7.item.key === "code_idle_compacted" ? "clock" : "refresh"; size: 13; color: view.c.muted }
                             Text {
                                 Layout.fillWidth: true
                                 text: String(app.t[d7.item.key] || "").replace("%1", d7.item.content || "")
@@ -893,6 +893,7 @@ Item {
                    : app.t.code_permission_wanted)
             subtitle: command_ || r.tool === "edit" ? (r.path || "") : ""
             summary: command_ ? "" : (r.title || r.path || "")
+            commandNote: command_ ? (r.note || "") : ""
             hasCommand: command_
             commandEditable: false
             command: command_ ? r.command : ""
@@ -1113,6 +1114,12 @@ Item {
                             target: chat.voice
                             function onText(said) { if (view.visible) { input.insert(input.cursorPosition, said); input.forceActiveFocus() } }
                         }
+                    }
+                    CacheClock {                 // how long the model's cache keeps this conversation (Claude Code's clock)
+                        Layout.alignment: Qt.AlignVCenter
+                        info: code.bot === "" ? (code.context.cache || {}) : ({})
+                        busy: code.busy || code.bot !== ""
+                        onIdleToggled: on => code.setIdleCompact(on)
                     }
                     ContextGauge {               // what the next step carries; a click compacts (as in the Discussion mode)
                         Layout.alignment: Qt.AlignVCenter
@@ -1482,12 +1489,27 @@ Item {
                 spacing: 10
                 Icon { name: entry.key === "code_stopped" ? "stop" : "warning"; size: 15
                        color: entry.key === "code_quota" || entry.key === "code_stopped" ? view.c.saffronInk : view.c.danger }
-                Text {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    text: app.t[entry.key] || app.t.code_error
-                    wrapMode: Text.Wrap
-                    font.family: "Schibsted Grotesk"; font.pixelSize: 13
-                    color: view.c.text
+                    spacing: 4
+                    Text {
+                        Layout.fillWidth: true
+                        text: app.t[entry.key] || app.t.code_error
+                        wrapMode: Text.Wrap
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 13
+                        color: view.c.text
+                    }
+                    // what really went wrong (18/11: « a rencontré une erreur » alone left us blind), selectable to copy
+                    TextEdit {
+                        Layout.fillWidth: true
+                        visible: String(entry.detail || "").trim() !== "" && (entry.key === "code_error" || entry.key === "code_busy" || entry.key === "code_lost")
+                        text: String(entry.detail || "").trim()
+                        readOnly: true; selectByMouse: true
+                        wrapMode: TextEdit.WrapAnywhere
+                        textFormat: TextEdit.PlainText
+                        font.family: "JetBrains Mono"; font.pixelSize: 11
+                        color: view.c.muted
+                    }
                 }
                 OButton { visible: entry.key === "code_quota"; text: app.t.code_plans; height_: 28; onClicked: app.openPlans() }
             }
@@ -1525,16 +1547,20 @@ Item {
                             Layout.fillWidth: true
                             // one line in a 26 px row: a command of several lines (Vibe starts with `export PATH=…`
                             // and `cd …`) overflowed onto the text below (04/11); the whole command on hover
-                            text: entry.tool === "execute" && entry.command ? view.oneLine(entry.command)
+                            // a command: what it does (the model's `# …` line, else the shared table, 18/11), the
+                            // command itself on the line below
+                            readonly property bool noted: entry.tool === "execute" && !!entry.note
+                            text: noted ? entry.note
+                                  : entry.tool === "execute" && entry.command ? view.oneLine(entry.shown || entry.command)
                                   : view.oneLine(entry.short ? (entry.title && entry.tool !== "edit" && entry.tool !== "read" ? entry.title : entry.short) : (entry.title || entry.tool))
                             textFormat: Text.PlainText
                             maximumLineCount: 1
-                            elide: Text.ElideMiddle
-                            ToolTip.visible: entry.tool === "execute" && String(entry.command || "").indexOf("\n") >= 0 && cardHover.hovered
+                            elide: noted ? Text.ElideRight : Text.ElideMiddle
+                            ToolTip.visible: entry.tool === "execute" && String(entry.shown || entry.command || "").indexOf("\n") >= 0 && cardHover.hovered
                             ToolTip.delay: 400
-                            ToolTip.text: String(entry.command || "")
+                            ToolTip.text: String(entry.shown || entry.command || "")
                             HoverHandler { id: cardHover }
-                            font.family: entry.tool === "execute" || entry.short ? "JetBrains Mono" : "Schibsted Grotesk"
+                            font.family: !noted && (entry.tool === "execute" || entry.short) ? "JetBrains Mono" : "Schibsted Grotesk"
                             font.pixelSize: 13
                             color: view.c.text
                         }
@@ -1566,6 +1592,20 @@ Item {
                         }
                         Icon { visible: card.lines.length > 0 || (entry.output || "") !== ""; name: card.open ? "collapse" : "expand"; size: 11; color: view.c.muted }
                     }
+                }
+                // the command under what it does (Claude Code's « IN »): one line, whole when the card is open
+                Text {
+                    visible: entry.tool === "execute" && !!entry.note && !!(entry.shown || entry.command)
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 22
+                    Layout.topMargin: -4
+                    text: card.open ? String(entry.shown || entry.command || "") : view.oneLine(entry.shown || entry.command || "")
+                    textFormat: Text.PlainText
+                    wrapMode: card.open ? Text.WrapAnywhere : Text.NoWrap
+                    maximumLineCount: card.open ? 12 : 1
+                    elide: Text.ElideRight
+                    font.family: "JetBrains Mono"; font.pixelSize: 12
+                    color: view.c.muted
                 }
                 RowLayout {
                     visible: !!entry.retryOutside || (entry.tool === "execute" && card.open)

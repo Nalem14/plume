@@ -227,6 +227,10 @@ def classify(command: str) -> dict:
     """{level: info|change|admin, sensitive, blocked: reason or "", words: of a simple command (for « toujours »),
     simple: one command without chaining, redirection nor substitution}."""
     command = str(command or "").strip()
+    # Ornis Code puts what a command does on a first `# …` line (ornis_describe): a comment for the shell, nothing to
+    # judge; the rest is judged as if written alone (a read stays a read)
+    from ornis_describe import split_note
+    command = split_note(command)[1].strip() or command
     out = {"level": "change", "sensitive": sensitive(command), "blocked": "", "words": [], "simple": False}
     for reason, pattern in BLOCKED:
         if pattern.search(command):

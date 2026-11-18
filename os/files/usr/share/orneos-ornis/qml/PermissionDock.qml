@@ -16,6 +16,7 @@ FocusScope {
     property string subtitle
     property string place                    // another conversation asks: its name
     property string summary
+    property string commandNote          // a command: what it does, in a few words (Ornis Code), above its box
     property string reason
     property bool hasCommand
     property string command
@@ -179,6 +180,16 @@ FocusScope {
                 color: dock.hasCommand ? dock.c.text : dock.c.muted
             }
 
+            Text {
+                Layout.fillWidth: true
+                visible: dock.hasCommand && dock.commandNote !== ""
+                text: dock.commandNote
+                wrapMode: Text.Wrap
+                textFormat: Text.PlainText
+                maximumLineCount: 2; elide: Text.ElideRight
+                font.family: "Schibsted Grotesk"; font.pixelSize: 14; font.weight: Font.Medium
+                color: dock.c.text
+            }
             // the command, changed before it runs if need be (Ctrl+Entrée runs it from the box)
             Rectangle {
                 Layout.fillWidth: true

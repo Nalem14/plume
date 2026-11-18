@@ -37,6 +37,16 @@ WARN_LAPS = 3               # the same call (or cycle of calls), same results, t
 MAX_PERIOD = 4
 STUB_MIN = 512              # a result this long, identical to an earlier one of the turn, becomes a reference
 UNCOUNTED = {"todo", "ask_user_question", "agents_spawn"}
+# A long silent stretch (18/11/2026, as Claude Code and the editor extension's guards.wantsProgress): after this many
+# calls without a sentence the user can read, or this long with a few calls, the model is asked for one sentence on
+# where it is. CodeChat writes when the user last read something (`said`); no such file (a bot, a sub-agent): never.
+PROGRESS_CALLS = 12
+PROGRESS_SECONDS = 180
+PROGRESS_MIN_CALLS = 4
+PROGRESS_NOTE = ("[Ornis: progress] The user has seen no message from you for {minutes} min ({calls} actions). Before "
+                 "your next action, write ONE short sentence in their language: where you are and what comes next. Then "
+                 "go on with the work; do not stop and do not recap everything.")
+NOTE_LINE = re.compile(r"^(?:[ \t]*#(?!!)[^\n]*\n)+")
 LOOP_NOTE = ("You already made this exact call (or this same series of calls) several times with the same result. "
              "Do not run it again: use the result you have, or change your approach.")
 SAME_NOTE = "[Same result as your earlier call #{n}: unchanged.]"
@@ -182,8 +192,11 @@ def watch(event: dict, answer: dict | None) -> dict | None:
     state = _load(path)
     rounds, warned, seen = state.get("rounds") or [], state.get("warned") or [], state.get("seen") or {}
     number = int(state.get("n") or 0)
+    args = event.get("tool_input")
+    if isinstance(args, dict) and isinstance(args.get("command"), str):   # the `# what it does` line is not the call
+        args = dict(args, command=NOTE_LINE.sub("", args["command"]))
     try:
-        what = json.dumps(event.get("tool_input") or {}, sort_keys=True, ensure_ascii=False)
+        what = json.dumps(args or {}, sort_keys=True, ensure_ascii=False)
     except (TypeError, ValueError):
         what = str(event.get("tool_input"))
     digest = hashlib.sha256(f"{tool}\0{what}\0{text}".encode("utf-8", "replace")).hexdigest()[:24]
@@ -197,6 +210,50 @@ def watch(event: dict, answer: dict | None) -> dict | None:
         answer = dict(answer or {})
         answer.setdefault("hook_specific_output", {})["additional_context"] = LOOP_NOTE
     state.update(rounds=rounds, warned=warned[-20:], seen=dict(list(seen.items())[-200:]))
+    _save(path, state)
+    return answer
+
+
+def said(home: str, session: str, when: float | None = None) -> None:
+    """CodeChat: the user just read a sentence of the agent (or sent a message). Its own file, never the state's: the
+    hook rewrites that one at each call."""
+    path = _state_path({"session_id": session}, home)
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path[:-len(".json")] + ".said", "w", encoding="utf-8") as f:
+            f.write(str(time.time() if when is None else when))
+    except OSError:
+        pass
+
+
+def wants_progress(calls: int, since: float, now: float) -> bool:
+    return calls >= PROGRESS_CALLS or (calls >= PROGRESS_MIN_CALLS and now - since >= PROGRESS_SECONDS)
+
+
+def progress(event: dict, answer: dict | None) -> dict | None:
+    """One more call in a silent stretch; past the limits, the note joined to this call's result."""
+    path = _state_path(event)
+    if not path or event.get("parent_session_id"):
+        return answer
+    try:
+        with open(path[:-len(".json")] + ".said", encoding="utf-8") as f:
+            said_at = float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return answer
+    now = time.time()
+    state = _load(path)
+    if float(state.get("quiet_from") or 0) < said_at:
+        state["quiet_from"], state["quiet"] = said_at, 0
+    state["quiet"] = int(state.get("quiet") or 0) + 1
+    since = float(state.get("quiet_from") or said_at)
+    if wants_progress(state["quiet"], since, now):
+        note = PROGRESS_NOTE.format(minutes=max(1, round((now - since) / 60)), calls=state["quiet"])
+        answer = dict(answer or {})
+        out = answer.setdefault("hook_specific_output", {})
+        out["additional_context"] = (str(out["additional_context"]) + "\n\n" + note) if out.get("additional_context") else note
+        state["quiet_from"], state["quiet"] = now, 0
     _save(path, state)
     return answer
 
@@ -258,6 +315,21 @@ def _rel(path: str, root: str) -> str:
         return os.path.relpath(path, os.path.realpath(root)).replace(os.sep, "/")
     except ValueError:
         return path
+
+
+EMPTY_NOTE = ("Nothing was run: your command has only its `# what it does` line. Send it again with the command itself "
+              "on the next line.")
+
+
+def guard_note_only(event: dict) -> dict | None:
+    """pre_tool of bash: a command that is only its `# …` line (18/11, seen live: the model forgot the command)."""
+    if str(event.get("tool_name") or "").rsplit(".", 1)[-1] != "bash":
+        return None
+    args = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+    command = str(args.get("command") or "")
+    if command.strip() and not NOTE_LINE.sub("", command.rstrip("\n") + "\n").strip():
+        return {"decision": "deny", "reason": EMPTY_NOTE}
+    return None
 
 
 def guard_write(event: dict) -> dict | None:
@@ -404,14 +476,14 @@ def main() -> int:
             end_turn(event)
             return 0
         if event.get("hook_event_name") == "pre_tool":
-            answer = guard_write(event)
+            answer = guard_note_only(event) or guard_write(event)
             if answer:
                 _write(json.dumps(answer, ensure_ascii=False))
             return 0
         if event.get("hook_event_name") != "post_tool":
             return 0
         count(event)
-        answer = files(event, watch(event, handle(event)))
+        answer = progress(event, files(event, watch(event, handle(event))))
         if answer:
             _write(json.dumps(answer, ensure_ascii=False))
     except Exception:  # noqa: BLE001

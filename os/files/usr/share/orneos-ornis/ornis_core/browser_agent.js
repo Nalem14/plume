@@ -69,6 +69,25 @@ window.__oa = (function () {
         const inner = el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" ? "" : el.innerText;
         return clean(inner || el.getAttribute("placeholder") || el.title || el.getAttribute("name") || "", 120);
     }
+    // An element with no name (a button that is only an icon): what else says what it is, so that the agent can still
+    // tell « button "" » apart from the others (18/11: it often could not find an icon's button by itself)
+    function hintOf(el) {
+        const inner = el.querySelector ? el.querySelector("[aria-label],[title],img[alt],svg title") : null;
+        if (inner) {
+            const t = inner.tagName.toLowerCase() === "title" ? inner.textContent
+                : inner.getAttribute("aria-label") || inner.getAttribute("title") || inner.getAttribute("alt");
+            if (clean(t)) return clean(t, 60);
+        }
+        for (const a of ["data-testid", "data-test", "data-action", "data-icon", "data-tooltip", "name"]) {
+            const v = el.getAttribute(a);
+            if (v) return a + "=" + clean(v, 50);
+        }
+        if (el.id) return "#" + clean(el.id, 50);
+        const icon = el.querySelector ? el.querySelector("svg[class],i[class],span[class*=icon]") : null;
+        const cls = Array.from(el.classList || []).concat(icon ? Array.from(icon.classList || []) : [])
+            .filter(c => /^[A-Za-z][\w-]{2,40}$/.test(c)).slice(0, 4);
+        return cls.length ? "." + cls.join(".") : "";
+    }
     function interactive(el) {
         if (el.disabled) return false;
         const role = roleOf(el);
@@ -162,12 +181,16 @@ window.__oa = (function () {
             if (interactive(el)) {
                 const r = ref(el);
                 const st = state(el);
-                push(depth, (role || "clickable") + ' "' + nameOf(el) + '" [ref=' + r + "]" + (st.length ? " " + st.join(" ") : ""));
+                const name = nameOf(el);
+                const hint = name ? "" : hintOf(el);
+                push(depth, (role || "clickable") + ' "' + name + '" [ref=' + r + "]" + (hint ? " hint=" + hint : "")
+                            + (st.length ? " " + st.join(" ") : ""));
                 if (el.tagName === "SELECT") {
                     Array.from(el.options).slice(0, 30).forEach(o => push(depth + 1, 'option "' + clean(o.text, 60) + '"'));
                     return;
                 }
                 if (["link", "button"].includes(role) && el.children.length < 3) return;
+                if (el.shadowRoot) for (const c of el.shadowRoot.childNodes) walk(c, depth + 1);
                 for (const c of el.childNodes) walk(c, depth + 1);
                 return;
             }
@@ -323,6 +346,116 @@ window.__oa = (function () {
         return JSON.stringify({ found: !!want && document.body.innerText.toLowerCase().includes(want) });
     }
 
+    // ---- the whole page, past what a snapshot shows: elements found by their words, and the HTML itself -------------
+    function everything(root, out) {        // every element, those of open shadow roots too
+        for (const el of root.querySelectorAll("*")) {
+            out.push(el);
+            if (el.shadowRoot) everything(el.shadowRoot, out);
+        }
+        return out;
+    }
+    function clickable(el) {                // the element a click on el would really reach: its button, its link
+        for (let e = el, n = 0; e && e.nodeType === 1 && n < 7; e = e.parentElement || (e.getRootNode() || {}).host, n++) {
+            if (interactive(e)) return e;
+        }
+        return null;
+    }
+    function describe(el) {
+        const b = box(el);
+        const name = nameOf(el);
+        const st = el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA" || el.tagName === "A" ? state(el) : [];
+        return { ref: ref(el), role: roleOf(el) || el.tagName.toLowerCase(), name: name, hint: name ? undefined : hintOf(el) || undefined,
+                 state: st.length ? st.join(" ") : undefined,
+                 where: b.y + b.h < 0 ? "above (scroll up)" : b.y > innerHeight ? "below (scroll down)" : "in view" };
+    }
+    function attrs(el) {
+        const out = [];
+        for (const a of ["aria-label", "title", "placeholder", "alt", "data-testid", "data-test", "id", "name", "value", "href"]) {
+            if (a === "value" && el.type === "password") continue;
+            const v = el.getAttribute(a);
+            if (v) out.push(v);
+        }
+        return out.join(" ");
+    }
+    function ownText(el) {
+        let t = "";
+        for (const c of el.childNodes) if (c.nodeType === 3) t += c.textContent;
+        return t;
+    }
+    function locate(query, limit) {
+        const q = clean(query);
+        limit = Math.max(1, Math.min(40, limit || 15));
+        if (!q) throw new Error("say what to look for: words of the element, or a CSS selector");
+        let found = [];
+        let how = "text";
+        if (/^[#.\[]|^[a-z][a-z0-9-]*\s*([.#\[:>]|$)/i.test(q) && !/\s{2}/.test(q)) {
+            try {
+                const all = [];
+                for (const root of [document].concat(everything(document, []).filter(e => e.shadowRoot).map(e => e.shadowRoot))) {
+                    for (const el of root.querySelectorAll(q)) all.push(el);
+                }
+                if (all.length) { found = all; how = "selector"; }
+            } catch (e) { /* not a selector: words */ }
+        }
+        if (!found.length) {
+            const want = q.toLowerCase();
+            const exact = [], partial = [];
+            const seen = new Set();
+            for (const el of everything(document, [])) {
+                if (SKIP.has(el.tagName)) continue;
+                const act = interactive(el);
+                const words = ((act ? nameOf(el) + " " : ownText(el) + " ") + attrs(el)).toLowerCase();
+                if (!words.includes(want)) continue;
+                const target = act ? el : clickable(el) || el;
+                if (seen.has(target) || !shown(target)) continue;
+                seen.add(target);
+                (clean(nameOf(target)).toLowerCase() === want ? exact : partial).push(target);
+            }
+            const first = a => (interactive(a) ? 0 : 1);
+            found = exact.concat(partial.sort((a, b) => first(a) - first(b)));
+        }
+        const shownOnes = found.filter(shown);
+        return JSON.stringify({ how: how, count: shownOnes.length,
+                                elements: shownOnes.slice(0, limit).map(describe),
+                                hidden: found.length - shownOnes.length || undefined });
+    }
+    // The HTML of the page or of one element, as the agent reads code: scripts and styles shortened, long values cut,
+    // no password, and ref="e12" on what it can act on (the same refs as the snapshot's).
+    function source(id, selectorText, offset, length) {
+        let el = document.documentElement;
+        if (id) el = get(id);
+        else if (selectorText) {
+            el = document.querySelector(selectorText);
+            if (!el) throw new Error("nothing matches " + selectorText);
+        }
+        const copy = el.cloneNode(true);
+        const from = [el].concat(Array.from(el.querySelectorAll("*")));
+        const to = [copy].concat(Array.from(copy.querySelectorAll("*")));
+        for (let i = 0; i < from.length && i < to.length; i++) {
+            const o = from[i], c = to[i];
+            if (o.tagName === "SCRIPT") {
+                const n = (o.textContent || "").length;
+                c.textContent = n ? "/* " + n + " characters */" : "";
+            } else if (o.tagName === "STYLE") {
+                c.textContent = "/* " + (o.textContent || "").length + " characters of CSS */";
+            } else if (o.tagName === "svg" || o.tagName === "SVG") {
+                const label = o.querySelector("title");
+                c.innerHTML = label ? "<title>" + clean(label.textContent, 60) + "</title>" : "";
+            }
+            for (const a of Array.from(c.attributes || [])) {
+                if (a.value.length > 160) c.setAttribute(a.name, a.value.slice(0, 120) + "…(" + a.value.length + ")");
+            }
+            if (o.tagName === "INPUT" && String(o.type).toLowerCase() === "password") c.removeAttribute("value");
+            else if ((o.tagName === "INPUT" || o.tagName === "TEXTAREA") && o.value) c.setAttribute("value", clean(o.value, 80));
+            if (o.nodeType === 1 && o !== document.documentElement && o !== document.body && interactive(o)) c.setAttribute("ref", ref(o));
+        }
+        const all = copy.outerHTML.replace(/\n\s*\n+/g, "\n");
+        offset = Math.max(0, offset || 0);
+        length = Math.min(30000, length || 12000);
+        return JSON.stringify({ url: location.href, html: all.slice(offset, offset + length), total: all.length,
+                                next: offset + length < all.length ? offset + length : null });
+    }
+
     // ---- the Trousseau: fields found and filled here, the values never go back -------------------------------------
     function loginFields() {
         const inputs = Array.from(document.querySelectorAll("input")).filter(i => shown(i) && !i.disabled && !i.readOnly);
@@ -370,23 +503,79 @@ window.__oa = (function () {
         }
         return parts.join(" > ");
     }
-    function pick(x, y) {
-        const el = document.elementFromPoint(x, y);
+    // What the person points at: the button or link the place belongs to (an icon, a word inside it), the element
+    // itself with Alt (exact). An SVG's inner shapes count as the SVG.
+    function under(x, y, exact) {
+        let el = document.elementFromPoint(x, y);
+        while (el && el.shadowRoot) {
+            const inner = el.shadowRoot.elementFromPoint(x, y);
+            if (!inner || inner === el) break;
+            el = inner;
+        }
+        if (!el) return null;
+        const svg = el.closest && el.closest("svg");
+        if (svg) el = svg;
+        if (!exact) {
+            for (let e = el, n = 0; e && e.nodeType === 1 && e !== document.body && n < 5; e = e.parentElement, n++) {
+                const role = roleOf(e);
+                if (["link", "button", "checkbox", "radio", "tab", "menuitem", "option", "switch", "combobox"].includes(role)) { el = e; break; }
+            }
+        }
+        return el;
+    }
+    function snippet(el) {
+        const open = el.outerHTML.slice(0, el.outerHTML.indexOf(">") + 1);
+        const text = clean(el.innerText || "", 80);
+        return clean(open, 240) + (text ? text + "…" : "");
+    }
+    function pick(x, y, exact) {
+        const el = under(x, y, exact);
         if (!el) return JSON.stringify({});
         const r = el.getBoundingClientRect();
         const st = getComputedStyle(el);
-        return JSON.stringify({ ref: ref(el), tag: el.tagName.toLowerCase(), role: roleOf(el), name: nameOf(el),
-                                text: clean(el.innerText || el.value || "", 200), selector: selector(el),
+        const act = clickable(el);
+        return JSON.stringify({ ref: ref(act || el), tag: el.tagName.toLowerCase(), role: roleOf(el), name: nameOf(el) || hintOf(el),
+                                text: clean(el.innerText || el.value || "", 200), selector: selector(el), html: snippet(el),
                                 rect: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
                                 style: { color: st.color, background: st.backgroundColor, font: st.fontSize + " " + st.fontFamily.split(",")[0],
                                          margin: st.margin, padding: st.padding } });
     }
-    function rect(x, y) {
-        const r = JSON.parse(pick(x, y)).rect;
-        return JSON.stringify(r || {});
+    function rect(x, y, exact) {
+        const el = under(x, y, exact);
+        if (!el) return "{}";
+        const b = box(el);
+        b.label = (roleOf(el) || el.tagName.toLowerCase()) + ((nameOf(el) || hintOf(el)) ? " · " + clean(nameOf(el) || hintOf(el), 48) : "");
+        return JSON.stringify(b);
+    }
+    // A zone the person framed: what is in it (the named things, from the top), for the agent to know the place
+    function area(x, y, w, h) {
+        const inside = [];
+        const seen = new Set();
+        for (const el of document.body.querySelectorAll("*")) {
+            if (inside.length >= 10 || SKIP.has(el.tagName)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4 || r.left < x - 2 || r.top < y - 2 || r.right > x + w + 2 || r.bottom > y + h + 2) continue;
+            const role = roleOf(el);
+            const act = interactive(el);
+            const words = !role && !act ? clean(ownText(el), 60) : "";
+            if (!role && !act && !words || role === "listitem" || !shown(el)) continue;
+            let parentSeen = false;
+            for (let e = el.parentElement; e; e = e.parentElement) if (seen.has(e)) { parentSeen = true; break; }
+            if (parentSeen) continue;
+            seen.add(el);
+            inside.push(words ? 'text "' + words + '"'
+                : (role || "clickable") + ' "' + clean(nameOf(el) || hintOf(el), 60) + '" [ref=' + ref(el) + "]");
+        }
+        const top = document.elementFromPoint(x + w / 2, y + h / 2);
+        return JSON.stringify({ kind: "area", rect: { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) },
+                                selector: "@" + Math.round(x + scrollX) + "," + Math.round(y + scrollY) + "," + Math.round(w) + "," + Math.round(h),
+                                within: top ? selector(top.closest("section,article,main,nav,header,footer,form,aside") || top) : "",
+                                inside: inside });
     }
     function rects(selectors) {   // the annotated elements, where they are now (the page scrolled, moved)
         return JSON.stringify((selectors || []).map(sel => {
+            const zone = /^@(-?\d+),(-?\d+),(\d+),(\d+)$/.exec(sel || "");        // a framed zone: where it is on the page
+            if (zone) return { x: +zone[1] - Math.round(scrollX), y: +zone[2] - Math.round(scrollY), w: +zone[3], h: +zone[4] };
             let el = null;
             try { el = sel ? document.querySelector(sel) : null; } catch (e) { el = null; }
             return el ? box(el) : null;
@@ -402,5 +591,6 @@ window.__oa = (function () {
     return { snapshot: guard(snapshot), text: guard(text), click: guard(click), hover: guard(hover), type: guard(type),
              press: guard(press), choose: guard(choose), scroll: guard(scroll), find: guard(find), fields: guard(fields),
              fill: guard(fill), read: guard(read), pick: guard(pick), rect: guard(rect),
-             rects: guard(rects), changes: guard(changes), aim: guard(aim), unaim: guard(unaim) };
+             rects: guard(rects), changes: guard(changes), aim: guard(aim), unaim: guard(unaim),
+             locate: guard(locate), source: guard(source), area: guard(area) };
 })();
