@@ -604,8 +604,15 @@ Rectangle {
                                     OButton { kind: "primary"; iconName: "ornis"; text: app.t.bench_git_commit; height_: 32
                                               tip: app.t.bench_git_commit_tip; onClicked: bench.git("commit") }
                                     Item { width: 1; height: 32 }
-                                    OButton { kind: "primary"; iconName: "chevronDown"; iconSize: 13; height_: 32
-                                              tip: app.t.bench_git_more; onClicked: commitMenu.popup() }
+                                    OButton { id: moreBtn; objectName: "benchGitMore"
+                                              kind: "primary"; iconName: "chevronDown"; iconSize: 13; height_: 32
+                                              tip: app.t.bench_git_more
+                                              onClicked: {      // above the button, its right edge on the button's
+                                                  const p = moreBtn.mapToItem(commitMenu.parent, moreBtn.width, 0)
+                                                  commitMenu.x = p.x - commitMenu.implicitWidth
+                                                  commitMenu.y = p.y - commitMenu.implicitHeight - 6
+                                                  commitMenu.open()
+                                              } }
                                 }
                             }
                         }
