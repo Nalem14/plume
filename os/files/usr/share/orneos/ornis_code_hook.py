@@ -30,6 +30,11 @@ import sys
 import time
 
 KEEP = 30000                # characters past which the output leaves the conversation (Claude Code ~30 000; Hermes 100 000)
+# A medium output (KEPT_FROM to KEEP) stays whole in the conversation and is also saved, in .ornis/tmp/outputs: when the
+# gateway clears it later (OrnisCode::clearOldResults, results of PRUNE_MIN characters and more), its line keeps the
+# file's path, and the model reads it again there instead of running the command again (a test run, a build)
+KEPT_FROM = 1500
+KEPT_NOTE = "[Also saved whole in {path}: if this output is cleared later, read it there instead of running the command again.]"
 HEAD, TAIL = 1500, 2500     # characters shown from its start and its end (errors and summaries are at the end)
 LINE = 300                  # characters of one shown line
 SKIP = {"read_file", "write_file", "edit", "todo", "ask_user_question", "skill"}   # a file already is the full text
@@ -94,11 +99,18 @@ def shorten(text: str, saved: str) -> str:
         f"\n[Output too long for the conversation. {where}]"
 
 
-def save(cwd: str, tool: str, call_id: str, text: str) -> str:
-    """The whole output in .ornis/tmp of the project (only when the notebook exists: never made here)."""
+def save(cwd: str, tool: str, call_id: str, text: str, sub: str = "") -> str:
+    """The whole output in .ornis/tmp (or a sub-folder of it) of the project (only when the notebook exists: never
+    made here; the sub-folder is)."""
     folder = os.path.join(cwd, ".ornis", "tmp")
     if not os.path.isdir(folder):
         return ""
+    if sub:
+        folder = os.path.join(folder, sub)
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            return ""
     safe = re.sub(r"[^A-Za-z0-9_-]+", "-", tool)[:30].strip("-") or "tool"
     tail = re.sub(r"[^A-Za-z0-9]+", "", call_id)[-6:]
     name = f"{safe}-{time.strftime('%Y%m%d-%H%M%S')}{'-' + tail if tail else ''}.txt"
@@ -107,20 +119,23 @@ def save(cwd: str, tool: str, call_id: str, text: str) -> str:
             out.write(text)
     except OSError:
         return ""
-    return f".ornis/tmp/{name}"
+    return f".ornis/tmp/{sub + '/' if sub else ''}{name}"
 
 
 def handle(event: dict) -> dict | None:
     text = event.get("tool_output_text")
-    if not isinstance(text, str) or len(text) <= KEEP:
+    if not isinstance(text, str) or len(text) < KEPT_FROM:
         return None
     tool = str(event.get("tool_name") or "tool")
     short = tool.rsplit(".", 1)[-1]
     if short in SKIP:
         return None
-    saved = save(str(event.get("cwd") or os.getcwd()), tool.replace(".", "_") if tool.startswith("mcp_") else short,
-                 str(event.get("tool_call_id") or ""), text)
-    return {"decision": "deny", "reason": shorten(text, saved)}
+    name = tool.replace(".", "_") if tool.startswith("mcp_") else short
+    cwd, call = str(event.get("cwd") or os.getcwd()), str(event.get("tool_call_id") or "")
+    if len(text) <= KEEP:
+        saved = save(cwd, name, call, text, "outputs")
+        return {"hook_specific_output": {"additional_context": KEPT_NOTE.format(path=saved)}} if saved else None
+    return {"decision": "deny", "reason": shorten(text, save(cwd, name, call, text))}
 
 
 def _state_path(event: dict, home: str = "") -> str:
@@ -201,14 +216,15 @@ def watch(event: dict, answer: dict | None) -> dict | None:
         what = str(event.get("tool_input"))
     digest = hashlib.sha256(f"{tool}\0{what}\0{text}".encode("utf-8", "replace")).hexdigest()[:24]
     rounds = (rounds + [digest])[-(MAX_PERIOD * WARN_LAPS + 4):]
-    if answer is None and len(text) >= STUB_MIN and event.get("tool_status") == "success":
+    if (answer is None or "decision" not in answer) and len(text) >= STUB_MIN and event.get("tool_status") == "success":
         if digest in seen and number - int(seen[digest]) <= RECENT:     # still whole in the context
-            answer = {"decision": "deny", "reason": SAME_NOTE.format(n=seen[digest])}
+            answer = {"decision": "deny", "reason": SAME_NOTE.format(n=seen[digest])}   # (its saved copy: not needed)
         else:
             seen[digest] = number
     if loop_note(rounds, warned):
         answer = dict(answer or {})
-        answer.setdefault("hook_specific_output", {})["additional_context"] = LOOP_NOTE
+        out = answer.setdefault("hook_specific_output", {})
+        out["additional_context"] = (str(out["additional_context"]) + "\n\n" + LOOP_NOTE) if out.get("additional_context") else LOOP_NOTE
     state.update(rounds=rounds, warned=warned[-20:], seen=dict(list(seen.items())[-200:]))
     _save(path, state)
     return answer
