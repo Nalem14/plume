@@ -27,41 +27,54 @@ Item {
 
     HoverHandler { id: pointer; enabled: icon.isAi }
 
-    Image {
+    // The AI symbol and the mascot (an image, two stars and their animations) only for those names: built for every
+    // icon, they were about 17 objects for each line icon, invisible (~530 icons in a window), and the cards of a
+    // long conversation took seconds to appear (18/11/2026)
+    Loader {
         anchors.fill: parent
-        visible: icon.isAi || icon.isMascot
-        source: visible ? (icon.thinking ? "../../../orneos/mascot/thinking-v1.png" : "../../../orneos/mascot/icon-v1.png") : ""
-        fillMode: Image.PreserveAspectFit
-        smooth: true
-        opacity: icon.bird ? 1 : 0
-        scale: icon.bird ? (icon.isAi ? 1.15 : 1) : 0.6
-        rotation: icon.bird ? 0 : -12
-        Behavior on opacity { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 150 } }
-        Behavior on scale { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
-        Behavior on rotation { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+        active: icon.isAi || icon.isMascot
+        sourceComponent: aiParts
     }
+    Component {
+        id: aiParts
+        Item {
+            Image {
+                anchors.fill: parent
+                visible: icon.isAi || icon.isMascot
+                source: visible ? (icon.thinking ? "../../../orneos/mascot/thinking-v1.png" : "../../../orneos/mascot/icon-v1.png") : ""
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                opacity: icon.bird ? 1 : 0
+                scale: icon.bird ? (icon.isAi ? 1.15 : 1) : 0.6
+                rotation: icon.bird ? 0 : -12
+                Behavior on opacity { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 150 } }
+                Behavior on scale { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+                Behavior on rotation { enabled: icon.motion && icon.isAi; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+            }
 
-    Shape {
-        anchors.fill: parent
-        visible: icon.isAi
-        preferredRendererType: Shape.CurveRenderer
-        opacity: icon.bird ? 0 : 1
-        scale: icon.bird ? 0.6 : 1
-        rotation: icon.bird ? 20 : 0
-        Behavior on opacity { enabled: icon.motion; NumberAnimation { duration: 150 } }
-        Behavior on scale { enabled: icon.motion; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
-        Behavior on rotation { enabled: icon.motion; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
-        ShapePath {
-            fillColor: icon.color; strokeColor: icon.color; strokeWidth: 0.9
-            joinStyle: ShapePath.RoundJoin
-            scale: Qt.size(icon.size / 24, icon.size / 24)
-            PathSvg { path: icon.bigStar }
-        }
-        ShapePath {
-            fillColor: theme.c.saffron; strokeColor: theme.c.saffron; strokeWidth: 0.7
-            joinStyle: ShapePath.RoundJoin
-            scale: Qt.size(icon.size / 24, icon.size / 24)
-            PathSvg { path: icon.smallStar }
+            Shape {
+                anchors.fill: parent
+                visible: icon.isAi
+                preferredRendererType: Shape.CurveRenderer
+                opacity: icon.bird ? 0 : 1
+                scale: icon.bird ? 0.6 : 1
+                rotation: icon.bird ? 20 : 0
+                Behavior on opacity { enabled: icon.motion; NumberAnimation { duration: 150 } }
+                Behavior on scale { enabled: icon.motion; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+                Behavior on rotation { enabled: icon.motion; NumberAnimation { duration: 220; easing.type: Easing.OutBack } }
+                ShapePath {
+                    fillColor: icon.color; strokeColor: icon.color; strokeWidth: 0.9
+                    joinStyle: ShapePath.RoundJoin
+                    scale: Qt.size(icon.size / 24, icon.size / 24)
+                    PathSvg { path: icon.bigStar }
+                }
+                ShapePath {
+                    fillColor: theme.c.saffron; strokeColor: theme.c.saffron; strokeWidth: 0.7
+                    joinStyle: ShapePath.RoundJoin
+                    scale: Qt.size(icon.size / 24, icon.size / 24)
+                    PathSvg { path: icon.smallStar }
+                }
+            }
         }
     }
 
