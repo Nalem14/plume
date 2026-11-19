@@ -1494,8 +1494,11 @@ Item {
                     Layout.fillWidth: true
                     spacing: 4
                     Text {
+                        // a limit: when Ornis comes back, counting down (chat.limitView, ornis_limits.py)
+                        readonly property var card: entry.key === "code_quota" ? (chat.limitView.blocked || null) : null
+                        Component.onCompleted: if (entry.key === "code_quota") chat.loadQuota()
                         Layout.fillWidth: true
-                        text: app.t[entry.key] || app.t.code_error
+                        text: card ? card.title + ". " + card.when : (app.t[entry.key] || app.t.code_error)
                         wrapMode: Text.Wrap
                         font.family: "Schibsted Grotesk"; font.pixelSize: 13
                         color: view.c.text
@@ -1512,6 +1515,8 @@ Item {
                         color: view.c.muted
                     }
                 }
+                OButton { visible: entry.key === "code_quota" && !!chat.limitView.blocked; enabled: !!chat.limitView.blocked && !chat.limitView.blocked.notify
+                          text: chat.limitView.blocked ? chat.limitView.blocked.notify_label : ""; iconName: "bell"; height_: 28; onClicked: chat.notifyBack() }
                 OButton { visible: entry.key === "code_quota"; text: app.t.code_plans; height_: 28; onClicked: app.openPlans() }
             }
     }

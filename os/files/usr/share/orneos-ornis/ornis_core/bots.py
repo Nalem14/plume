@@ -460,9 +460,13 @@ class Bots(QObject):
                 by_hand = True
         low = str(summary or "").lower()
         quota = status != "ok" and ("402" in low or "quota" in low or "plan_required" in low)
-        dropped = False
+        dropped = held_first = False
         if pending and (status == "ok" or stopped or by_hand):
             ornis_bots.ack_inbound(pending[0], pending[1])
+        elif pending and quota:
+            # Ornis's limit: the message waits for its return (tried again every 5 minutes, refused at no cost until
+            # then), never dropped, never sent twice
+            held_first = ornis_bots.hold_inbound(pending[0], pending[1], time.time() + 300)
         elif pending:
             dropped = ornis_bots.fail_inbound(pending[0], pending[1])     # kept for a retry, dropped after 3 failures
         if pending and len(pending) > 2 and pending[2]:
@@ -472,13 +476,11 @@ class Bots(QObject):
                 ornis_bots.update(bid, {"group_turn": ""})       # out of the group turn: its hand-overs stop counting
             except ValueError:
                 pass
-            if (dropped or quota) and not stopped and ornis_bots.get_group(gid):
+            if (dropped or (quota and held_first)) and not stopped and ornis_bots.get_group(gid):
                 # the room says it, once, in words (a bot that silently stopped « typing » looks broken)
                 why = self._t("code_quota") if quota else self._t("cron_failed", "Échec")
                 ornis_bots.group_notice(gid, self._t("groups_failed", "%1 n’a pas pu répondre : %2")
                                         .replace("%1", self._title(bid)).replace("%2", why))
-                if quota and not dropped:
-                    ornis_bots.ack_inbound(bid, pending[1])     # the limit will not lift in 5 s: no retries
             self._reload_group()
         self._code.reloadIndex()
         self.changed.emit()

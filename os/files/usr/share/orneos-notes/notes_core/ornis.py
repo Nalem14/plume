@@ -1,7 +1,7 @@
 """Ornis in Notes: summarize a note, tidy it up, correct it, shorten or translate it, turn a list into a
 checklist, find the tasks it holds (they go to Tâches), and answer a question from the notes themselves.
 
-Each request is a task of the cloud's AI (core:text2text:chat), in the same 24 h allowance as Plume and the
+Each request is a task of the cloud's AI (core:text2text:chat), within the same Ornis limit as Plume and the
 top-bar applet. Nothing is sent before the person asks: the note they work on, or, for a question, only the
 few notes that share its words (the window says which). Answers stay in memory, never on disk.
 """
@@ -125,6 +125,8 @@ class Ornis(QObject):
                 self._cache[key] = result
             message = "" if not error else self._app.t["ornis_quota" if error == "quota" else
                                                          "ornis_offline" if error == "offline" else "ornis_failed"]
+            if error == "quota":
+                message = _limit_message(account) or message
             self._done.emit(request, kind, result, message)
             self._refresh_quota(account)
         threading.Thread(target=run, daemon=True).start()
@@ -219,16 +221,25 @@ class Ornis(QObject):
 
     def _refresh_quota(self, account):
         server, user, password = account
-        quota = None
-        status, body = cloud.rest(server, user, password, "/apps/integration_openai/quota-info")
-        if status in (200, 100) and isinstance(body, dict):
-            usage = body.get("quota_usage") or ((body.get("ocs") or {}).get("data") or {}).get("quota_usage")
-            slot = usage[0] if isinstance(usage, list) and usage else (
-                (usage.get(0) or usage.get("0")) if isinstance(usage, dict) else None)
-            if isinstance(slot, dict) and int(slot.get("limit") or 0) > 0:
-                quota = {"percent": min(100, round(100 * max(0, int(slot.get("used") or 0)) / int(slot["limit"])))}
+        import ornis_limits  # noqa: PLC0415 - the window that will stop Ornis first (session, week…)
+        from notes_core.strings import language  # noqa: PLC0415
+        try:
+            quota = ornis_limits.ring(ornis_limits.fetch(server, user, password), language())
+        except Exception:  # noqa: BLE001 - offline: no ring
+            quota = None
         self._quotaRead.emit(quota)
 
     def _set_quota(self, quota):
         self._quota = quota
         self.changed.emit()
+
+
+def _limit_message(account) -> str:
+    """« Session d’Ornis terminée. Ornis revient à 15:12. » when Ornis's limit stopped a request (ornis_limits.py),
+    « » when the cloud does not say (the app keeps its own sentence)."""
+    import ornis_limits  # noqa: PLC0415
+    from notes_core.strings import language  # noqa: PLC0415
+    try:
+        return ornis_limits.message(ornis_limits.fetch(*account), language())
+    except Exception:  # noqa: BLE001 - offline: the app's own sentence
+        return ""

@@ -360,33 +360,97 @@ Rectangle {
                         onAnsweredEdited: edits => chat.confirmEdited(edits)
                     }
                     Rectangle {
+                        id: problem
                         visible: chat.error !== "" && !chat.busy
+                        // a limit: the card says when Ornis comes back (chat.limitView, ornis_limits.py), counting down
+                        readonly property bool limit: chat.error === "limit"
+                        readonly property var card: limit ? (chat.limitView.blocked || null) : null
+                        readonly property bool back: limit && !!chat.limitView.line && !card
+                        readonly property var resets: (chat.usage.ai && chat.usage.ai.resets) || null
+                        readonly property int resetCount: resets ? Number(resets.available || 0) : 0
+                        onLimitChanged: if (limit) { chat.loadQuota(); chat.loadUsage() }
                         width: parent.width
-                        height: problemRow.implicitHeight + 24
+                        height: (limit ? limitCard.implicitHeight : problemRow.implicitHeight) + 24
                         radius: 8
-                        color: chat.error === "limit" ? view.c.saffronTint : view.c.dangerTint
+                        color: back ? view.c.okTint : limit ? view.c.saffronTint : view.c.dangerTint
                         RowLayout {
                             id: problemRow
+                            visible: !problem.limit
                             anchors.fill: parent; anchors.margins: 12
                             spacing: 10
-                            Icon { name: chat.error === "offline" ? "offline" : "warning"; size: 18
-                                   color: chat.error === "limit" ? view.c.saffronInk : view.c.danger }
+                            Icon { name: chat.error === "offline" ? "offline" : "warning"; size: 18; color: view.c.danger }
                             Text {
                                 Layout.fillWidth: true
                                 wrapMode: Text.Wrap
-                                text: chat.error === "offline" ? app.t.offline : chat.error === "limit" ? app.t.limit_reached : app.t.failed
+                                text: chat.error === "offline" ? app.t.offline : app.t.failed
                                 font.family: "Schibsted Grotesk"; font.pixelSize: 14
                                 color: view.c.text
                             }
                             OButton {
-                                visible: chat.error !== "limit"
                                 text: app.t.retry; iconName: "refresh"
                                 onClicked: chat.retry()
                             }
-                            OButton {
-                                visible: chat.error === "limit"
-                                text: app.t.quota_more
-                                onClicked: app.openPlans()
+                        }
+                        RowLayout {
+                            id: limitCard
+                            visible: problem.limit
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.margins: 12
+                            spacing: 10
+                            Icon { Layout.alignment: Qt.AlignTop; name: problem.back ? "check" : "clock"; size: 20; color: view.c.saffronInk }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 3
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    text: problem.card ? problem.card.title : problem.back ? app.t.limit_back : app.t.limit_reached
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 14; font.weight: Font.DemiBold
+                                    color: view.c.text
+                                }
+                                Text {
+                                    visible: !!problem.card
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    text: problem.card ? problem.card.when + (problem.card.others ? " " + problem.card.others : "") : ""
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 14
+                                    color: view.c.text
+                                }
+                                Text {
+                                    visible: !!problem.card
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.Wrap
+                                    text: problem.card ? problem.card.kept : ""
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                                    color: view.c.muted
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    Layout.topMargin: 6
+                                    spacing: 8
+                                    OButton {
+                                        visible: problem.back
+                                        text: app.t.retry; iconName: "refresh"
+                                        onClicked: chat.retry()
+                                    }
+                                    OButton {
+                                        visible: !!problem.card && problem.resetCount > 0
+                                        text: app.t.limit_use_reset.replace("%1", problem.resetCount)
+                                        onClicked: chat.useReset()
+                                    }
+                                    OButton {
+                                        visible: !!problem.card
+                                        enabled: !!problem.card && !problem.card.notify
+                                        text: problem.card ? problem.card.notify_label : ""
+                                        iconName: "bell"
+                                        onClicked: chat.notifyBack()
+                                    }
+                                    OButton {
+                                        visible: !problem.back
+                                        text: app.t.quota_more
+                                        onClicked: app.openPlans()
+                                    }
+                                }
                             }
                         }
                     }

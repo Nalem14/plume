@@ -1,5 +1,5 @@
-// Settings › Utilisation (the gauge at the bottom of the column opens it): Ornis over the rolling 24 hours, hour by
-// hour as in Mon compte › Abonnement, then the AI offers (Config::getAiOffers on orneos.eu). chat.usage comes from
+// Settings › Utilisation (the gauge at the bottom of the column opens it): Ornis's windows (session, week…: each one's
+// share and when it renews, chat.limitView from ornis_limits.py) as in Mon compte › Abonnement, then the AI offers (Config::getAiOffers on orneos.eu). chat.usage comes from
 // the cloud (/ornis/usage, which asks orneos.eu for the offer). Changing the offer happens on orneos.eu, which knows
 // the plan and the payment (app.openAiOffers: the offer chosen here is preselected there, one click to confirm);
 // back in the app, the panel reads the usage again and the new limit shows at once.
@@ -15,8 +15,6 @@ ColumnLayout {
     readonly property var ai: u.ai || null
     readonly property int percent: u.percent !== undefined && u.percent !== null ? u.percent
                                    : (chat.quota.percent !== undefined ? chat.quota.percent : -1)
-    readonly property var hours: u.hours || []
-    readonly property int peak: Math.max(1, ...(hours.length ? hours : [1]))
     readonly property var resets: (ai && ai.resets) ? ai.resets : null
     readonly property int resetCount: resets ? Number(resets.available || 0) : 0
     readonly property bool resetReady: !!(resets && resets.ready)
@@ -24,27 +22,6 @@ ColumnLayout {
     property bool resetting: false
     spacing: 12
 
-    // Share of the plan's limit. The bar height stays relative to the busiest hour; the figure is what comes back.
-    function share(n) {
-        const limit = Number(panel.u.limit || 0)
-        if (!(limit > 0) || !(n > 0)) return ""
-        const pct = 100 * n / limit
-        if (pct < 0.095) return app.t.usage_under
-        const decimals = pct >= 9.95 ? 0 : 1
-        let rounded = decimals === 0 ? Math.round(pct) : Math.round(pct * 10) / 10
-        let shown = decimals
-        if (shown === 1 && Math.abs(rounded - Math.round(rounded)) < 0.001) {
-            shown = 0
-            rounded = Math.round(rounded)
-        }
-        const text = Number(rounded).toLocaleString(Qt.locale(), "f", shown)
-        const gap = Qt.locale().name.indexOf("en") === 0 ? "" : " "
-        return text + gap + "%"
-    }
-    function hourLabel(i) {
-        const d = new Date(Date.now() - (23 - i) * 3600 * 1000)
-        return String(d.getHours()).padStart(2, "0")
-    }
     function choose(key) {
         panel.sentAway = true
         app.openAiOffers(key)
@@ -109,63 +86,76 @@ ColumnLayout {
         }
     }
 
-    // ---- hour by hour: what is used now is freed 24 hours later -------------------------------------------------
+    // ---- the windows: each one's share and when it renews; who used them ---------------------------------------
     ColumnLayout {
-        visible: panel.hours.length === 24
+        readonly property var lv: chat.limitView || ({})
+        visible: (lv.windows || []).length > 0
+        Component.onCompleted: chat.loadQuota()
         Layout.fillWidth: true
-        spacing: 4
+        spacing: 8
         Text {
             text: app.t.usage_hours
             font.family: "Schibsted Grotesk"; font.pixelSize: 12
             color: panel.c.muted
         }
-        Item {
-            Layout.fillWidth: true
-            implicitHeight: 64
-            Row {
-                id: bars
-                anchors.fill: parent
-                spacing: 2
-                Repeater {
-                    model: panel.hours
-                    Item {
-                        id: slot
-                        required property int index
-                        required property int modelData
-                        width: (bars.width - 23 * bars.spacing) / 24
-                        height: bars.height
-                        HoverHandler { id: barHover }
+        Repeater {
+            model: parent.lv.windows || []
+            ColumnLayout {
+                id: win
+                required property var modelData
+                Layout.fillWidth: true
+                spacing: 3
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Text {
+                        Layout.preferredWidth: 150       // the bars start at the same place
+                        text: win.modelData.name
+                        elide: Text.ElideRight
+                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
+                        color: panel.c.text
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 6
+                        radius: 3
+                        color: panel.c.line
                         Rectangle {
-                            anchors.bottom: parent.bottom
-                            width: parent.width
-                            height: slot.modelData > 0 ? Math.max(4, parent.height * slot.modelData / panel.peak) : 2
-                            radius: 2
-                            color: slot.modelData === 0 ? panel.c.line
-                                   : (panel.percent >= 80 ? panel.c.saffron : panel.c.famCommunicate)
-                            opacity: barHover.hovered ? 1 : (slot.modelData > 0 ? 0.85 : 1)
+                            width: parent.width * Math.min(1, win.modelData.percent / 100)
+                            height: parent.height
+                            radius: 3
+                            color: win.modelData.level === "full" ? panel.c.danger : win.modelData.level === "warn" ? panel.c.saffron : panel.c.famCommunicate
                         }
-                        ToolTip.visible: barHover.hovered
-                        ToolTip.delay: 0
-                        ToolTip.text: slot.modelData > 0
-                            ? app.t.usage_hour_tip.replace("%1", panel.hourLabel(slot.index)).replace("%2", panel.share(slot.modelData)).replace("%3", slot.index + 1)
-                            : app.t.usage_hour_none.replace("%1", panel.hourLabel(slot.index))
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: ToolTip.text
+                    }
+                    Text {
+                        text: win.modelData.used
+                        font.family: "JetBrains Mono"; font.pixelSize: 12
+                        color: win.modelData.level === "full" ? panel.c.danger : panel.c.muted
                     }
                 }
+                Text {
+                    Layout.fillWidth: true
+                    text: win.modelData.renew
+                    wrapMode: Text.Wrap
+                    font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                    color: panel.c.muted
+                }
+                Accessible.role: Accessible.StaticText
+                Accessible.name: win.modelData.name + ", " + win.modelData.used + ", " + win.modelData.renew
             }
         }
-        RowLayout {
+        Text {
+            visible: !!parent.lv.blocked
             Layout.fillWidth: true
-            Text { text: app.t.usage_axis_start; font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: panel.c.muted }
-            Item { Layout.fillWidth: true }
-            Text { text: app.t.usage_axis_now; font.family: "Schibsted Grotesk"; font.pixelSize: 11; color: panel.c.muted }
+            text: parent.lv.blocked ? parent.lv.blocked.when : ""
+            wrapMode: Text.Wrap
+            font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.DemiBold
+            color: panel.c.text
         }
         Text {
-            readonly property int first: panel.hours.findIndex(n => n > 0)
-            visible: first >= 0
+            visible: !!parent.lv.sources
             Layout.fillWidth: true
-            text: first < 0 ? "" : app.t.usage_release.replace("%1", panel.share(panel.hours[first])).replace("%2", first + 1)
+            text: parent.lv.sources || ""
             wrapMode: Text.Wrap
             font.family: "Schibsted Grotesk"; font.pixelSize: 12
             color: panel.c.muted

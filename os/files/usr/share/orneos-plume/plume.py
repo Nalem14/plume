@@ -5,7 +5,7 @@ One window, a module per app on a Klein rail, and the grid of the other apps of 
 Notes, Tâches, Mots de passe and Ornis are their own apps shown as modules (suite.py), with their objects and their views.
 On Orneos OS the account is the app password of Orneos Connect (CalDAV, CardDAV); mail asks for the account
 password once and keeps it in KWallet (the system's keychain elsewhere). Ornis (the Orneos assistant) works on
-demand, through the cloud, with the same 24 h quota as everywhere.
+demand, through the cloud, within the same Ornis limit as everywhere.
 
 On Orneos OS, Courrier, Agenda and Contacts are each their own app from the same code (an edition: one module, no
 rail, its own window and dock pin); Plume, the suite, comes from its package beside them.

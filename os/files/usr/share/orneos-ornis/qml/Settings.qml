@@ -402,7 +402,7 @@ Popup {
             }
 
                 }
-                Page {   // usage: 24 h hour by hour, the AI offers (the gauge of the column opens it)
+                Page {   // usage: each window of the limit and when it renews, the AI offers (the gauge of the column opens it)
             UsagePanel { id: usagePanel; Layout.fillWidth: true }
                 }
                 Page {   // the conversations

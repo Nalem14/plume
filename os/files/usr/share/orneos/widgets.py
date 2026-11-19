@@ -566,19 +566,23 @@ def read_catalog(acc, lang):
     return {"ready": True, "state": "ready", "categories": mark_followed(news_catalog(acc, lang), feeds)}
 
 
-def read_account(acc):
-    """Drive storage and Ornis's 24 h usage, as the cloud counts them."""
+def read_account(acc, lang="en"):
+    """Drive storage and Ornis's limit (the window that will stop it first, ornis_limits.py), as the cloud counts them:
+    {percent, line « Session de 5 h · 48 % », detail « se renouvelle à 15:12 » or « Ornis revient demain à 9:00 »}."""
     import cloud
     quota = cloud.quota_info(*acc)
     if not quota:
         raise ValueError("account unavailable")
     result = {"ready": True, "state": "ready", "drive": quota, "ornis": None}
-    status, data = cloud.rest(*acc, "/index.php/apps/integration_openai/quota-info")
-    usage = (data or {}).get("quota_usage") if status == 200 and isinstance(data, dict) else None
-    text = (usage.get("0") if isinstance(usage, dict) else usage[0] if isinstance(usage, list) and usage else None)
-    if isinstance(text, dict) and int(text.get("limit") or 0) > 0:
-        used, limit = int(text.get("used") or 0), int(text["limit"])
-        result["ornis"] = {"used": used, "limit": limit, "percent": max(0, min(100, round(used * 100 / limit)))}
+    import ornis_limits
+    limits = ornis_limits.fetch(*acc)
+    if limits:
+        ring = ornis_limits.ring(limits, lang) or {}
+        nxt = (limits.get("next") or {}).get("window")
+        win = next((w for w in limits.get("windows") or [] if isinstance(w, dict) and w.get("id") == nxt), None)
+        result["ornis"] = {"percent": max(0, min(100, int(limits.get("percent") or 0))),
+                           "name": ornis_limits.name(win, lang) if win else "",
+                           "line": ring.get("line", ""), "detail": ring.get("detail", "")}
     return result
 
 
@@ -976,7 +980,7 @@ def main():
             elif args.kind == "photos":
                 result = read_photos(acc, args.source if args.source != "all" else "recent")
             elif args.kind == "account":
-                result = read_account(acc)
+                result = read_account(acc, lang)
             elif args.kind == "weather":
                 result = read_weather(acc)
             elif args.kind in ("assistant", "favorites", "team"):

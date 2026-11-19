@@ -1280,11 +1280,35 @@ def pop_inbound(bot_id: str, *, limit: int = 5) -> list[dict]:
 
 @_transaction
 def peek_inbound(bot_id: str) -> dict | None:
+    """The next message for this bot, None while the first one waits for Ornis's limit (hold_inbound): the order stays."""
     try:
         data = json.loads((bot_dir(bot_id) / "inbox.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return next(iter(data.get("items") or []), None)
+    first = next(iter(data.get("items") or []), None)
+    if first and float(first.get("held_until") or 0) > time.time():
+        return None
+    return first
+
+
+@_transaction
+def hold_inbound(bot_id: str, message_id: str, until: float) -> bool:
+    """Ornis's limit is reached: the message waits (tried again at `until`, its tries untouched) instead of being
+    dropped after three quick failures. Nothing piles up: it is delivered once, when Ornis is back. True the first
+    time it is held (the room says it once)."""
+    path = bot_dir(bot_id) / "inbox.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    first = False
+    for r in data.get("items") or []:
+        if r.get("id") == message_id:
+            first = not r.get("held_until")
+            r["held_until"] = until
+            r["taken"] = False
+    system.private_write(path, json.dumps(data, ensure_ascii=False) + "\n")
+    return first
 
 
 @_transaction

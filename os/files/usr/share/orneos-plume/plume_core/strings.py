@@ -5,7 +5,7 @@ TEXT = {
     "fr": {
         "ornis_offline": "Ornis a besoin de la connexion à votre compte Orneos.",
         "ornis_unclear": "Ornis n'a pas su répondre à cette demande. Réessayez.",
-        "ornis_quota": "Vous avez atteint la limite d'Ornis sur 24 h. Elle se libère au fil de la journée.",
+        "ornis_quota": "Vous avez atteint votre limite d'Ornis. Elle se renouvelle d'elle-même : réessayez un peu plus tard.",
         "ornis_failed": "Ornis ne répond pas pour le moment. Réessayez dans un instant.",
         "ornis_working": "Ornis réfléchit…",
         "ornis_quota_use": "%1 % de votre limite",
@@ -630,7 +630,7 @@ TEXT = {
     "en": {
         "ornis_offline": "Ornis needs the connection to your Orneos account.",
         "ornis_unclear": "Ornis could not answer this one. Try again.",
-        "ornis_quota": "You reached Ornis's 24-hour limit. It frees up over the day.",
+        "ornis_quota": "You have reached your Ornis limit. It renews by itself: try again a little later.",
         "ornis_failed": "Ornis is not answering right now. Try again in a moment.",
         "ornis_working": "Ornis is thinking…",
         "ornis_quota_use": "%1% of your limit",
@@ -1255,7 +1255,7 @@ TEXT = {
     "de": {
         "ornis_offline": "Ornis braucht die Verbindung zu Ihrem Orneos-Konto.",
         "ornis_unclear": "Ornis konnte das nicht beantworten. Versuchen Sie es erneut.",
-        "ornis_quota": "Sie haben das 24-Stunden-Limit von Ornis erreicht. Es wird im Laufe des Tages wieder frei.",
+        "ornis_quota": "Sie haben Ihr Ornis-Limit erreicht. Es erneuert sich von selbst: Versuchen Sie es etwas später erneut.",
         "ornis_failed": "Ornis antwortet gerade nicht. Versuchen Sie es gleich noch einmal.",
         "ornis_working": "Ornis denkt nach…",
         "ornis_quota_use": "%1 % Ihres Limits",

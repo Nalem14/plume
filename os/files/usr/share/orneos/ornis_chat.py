@@ -54,6 +54,7 @@ PINS = "/ocs/v2.php/apps/orneos/api/v1/ornis/pins"
 ARCHIVED = "/ocs/v2.php/apps/orneos/api/v1/ornis/archived"
 FEEDBACK = "/ocs/v2.php/apps/orneos/api/v1/ornis/feedback"
 USAGE = "/ocs/v2.php/apps/orneos/api/v1/ornis/usage"
+LIMITS = "/ocs/v2.php/apps/orneos/api/v1/ornis/limits"     # the windows (OrnisQuota, ornis_limits.py)
 REGION = "/ocs/v2.php/apps/orneos/api/v1/ornis/region"
 READ = "/ocs/v2.php/apps/orneos/api/v1/ornis"      # unread / read: the same on every device (orneos app, OrnisRead)
 ASSISTANT = "/ocs/v2.php/apps/assistant/api/v1"
@@ -868,6 +869,8 @@ class Chat:
         if not isinstance(data, dict) or not isinstance(data.get("hours"), list):
             return None
         data["hours"] = [max(0, int(n or 0)) for n in data["hours"][:24]]
+        if not isinstance(data.get("limits"), dict):
+            data["limits"] = None      # a cloud without the windows (before 19/11/2026)
         return data
 
     def use_reset(self) -> dict:
@@ -893,7 +896,16 @@ class Chat:
         return data
 
     def quota(self) -> dict | None:
-        """Today's Ornis allowance (integration_openai, text tokens over a rolling 24 h): {used, limit, percent}."""
+        """Ornis's limits (orneos app, /ornis/limits, OrnisQuota): its windows (session, week…) with each one's share and
+        when it renews, `blocked` when one is full, `percent` of the one that will stop Ornis first (the ring).
+        ornis_limits.view() turns it into text. A cloud without the windows answers as before (rolling 24 h)."""
+        status, body = self._ocs(f"{LIMITS}?format=json")
+        data = _data(body) if _ok(status) else None
+        if isinstance(data, dict) and isinstance(data.get("windows"), list):
+            if data.get("unlimited") or not data["windows"]:
+                return None
+            data["percent"] = 100 if data.get("blocked") else int((data.get("next") or {}).get("percent") or 0)
+            return data
         status, body = rest(self.server, self.user, self.password, "/index.php/apps/integration_openai/quota-info")
         if not _ok(status) or not isinstance(body, dict):
             return None
@@ -903,3 +915,8 @@ class Chat:
             return None
         used, limit = max(0, int(slot.get("used") or 0)), int(slot["limit"])
         return {"used": used, "limit": limit, "percent": min(100, round(100 * used / limit))}
+
+    def notify_back(self, on: bool = True) -> bool:
+        """« Me prévenir »: a notification « Ornis est de retour » when the full window renews."""
+        status, _ = self._ocs(f"{LIMITS}/notify?format=json", "PUT", {"on": bool(on)})
+        return _ok(status)

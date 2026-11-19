@@ -1,7 +1,7 @@
 """Ornis in Meet: sum up what was missed in a conversation, translate a message, write the minutes of a meeting
 (for Notes), find the tasks in it (for Tâches), suggest replies, answer a question about the conversation.
 
-Each request is a task of the cloud's AI (core:text2text:chat), in the same 24 h allowance as Plume, Notes and
+Each request is a task of the cloud's AI (core:text2text:chat), within the same Ornis limit as Plume, Notes and
 the top-bar applet. Nothing is sent before the person asks: only the messages of the summary, or the one
 message to translate. Answers stay in memory, never on disk.
 """
@@ -71,6 +71,8 @@ class Ornis(QObject):
                 self._cache[key] = answer
             message = "" if not error else self._app.t["ornis_quota" if error == "quota" else
                                                          "ornis_offline" if error == "offline" else "ornis_failed"]
+            if error == "quota":
+                message = _limit_message(account) or message
             self._done.emit(request, kind, answer, message)
         threading.Thread(target=run, daemon=True).start()
         return request
@@ -147,3 +149,14 @@ class Ornis(QObject):
                 return "", "quota" if "quota" in str(current.get("errorMessage") or "").lower() else "failed"
         cloud.ocs(server, user, password, path, method="DELETE")     # given up: not left waiting in the cloud
         return "", "failed"
+
+
+def _limit_message(account) -> str:
+    """« Session d’Ornis terminée. Ornis revient à 15:12. » when Ornis's limit stopped a request (ornis_limits.py),
+    « » when the cloud does not say (the app keeps its own sentence)."""
+    import ornis_limits  # noqa: PLC0415
+    from meet_core.strings import language  # noqa: PLC0415
+    try:
+        return ornis_limits.message(ornis_limits.fetch(*account), language())
+    except Exception:  # noqa: BLE001 - offline: the app's own sentence
+        return ""

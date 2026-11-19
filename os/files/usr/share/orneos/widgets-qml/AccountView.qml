@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Mon Orneos on the desktop: the Drive's storage on the Ornis ring (it measures a quota: docs/ROADMAP.md
-// › Anneau), and how much of Ornis is left over the rolling 24 h. Small: the ring and its percentage;
+// › Anneau), and how much of Ornis is left in the window that will stop it first (session, week…). Small: the ring and its percentage;
 // wide or tall: the figures beside it, Ornis's gauge, and "More space" from 80 %.
 pragma ComponentBehavior: Bound
 import QtQuick
@@ -120,7 +120,7 @@ Frame {
                     }
                     PC3.Label {
                         Layout.fillWidth: true
-                        text: "Ornis"
+                        text: root.ornis && root.ornis.name ? "Ornis · " + root.ornis.name : "Ornis"
                         elide: Text.ElideRight
                         font.weight: Font.DemiBold
                         font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.85
@@ -146,7 +146,7 @@ Frame {
                 }
                 PC3.Label {
                     Layout.fillWidth: true
-                    text: S.tr("ornisUsage")
+                    text: root.ornis && root.ornis.detail ? root.ornis.detail.charAt(0).toUpperCase() + root.ornis.detail.slice(1) : S.tr("ornisUsage")
                     elide: Text.ElideRight
                     opacity: 0.6
                     font: Kirigami.Theme.smallFont

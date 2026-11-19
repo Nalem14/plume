@@ -1,6 +1,6 @@
 // A Work job, docked above the composer: what it is, where it stands (in progress, needs you, done, stopped), its
 // plan with the steps done and the one in progress (live while Ornis works), its folder in the Drive, and « Resume »
-// for a job stopped by the daily limit (what is done is not done again). Steps start folded and scroll within
+// for a job stopped by Ornis's limit (what is done is not done again). Steps start folded and scroll within
 // the card when expanded, keeping room for the conversation. A deep research
 // also counts the pages it read and shows them by their site, numbered as in its report.
 import QtQuick

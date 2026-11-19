@@ -1,7 +1,7 @@
 """Ornis in Plume: summaries, suggested replies, writing tools, events from plain words.
 
 Each request is a task of the cloud's AI (task processing, core:text2text:chat), so it counts in the same
-24 h allowance as the top-bar applet and the cloud's assistant. Nothing is sent before the person asks,
+Ornis limit as the top-bar applet and the cloud's assistant. Nothing is sent before the person asks,
 except the summary of an opened message when they turned that option on. Answers are kept in memory for
 the session (the same summary is not asked twice), never on disk.
 """
@@ -211,7 +211,7 @@ class Ornis(QObject):
                 elif key:
                     self._cache[key] = result
             elif error == "quota":
-                error = self._plume.t["ornis_quota"]
+                error = _limit_message(account) or self._plume.t["ornis_quota"]
             else:
                 error = self._plume.t["ornis_failed"]
             self._done.emit(request, kind, result, error)
@@ -457,17 +457,25 @@ class Ornis(QObject):
 
     def _refresh_quota(self, account):
         server, user, password = account
-        quota = None
-        status, body = cloud.rest(server, user, password, "/apps/integration_openai/quota-info")
-        if status in (200, 100) and isinstance(body, dict):
-            usage = body.get("quota_usage") or ((body.get("ocs") or {}).get("data") or {}).get("quota_usage")
-            slot = usage[0] if isinstance(usage, list) and usage else (
-                (usage.get(0) or usage.get("0")) if isinstance(usage, dict) else None)
-            if isinstance(slot, dict) and int(slot.get("limit") or 0) > 0:
-                limit, used = int(slot["limit"]), max(0, int(slot.get("used") or 0))
-                quota = {"percent": min(100, round(100 * used / limit))}
+        import ornis_limits  # noqa: PLC0415 - the window that will stop Ornis first (session, week…)
+        from plume_core.strings import language  # noqa: PLC0415
+        try:
+            quota = ornis_limits.ring(ornis_limits.fetch(server, user, password), language())
+        except Exception:  # noqa: BLE001 - offline: no ring
+            quota = None
         self._quotaRead.emit(quota)
 
     def _set_quota(self, quota):
         self._quota = quota
         self.changed.emit()
+
+
+def _limit_message(account) -> str:
+    """« Session d’Ornis terminée. Ornis revient à 15:12. » when Ornis's limit stopped a request (ornis_limits.py),
+    « » when the cloud does not say (the app keeps its own sentence)."""
+    import ornis_limits  # noqa: PLC0415
+    from plume_core.strings import language  # noqa: PLC0415
+    try:
+        return ornis_limits.message(ornis_limits.fetch(*account), language())
+    except Exception:  # noqa: BLE001 - offline: the app's own sentence
+        return ""

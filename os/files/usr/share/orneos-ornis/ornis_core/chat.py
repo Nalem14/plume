@@ -24,6 +24,7 @@ import cloud
 import system
 from ornis_chat import Chat as Client, Error, MAX_ATTACHMENTS, MAX_BYTES, about_block, attachment_kind
 from ornis_voice import Dictation
+import ornis_limits
 
 POLL = 0.6
 UNDO_MS = 7000
@@ -72,7 +73,7 @@ class Chat(QObject):
     streamChanged = Signal()       # the reply being written
     scheduledChanged = Signal()
     quotaChanged = Signal()
-    usageChanged = Signal()        # the usage panel (Settings › Utilisation): 24 h hour by hour, the AI offer
+    usageChanged = Signal()        # the usage panel (Settings › Utilisation): each window of the limit, the AI offer
     resetSettled = Signal()        # a banked reset finished (used or refused): the button can be pressed again
     regionChanged = Signal()       # where Ornis runs (Settings › Utilisation): Europe or « global »
     replied = Signal()             # a reply arrived (the view scrolls, the window may notify)
@@ -823,6 +824,38 @@ class Chat(QObject):
     def quota(self):
         return self._quota_info or {}
 
+    @Property("QVariantMap", notify=quotaChanged)
+    def limitView(self):
+        """Ornis's limits as text (ornis_limits.view): line and detail of the ring, every window, and `blocked`, the card
+        when a window is full (title, when it comes back counting down, the other windows, « Me prévenir »)."""
+        from ornis_core.strings import language  # noqa: PLC0415
+        return ornis_limits.view(self._quota_info, language()) if isinstance(self._quota_info, dict) else {}
+
+    @Slot()
+    def notifyBack(self):
+        """« Me prévenir »: « Ornis est de retour » in the notifications when the full window renews."""
+        def work():
+            client = self._client()
+            if client is None:
+                return
+            try:
+                client.notify_back(True)
+                self._quota.emit(client.quota())
+            except Exception:  # noqa: BLE001 - offline: the button stays
+                pass
+        self._bg(work)
+
+    @Slot()
+    def loadQuota(self):
+        def work():
+            client = self._client()
+            if client is not None:
+                try:
+                    self._quota.emit(client.quota())
+                except Exception:  # noqa: BLE001
+                    pass
+        self._bg(work)
+
     @Property("QVariantMap", notify=usageChanged)
     def usage(self):
         """{used, limit, percent, hours, ai} (ornis_chat.Client.usage), {} until read; loadUsage reads it again."""
@@ -839,9 +872,13 @@ class Chat(QObject):
                 info = None
             if info is not None:
                 self._usageFetched.emit(info)
-                limit = int(info.get("limit") or 0)
-                if limit > 0:          # the gauge follows at once (a new offer raises the limit)
-                    used = int(info.get("used") or 0)
+                limits = info.get("limits")
+                if isinstance(limits, dict) and limits.get("windows"):
+                    # the gauge follows at once (a new offer raises every window): the windows, as /ornis/limits
+                    limits = dict(limits, percent=100 if limits.get("blocked") else int((limits.get("next") or {}).get("percent") or 0))
+                    self._quota.emit(limits)
+                elif int(info.get("limit") or 0) > 0:          # a cloud without the windows (before 19/11/2026)
+                    limit, used = int(info["limit"]), int(info.get("used") or 0)
                     self._quota.emit({"used": used, "limit": limit, "percent": min(100, round(100 * used / limit))})
         self._bg(work)
 
@@ -2686,6 +2723,23 @@ class Chat(QObject):
     def _on_quota(self, info):
         if info != self._quota_info:
             self._quota_info = info
+            self.quotaChanged.emit()
+        # stopped: the card counts down (its text again every 30 s) and the limits are read again once the time is up
+        blocked = info.get("blocked") if isinstance(info, dict) else None
+        if not hasattr(self, "_limit_tick"):
+            self._limit_tick = QTimer(self)
+            self._limit_tick.setInterval(30000)
+            self._limit_tick.timeout.connect(self._on_limit_tick)
+        if blocked:
+            self._limit_tick.start()
+        else:
+            self._limit_tick.stop()
+
+    def _on_limit_tick(self):
+        blocked = (self._quota_info or {}).get("blocked") if isinstance(self._quota_info, dict) else None
+        if blocked and time.time() >= int(blocked.get("resets_at") or 0):
+            self.loadQuota()
+        else:
             self.quotaChanged.emit()
 
     # the new conversation got its id in the cloud: it becomes the open one (its messages are already here)
