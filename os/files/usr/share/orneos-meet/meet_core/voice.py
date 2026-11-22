@@ -362,28 +362,36 @@ class Voice(QObject):
         self._timer.start()
         self.changed.emit()
         if self._camera is not None and not self._camera.isActive():
-            # macOS AVFoundation starts QCamera asynchronously; wait until active before recording video frames
             def on_cam_active(active):
-                if active and self._recording_video and self._recorder is not None:
+                if active and self._recording_video and self._recorder is not None and self._recorder.recorderState() == QMediaRecorder.RecorderState.StoppedState:
                     self._started = time.time()
                     self._recorder.record()
             self._camera.activeChanged.connect(on_cam_active)
+            self._camera.start()
         else:
             self._recorder.record()
 
     @Slot()
     def recordVideo(self):
+        from PySide6.QtCore import QCameraPermission, QCoreApplication, Qt
         from PySide6.QtMultimedia import QCamera, QMediaDevices
-        cams = QMediaDevices.videoInputs()
-        if not cams:
-            self.failed.emit(self.library.app.t["video_no_cam"])
-            return
-        def setup(session):
-            self._camera = QCamera(cams[0], self)
-            self._camera.errorOccurred.connect(self._on_video_error)
-            session.setCamera(self._camera)
-            self._camera.start()
-        self._start_video_session("camera", setup)
+        app = QCoreApplication.instance()
+        def start_cam():
+            cams = QMediaDevices.videoInputs()
+            if not cams:
+                self.failed.emit(self.library.app.t["video_no_cam"])
+                return
+            def setup(session):
+                self._camera = QCamera(cams[0], self)
+                self._camera.errorOccurred.connect(self._on_video_error)
+                session.setCamera(self._camera)
+            self._start_video_session("camera", setup)
+        if app is not None and hasattr(app, "requestPermission"):
+            perm = QCameraPermission()
+            if app.checkPermission(perm) != Qt.PermissionStatus.Granted:
+                app.requestPermission(perm, self, lambda p: start_cam() if p.status() == Qt.PermissionStatus.Granted else self.failed.emit(self.library.app.t["video_no_cam"]))
+                return
+        start_cam()
 
     @Slot()
     def recordScreen(self):
