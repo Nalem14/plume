@@ -59,6 +59,7 @@ AbstractButton {
                 source: card.videoSource
                 audioOutput: AudioOutput {}
                 videoOutput: videoOut
+                onErrorOccurred: card.opened()
             }
             VideoOutput {
                 id: videoOut

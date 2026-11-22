@@ -356,12 +356,20 @@ class Voice(QObject):
         self._recorder.recorderStateChanged.connect(self._on_recorder_state)
         self._recorder.errorOccurred.connect(self._on_video_error)
         self._session.setRecorder(self._recorder)
-        self._recorder.record()
         self._recording_video = True
         self._recording_mode = mode
         self._started = time.time()
         self._timer.start()
         self.changed.emit()
+        if self._camera is not None and not self._camera.isActive():
+            # macOS AVFoundation starts QCamera asynchronously; wait until active before recording video frames
+            def on_cam_active(active):
+                if active and self._recording_video and self._recorder is not None:
+                    self._started = time.time()
+                    self._recorder.record()
+            self._camera.activeChanged.connect(on_cam_active)
+        else:
+            self._recorder.record()
 
     @Slot()
     def recordVideo(self):
@@ -414,13 +422,14 @@ class Voice(QObject):
     def fetchVideo(self, file_id, remote_path, name):
         """Download a shared video file to cache for inline playback, emitting videoReady(file_id, file://)."""
         if not file_id or not remote_path:
+            self.videoReady.emit(str(file_id or ""), "")
             return
         ext = Path(name or "video.mp4").suffix or ".mp4"
         local = DIR / f"vid-{file_id}{ext}"
         if local.is_file() and local.stat().st_size > 0:
             self.videoReady.emit(str(file_id), QUrl.fromLocalFile(str(local)).toString())
             return
-        talk = self.library._talk()
+        talk = self.library.talk()
         if talk is None:
             self.videoReady.emit(str(file_id), "")
             return
