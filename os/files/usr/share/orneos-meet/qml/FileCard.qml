@@ -1,9 +1,9 @@
-// A file shared in a conversation: an image in preview (the cloud draws it), anything else as a line with
-// its type, name and size (one on its way: the picture on this computer). A click opens it (the viewer for a
-// picture, this computer's app otherwise); its button saves it.
+// A file shared in a conversation: an image in preview (the cloud draws it), a video with an inline player,
+// anything else as a line with its type, name and size. A click opens it; its button saves it.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtMultimedia
 import "components"
 
 AbstractButton {
@@ -12,23 +12,99 @@ AbstractButton {
     property var file: ({})
     property bool mine: false
     readonly property bool image: (file.preview || !!file.local) && String(file.mime).startsWith("image/")
+    readonly property bool video: (!!file.local || !!file.id) && (String(file.mime || "").startsWith("video/") || /\.(mp4|mov|webm|mkv)$/i.test(file.name || ""))
+    property string videoSource: file.local ? String(file.local) : ""
+    property bool fetchingVideo: false
+    readonly property bool playing: player.playbackState === MediaPlayer.PlayingState
     signal opened()
     signal saveWanted()
     hoverEnabled: true
-    onClicked: opened()
+    onClicked: if (!video) opened()
     Accessible.name: file.name
-    implicitHeight: image ? Math.min(320, Math.max(120, file.width && file.height ? width * file.height / file.width : 200)) : 52
-    implicitWidth: image ? 320 : 260
+    implicitHeight: video ? 196 : image ? Math.min(320, Math.max(120, file.width && file.height ? width * file.height / file.width : 200)) : 52
+    implicitWidth: video || image ? 320 : 260
+
+    function toggleVideo() {
+        if (playing) { player.pause(); return }
+        if (videoSource) { player.play(); return }
+        if (!fetchingVideo && file.id && file.path) {
+            fetchingVideo = true
+            voice.fetchVideo(String(file.id), String(file.path), String(file.name || "video.mp4"))
+        }
+    }
+    Connections {
+        target: voice
+        function onVideoReady(fid, url) {
+            if (String(card.file.id || "") !== fid) return
+            card.fetchingVideo = false
+            if (url) { card.videoSource = url; player.play() }
+            else card.opened()
+        }
+    }
 
     background: Rectangle {
         radius: 10
-        color: card.image ? "transparent" : (card.mine ? Qt.alpha("white", 0.14) : (card.hovered ? card.c.hover : card.c.bg))
+        color: card.video ? "#0B111E" : card.image ? "transparent" : (card.mine ? Qt.alpha("white", 0.14) : (card.hovered ? card.c.hover : card.c.bg))
         border.width: card.image ? 0 : 1
         border.color: card.mine ? Qt.alpha("white", 0.25) : card.c.hairline
     }
     contentItem: Item {
+        // Inline video player
+        Item {
+            visible: card.video
+            anchors.fill: parent
+            clip: true
+            MediaPlayer {
+                id: player
+                source: card.videoSource
+                audioOutput: AudioOutput {}
+                videoOutput: videoOut
+            }
+            VideoOutput {
+                id: videoOut
+                anchors.fill: parent
+                fillMode: VideoOutput.PreserveAspectFit
+            }
+            // Center Play/Pause overlay
+            AbstractButton {
+                anchors.centerIn: parent
+                width: 48; height: 48
+                visible: !card.playing || card.hovered
+                onClicked: card.toggleVideo()
+                background: Rectangle { radius: 24; color: Qt.alpha("#0A192F", 0.72) }
+                contentItem: Icon {
+                    anchors.centerIn: parent
+                    name: card.fetchingVideo ? "refresh" : card.playing ? "pause" : "play"
+                    size: 20; color: "white"
+                }
+            }
+            // Bottom controls bar
+            Rectangle {
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                height: 32
+                color: Qt.alpha("#0A192F", 0.78)
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 6
+                    spacing: 6
+                    Text {
+                        text: app.duration(Math.floor(player.position / 1000)) + (player.duration > 0 ? " / " + app.duration(Math.floor(player.duration / 1000)) : "")
+                        font.family: "JetBrains Mono"; font.pixelSize: 11; color: "white"
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true; height: 4; radius: 2; color: Qt.alpha("white", 0.25)
+                        Rectangle {
+                            width: player.duration > 0 ? parent.width * (player.position / player.duration) : 0
+                            height: parent.height; radius: 2; color: card.c.accent
+                        }
+                    }
+                    OButton { visible: !!card.file.id; kind: "quiet"; iconName: "download"; height_: 24; tip: app.t.save_as; onClicked: card.saveWanted() }
+                    OButton { kind: "quiet"; iconName: "openExternal"; height_: 24; tip: app.t.open; onClicked: card.opened() }
+                }
+            }
+        }
+
         Image {
-            visible: card.image
+            visible: card.image && !card.video
             anchors.fill: parent
             source: !card.image ? "" : card.file.local ? card.file.local : "image://meet/preview/" + card.file.id
             sourceSize: Qt.size(720, 720)
@@ -37,7 +113,7 @@ AbstractButton {
             Rectangle { anchors.fill: parent; color: card.c.hover; visible: parent.status !== Image.Ready; radius: 10 }
         }
         RowLayout {
-            visible: !card.image
+            visible: !card.image && !card.video
             anchors.fill: parent
             anchors.leftMargin: 10; anchors.rightMargin: 10
             spacing: 10

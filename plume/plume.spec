@@ -53,13 +53,13 @@ a.pure = [entry for entry in a.pure if entry[0].split(".")[0] not in TOPS]
 # Positioning and WebChannel stay: QtWebEngine needs them. Location stays (the Photothèque's map, OpenStreetMap
 # tiles: the geoservices plugin). Same names on Linux (libQt6X.so), Windows (Qt6X.dll)
 # and macOS (QtX.framework).
-UNUSED = ("3D|Quick3D|Graphs|Charts|DataVisualization|MultimediaQuick|SpatialAudio|VirtualKeyboard"
+UNUSED = ("3D|Quick3D|Graphs|Charts|DataVisualization|SpatialAudio|VirtualKeyboard"
           "|Sensors|Scxml|StateMachine|RemoteObjects|Test|QuickTest|WaylandCompositor|WebView|Bluetooth"
           "|Nfc|SerialPort|SerialBus|Designer|UiTools|Help|Sql|ShaderTools|Pdf|PdfQuick|LabsStyleKit|HttpServer|QmlLocalStorage"
           "|QuickControls2(?:Material|Universal|Imagine|FluentWinUI3)\\w*")
 DROP = re.compile(
     rf"(?:^|[/\\])(?:lib)?Qt6?(?:{UNUSED})\w*(?:\.|[/\\]|$)"
-    rf"|[/\\]qml[/\\](?:Qt3D|QtQuick3D|QtGraphs|QtCharts|QtDataVisualization|QtTest|QtMultimedia"
+    rf"|[/\\]qml[/\\](?:Qt3D|QtQuick3D|QtGraphs|QtCharts|QtDataVisualization|QtTest"
     rf"|QtTextToSpeech|QtWebSockets|QtSensors|QtScxml|QtWebView|QtRemoteObjects|QtWayland|Qt5Compat)(?:[/\\]|$)"
     rf"|[/\\]qml[/\\]QtQuick[/\\](?:VirtualKeyboard|Scene2D|Scene3D|Pdf|Controls[/\\](?:Material|Universal|Imagine"
     rf"|FluentWinUI3|designer))(?:[/\\]|$)"

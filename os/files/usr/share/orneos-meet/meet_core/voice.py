@@ -24,15 +24,19 @@ class Voice(QObject):
     tick = Signal()
     recorded = Signal(str)          # the file of a finished recording, to send
     recordedVideo = Signal(str)     # async video capsule file, to attach
+    videoReady = Signal(str, str)   # file_id, local file:// URL for inline playback
     failed = Signal(str)
     _fetched = Signal(str, str)     # key, local path ("" = failed)
+    _videoFetched = Signal(str, str)
 
     def __init__(self, library, parent=None):
         super().__init__(parent)
         self.library = library
         self._fetched.connect(self._play_file, Qt.ConnectionType.QueuedConnection)
+        self._videoFetched.connect(self._on_video_fetched, Qt.ConnectionType.QueuedConnection)
         self._recording = False
         self._recording_video = False
+        self._pending_video = None
         self._started = 0.0
         self._send_after = False
         self._playing = ""          # the key of the message playing
@@ -94,7 +98,7 @@ class Voice(QObject):
 
     @Property(int, notify=tick)
     def elapsed(self):
-        return int(time.time() - self._started) if self._recording else 0
+        return int(time.time() - self._started) if (self._recording or self._recording_video) else 0
 
     @Property(str, notify=changed)
     def playing(self):
@@ -278,6 +282,52 @@ class Voice(QObject):
         self.changed.emit()
 
     # ---- async video & screen capsules (up to 2 min) ------------------------------------------------------
+    def _cleanup_video(self):
+        if self._camera is not None:
+            self._camera.stop()
+            self._camera.deleteLater()
+            self._camera = None
+        if self._screen is not None:
+            self._screen.setActive(False)
+            self._screen.deleteLater()
+            self._screen = None
+        if self._recorder is not None:
+            self._recorder.deleteLater()
+            self._recorder = None
+        if self._input is not None:
+            self._input.deleteLater()
+            self._input = None
+        if self._session is not None:
+            self._session.deleteLater()
+            self._session = None
+
+    def _finish_video(self):
+        pending = self._pending_video
+        if pending is None:
+            return
+        self._pending_video = None
+        send, path = pending
+        self._cleanup_video()
+        if send and path and path.is_file() and path.stat().st_size > 0:
+            self.recordedVideo.emit(str(path))
+        elif path:
+            path.unlink(missing_ok=True)
+
+    def _on_recorder_state(self, state):
+        from PySide6.QtMultimedia import QMediaRecorder
+        if state == QMediaRecorder.RecorderState.StoppedState and self._pending_video is not None:
+            self._finish_video()
+
+    def _on_video_error(self, _err, message=""):
+        self._recording_video = False
+        self._recording_mode = ""
+        self._timer.stop()
+        self._pending_video = (False, self._path)
+        self._path = None
+        self.changed.emit()
+        self._finish_video()
+        self.failed.emit(message or self.library.app.t.get("video_no_cam", "Capture failed"))
+
     def _start_video_session(self, mode, setup_fn):
         if not self._available or self._recording or self._recording_video:
             return
@@ -290,8 +340,21 @@ class Voice(QObject):
             self._input = QAudioInput(QMediaDevices.defaultAudioInput(), self)
             self._session.setAudioInput(self._input)
         self._recorder = QMediaRecorder(self)
-        self._recorder.setMediaFormat(QMediaFormat(QMediaFormat.FileFormat.MPEG4))
+        fmt = QMediaFormat(QMediaFormat.FileFormat.MPEG4)
+        vcodecs = fmt.supportedVideoCodecs(QMediaFormat.ConversionMode.Encode)
+        if QMediaFormat.VideoCodec.H264 in vcodecs:
+            fmt.setVideoCodec(QMediaFormat.VideoCodec.H264)
+        elif vcodecs:
+            fmt.setVideoCodec(vcodecs[0])
+        acodecs = fmt.supportedAudioCodecs(QMediaFormat.ConversionMode.Encode)
+        if QMediaFormat.AudioCodec.AAC in acodecs:
+            fmt.setAudioCodec(QMediaFormat.AudioCodec.AAC)
+        elif acodecs:
+            fmt.setAudioCodec(acodecs[0])
+        self._recorder.setMediaFormat(fmt)
         self._recorder.setOutputLocation(QUrl.fromLocalFile(str(self._path)))
+        self._recorder.recorderStateChanged.connect(self._on_recorder_state)
+        self._recorder.errorOccurred.connect(self._on_video_error)
         self._session.setRecorder(self._recorder)
         self._recorder.record()
         self._recording_video = True
@@ -309,6 +372,7 @@ class Voice(QObject):
             return
         def setup(session):
             self._camera = QCamera(cams[0], self)
+            self._camera.errorOccurred.connect(self._on_video_error)
             session.setCamera(self._camera)
             self._camera.start()
         self._start_video_session("camera", setup)
@@ -323,6 +387,7 @@ class Voice(QObject):
         def setup(session):
             self._screen = QScreenCapture(self)
             self._screen.setScreen(screen)
+            self._screen.errorOccurred.connect(self._on_video_error)
             session.setScreenCapture(self._screen)
             self._screen.setActive(True)
         self._start_video_session("screen", setup)
@@ -331,31 +396,43 @@ class Voice(QObject):
     def stop_video(self, send=True):
         if not self._recording_video:
             return
+        from PySide6.QtMultimedia import QMediaRecorder
         self._recording_video = False
         self._recording_mode = ""
         self._timer.stop()
-        if self._recorder is not None:
-            self._recorder.stop()
-            self._recorder.deleteLater()
-            self._recorder = None
-        if self._input is not None:
-            self._input.deleteLater()
-            self._input = None
-        if self._session is not None:
-            self._session.deleteLater()
-            self._session = None
-        if self._camera is not None:
-            self._camera.stop()
-            self._camera.deleteLater()
-            self._camera = None
-        if self._screen is not None:
-            self._screen.setActive(False)
-            self._screen.deleteLater()
-            self._screen = None
         path = self._path
         self._path = None
+        self._pending_video = (bool(send), path)
         self.changed.emit()
-        if send and path and path.is_file() and path.stat().st_size > 0:
-            self.recordedVideo.emit(str(path))
-        elif path:
-            path.unlink(missing_ok=True)
+        if self._recorder is not None and self._recorder.recorderState() != QMediaRecorder.RecorderState.StoppedState:
+            self._recorder.stop()
+            QTimer.singleShot(1500, self._finish_video)
+        else:
+            self._finish_video()
+
+    @Slot(str, str, str)
+    def fetchVideo(self, file_id, remote_path, name):
+        """Download a shared video file to cache for inline playback, emitting videoReady(file_id, file://)."""
+        if not file_id or not remote_path:
+            return
+        ext = Path(name or "video.mp4").suffix or ".mp4"
+        local = DIR / f"vid-{file_id}{ext}"
+        if local.is_file() and local.stat().st_size > 0:
+            self.videoReady.emit(str(file_id), QUrl.fromLocalFile(str(local)).toString())
+            return
+        talk = self.library._talk()
+        if talk is None:
+            self.videoReady.emit(str(file_id), "")
+            return
+        def work():
+            url = f"/remote.php/dav/files/{urllib.parse.quote(talk.user)}/{urllib.parse.quote(remote_path.lstrip('/'))}"
+            status, data = cloud.dav(talk.server, talk.user, talk.password, url, "GET")
+            if status != 200 or not data:
+                return ""
+            DIR.mkdir(parents=True, exist_ok=True)
+            local.write_bytes(data)
+            return QUrl.fromLocalFile(str(local)).toString()
+        threading.Thread(target=lambda: self._videoFetched.emit(str(file_id), work()), daemon=True).start()
+
+    def _on_video_fetched(self, file_id, url):
+        self.videoReady.emit(file_id, url)
