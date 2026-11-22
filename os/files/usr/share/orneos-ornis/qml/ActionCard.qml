@@ -176,7 +176,7 @@ Rectangle {
             }
         }
 
-        RowLayout {
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.topMargin: 4
             spacing: 8
@@ -187,13 +187,18 @@ Rectangle {
                 font.family: "Schibsted Grotesk"; font.pixelSize: 13
                 color: card.c.muted
             }
-            OButton {
-                visible: !card.editing && card.actions.some(a => a.args.some(x => x.editable))
-                kind: "quiet"; text: app.t.confirm_edit; iconName: "edit"
-                onClicked: card.editing = true
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                OButton {
+                    visible: !card.editing && card.actions.some(a => a.args.some(x => x.editable))
+                    kind: "quiet"; text: app.t.confirm_edit; iconName: "edit"
+                    onClicked: card.editing = true
+                }
+                OButton { text: app.t.confirm_no; iconName: "close"; onClicked: card.answered(false) }
+                OButton { kind: "primary"; text: app.t.confirm_yes; iconName: "check"; onClicked: card.confirm() }
             }
-            OButton { text: app.t.confirm_no; iconName: "close"; onClicked: card.answered(false) }
-            OButton { kind: "primary"; text: app.t.confirm_yes; iconName: "check"; onClicked: card.confirm() }
         }
     }
 }

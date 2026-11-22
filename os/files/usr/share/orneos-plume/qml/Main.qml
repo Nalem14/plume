@@ -196,6 +196,8 @@ ApplicationWindow {
             mailView.askOrnis(id.slice(6))
         else if (id === "settings" || id === "add_box")
             settings.openAt(id === "add_box" ? "add_box" : "")
+        else if (id === "morning_brief")
+            morningBrief.openBrief()
         else if (id === "new_message" || id === "new_event" || id === "new_contact")
             plume.open({ new_message: "mail", new_event: "calendar", new_contact: "contacts" }[id], "--" + id.replace("_", "-"))
     }
@@ -218,7 +220,25 @@ ApplicationWindow {
         spacing: 0
 
         Rail { Layout.fillHeight: true; visible: !plume.edition; ornisOpen: win.ornisShown
-               onAppsRequested: apps.open(); onOrnisRequested: win.toggleOrnis() }
+               onAppsRequested: apps.open(); onOrnisRequested: win.toggleOrnis()
+               onLinkDropped: (mod, items) => {
+                   const it = items[0] || {}
+                   if (mod === "calendar")
+                       plume.proposeEvent({ title: it.title || "", start: "", end: "", allDay: false, location: "", notes: it.url || "" })
+                   else if (mod === "tasks")
+                       plume.addTaskFromLink(it.title || "", it.url || "")
+                   else if (mod === "mail") {
+                       plume.setModule("mail")
+                       if (mail.state === "ready") {
+                           const f = mail.compose("new")
+                           f.subject = it.title || ""
+                           f.body = (it.title ? it.title + "\n" : "") + (it.url || "")
+                           mailView.openComposer(f)
+                       }
+                   } else {
+                       plume.setModule(mod)
+                   }
+               } }
         Band {
             Layout.fillHeight: true
             visible: !!plume.edition
@@ -379,6 +399,7 @@ ApplicationWindow {
         id: commandPalette
         onAction: id => win.runAction(id)
     }
+    MorningBriefDialog { id: morningBrief }
 
     SettingsDialog { id: settings }
     ChoiceDialog { id: autoSummaryQuestion }

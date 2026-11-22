@@ -197,13 +197,13 @@ Rectangle {
                     onClicked: view.newEvent(null, false)
                 }
 
-                // Calendars / Invitations
+                // Calendars / Invitations / Tasks (Time-Blocking)
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.topMargin: 4
                     spacing: 4
                     Repeater {
-                        model: [["calendars", "calendar", plume.t.tab_calendars], ["invitations", "inbox", plume.t.tab_invitations]]
+                        model: [["calendars", "calendar", plume.t.tab_calendars], ["invitations", "inbox", plume.t.tab_invitations], ["tasks", "checklist", plume.t.tasks]]
                         AbstractButton {
                             id: tab
                             required property var modelData
@@ -219,18 +219,18 @@ Rectangle {
                                 color: tab.active ? view.c.card : tab.hovered ? view.c.hover : "transparent"
                                 Rectangle {
                                     visible: tab.active
-                                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: 14; rightMargin: 14 }
+                                    anchors { left: parent.left; right: parent.right; bottom: parent.bottom; leftMargin: 10; rightMargin: 10 }
                                     height: 2; radius: 1; color: view.c.famOrganize
                                 }
                             }
                             contentItem: Item {
                                 Row {
-                                    spacing: 7
+                                    spacing: 5
                                     anchors.centerIn: parent
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: tab.modelData[2]
-                                        font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: tab.active ? Font.DemiBold : Font.Medium
+                                        font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: tab.active ? Font.DemiBold : Font.Medium
                                         color: view.c.text
                                     }
                                     Rectangle {
@@ -249,10 +249,88 @@ Rectangle {
                 Flickable {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    contentHeight: view.sideTab === "calendars" ? side.implicitHeight : invitations.implicitHeight
+                    contentHeight: view.sideTab === "calendars" ? side.implicitHeight : view.sideTab === "invitations" ? invitations.implicitHeight : tasksSide.implicitHeight
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
+
+                    ColumnLayout {
+                        id: tasksSide
+                        visible: view.sideTab === "tasks"
+                        width: parent.width
+                        spacing: 6
+                        readonly property var items: { view.tasksRevision; agenda.revision; return view.sideTab === "tasks" ? agenda.openTasks() : [] }
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4; Layout.rightMargin: 4; Layout.bottomMargin: 2
+                            text: plume.t.cal_tasks_hint
+                            wrapMode: Text.WordWrap
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 12
+                            color: view.c.muted
+                        }
+                        Text {
+                            visible: tasksSide.items.length === 0
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4; Layout.topMargin: 12
+                            text: plume.t.cal_tasks_empty
+                            font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.italic: true
+                            color: view.c.faint
+                        }
+                        Repeater {
+                            model: tasksSide.items
+                            delegate: Rectangle {
+                                id: taskCard
+                                required property var modelData
+                                Layout.fillWidth: true
+                                implicitHeight: taskCol.implicitHeight + 14
+                                radius: 8
+                                color: taskDrag.containsMouse ? view.c.hover : view.c.card
+                                border.width: 1; border.color: view.c.hairline
+                                Drag.active: taskDrag.drag.active
+                                Drag.dragType: Drag.Automatic
+                                Drag.mimeData: ({
+                                    "application/x-orneos-link": JSON.stringify([{ url: modelData.url, title: modelData.title, kind: "task" }]),
+                                    "text/plain": modelData.url
+                                })
+                                MouseArea {
+                                    id: taskDrag
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    drag.target: taskCard
+                                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                    onClicked: agenda.openTask(taskCard.modelData.uid)
+                                }
+                                RowLayout {
+                                    id: taskCol
+                                    anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 10 }
+                                    spacing: 8
+                                    Rectangle {
+                                        width: 8; height: 8; radius: 4
+                                        color: Colors.display(taskCard.modelData.color, theme.dark)
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        Text {
+                                            Layout.fillWidth: true
+                                            text: (taskCard.modelData.priority > 0 ? "!".repeat(taskCard.modelData.priority) + " " : "") + taskCard.modelData.title
+                                            elide: Text.ElideRight
+                                            font.family: "Schibsted Grotesk"; font.pixelSize: 13; font.weight: Font.Medium
+                                            color: view.c.text
+                                        }
+                                        Text {
+                                            visible: taskCard.modelData.due !== "" || taskCard.modelData.listName !== ""
+                                            Layout.fillWidth: true
+                                            text: [taskCard.modelData.listName, taskCard.modelData.due].filter(x => x).join(" · ")
+                                            elide: Text.ElideRight
+                                            font.family: "JetBrains Mono"; font.pixelSize: 11
+                                            color: view.c.muted
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     InvitationsPanel {
                         id: invitations
@@ -503,6 +581,16 @@ Rectangle {
                     onSlotClicked: (when, allDay) => view.newEvent(when, allDay)
                     onRangeSelected: (from, to) => view.newEvent(from, false, to)
                     onMoveRequested: (occ, from, to) => view.moveEvent(occ, from, to)
+                    onExternalDropped: (links, from, to) => {
+                        const it = links[0] || {}
+                        if (it.kind === "task") {
+                            const eid = agenda.scheduleTask(it.title || "", D.isoLocal(from), D.isoLocal(to), it.url || "")
+                            if (eid > 0)
+                                calToast.show(plume.t.task_scheduled.replace("%1", it.title || plume.t.untitled), plume.t.undo, () => agenda.removeLater(eid, "", "all", D.isoLocal(from)), 6)
+                        } else {
+                            editor.openProposed({ title: it.title || "", start: D.isoLocal(from), end: D.isoLocal(to), allDay: false, location: "", notes: it.url || "" })
+                        }
+                    }
                     onDayClicked: day => { view.anchor = day; view.mode = "day" }
                 }
                 MonthView {

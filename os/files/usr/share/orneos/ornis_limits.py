@@ -187,8 +187,8 @@ LIMITS = "/ocs/v2.php/apps/orneos/api/v1/ornis/limits?format=json"
 
 
 def fetch(server: str, user: str, password: str) -> dict | None:
-    """/ornis/limits of the account, with `percent` of the window that will stop Ornis first; a cloud without the
-    windows answers as before (integration_openai's rolling 24 h: {percent} only). None when unknown or unlimited."""
+    """/ornis/limits of the account, with `percent` of the window that will stop Ornis first. None when unknown or
+    unlimited."""
     import cloud  # noqa: PLC0415 - the apps put /usr/share/orneos on their path
     status, body = cloud.ocs(server, user, password, LIMITS)
     data = (body.get("ocs") or {}).get("data") if isinstance(body, dict) and "ocs" in body else body
@@ -197,13 +197,6 @@ def fetch(server: str, user: str, password: str) -> dict | None:
             return None
         data["percent"] = 100 if data.get("blocked") else int((data.get("next") or {}).get("percent") or 0)
         return data
-    status, body = cloud.rest(server, user, password, "/apps/integration_openai/quota-info")
-    if status in (200, 100) and isinstance(body, dict):
-        usage = body.get("quota_usage") or ((body.get("ocs") or {}).get("data") or {}).get("quota_usage")
-        slot = usage[0] if isinstance(usage, list) and usage else (
-            (usage.get(0) or usage.get("0")) if isinstance(usage, dict) else None)
-        if isinstance(slot, dict) and int(slot.get("limit") or 0) > 0:
-            return {"percent": min(100, round(100 * max(0, int(slot.get("used") or 0)) / int(slot["limit"])))}
     return None
 
 

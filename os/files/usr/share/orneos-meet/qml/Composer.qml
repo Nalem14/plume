@@ -212,26 +212,30 @@ Rectangle {
             }
         }
 
-        // recording a voice message
+        // recording a voice message or async video capsule
         RowLayout {
-            visible: voice.recording
+            visible: voice.recording || voice.recordingVideo
             Layout.fillWidth: true
             Layout.preferredHeight: 40
             spacing: 10
-            OButton { kind: "quiet"; iconName: "trash"; tip: app.t.cancel; onClicked: voice.finish(false) }
+            OButton { kind: "quiet"; iconName: "trash"; tip: app.t.cancel; onClicked: voice.recordingVideo ? voice.stop_video(false) : voice.finish(false) }
             Rectangle {
                 implicitWidth: 10; implicitHeight: 10; radius: 5
                 color: composer.c.danger
-                SequentialAnimation on opacity { running: voice.recording; loops: Animation.Infinite
+                SequentialAnimation on opacity { running: voice.recording || voice.recordingVideo; loops: Animation.Infinite
                     NumberAnimation { to: 0.25; duration: 600 } NumberAnimation { to: 1; duration: 600 } }
             }
-            Text { textFormat: Text.PlainText; text: app.duration(voice.elapsed); font.family: "JetBrains Mono"; font.pixelSize: 15; color: composer.c.text }
-            Text { Layout.fillWidth: true; text: app.t.recording; font.pixelSize: 13; color: composer.c.muted; elide: Text.ElideRight }
-            OButton { kind: "primary"; iconName: "send"; text: app.t.send; onClicked: voice.finish(true) }
+            Text { textFormat: Text.PlainText; text: app.duration(voice.elapsed) + (voice.recordingVideo ? " / 2:00" : ""); font.family: "JetBrains Mono"; font.pixelSize: 15; color: composer.c.text }
+            Text { Layout.fillWidth: true; text: voice.recordingVideo ? (voice.recordingMode === "screen" ? app.t.screen_capsule : app.t.video_capsule) : app.t.recording; font.pixelSize: 13; color: composer.c.muted; elide: Text.ElideRight }
+            OButton { kind: "primary"; iconName: "send"; text: app.t.send; onClicked: voice.recordingVideo ? voice.stop_video(true) : voice.finish(true) }
+        }
+        Connections {
+            target: voice
+            function onRecordedVideo(path) { composer.addFiles([path]); field.forceActiveFocus() }
         }
 
         RowLayout {
-            visible: !voice.recording
+            visible: !voice.recording && !voice.recordingVideo
             Layout.fillWidth: true
             spacing: 6
             OButton {
@@ -317,6 +321,26 @@ Rectangle {
                 Layout.alignment: Qt.AlignBottom
                 kind: "quiet"; text: "GIF"; tip: app.t.gif_tip
                 onClicked: gifs.show(gifButton, "")
+            }
+            OButton {
+                id: capsuleButton
+                visible: (voice.videoAvailable || voice.screenAvailable) && field.text.trim() === "" && !composer.editing && !composer.attachments.length
+                Layout.alignment: Qt.AlignBottom
+                kind: "quiet"; iconName: "video"; tip: app.t.video_capsule
+                onClicked: {
+                    if (voice.videoAvailable && voice.screenAvailable)
+                        capsuleMenu.open()
+                    else if (voice.screenAvailable)
+                        voice.recordScreen()
+                    else
+                        voice.recordVideo()
+                }
+                MeetMenu {
+                    id: capsuleMenu
+                    y: -implicitHeight - 6
+                    OMenuItem { visible: voice.videoAvailable; text: app.t.capsule_camera; iconName: "video"; onTriggered: voice.recordVideo() }
+                    OMenuItem { visible: voice.screenAvailable; text: app.t.capsule_screen; iconName: "screen"; onTriggered: voice.recordScreen() }
+                }
             }
             OButton {
                 visible: voice.available && field.text.trim() === "" && !composer.editing && !composer.attachments.length

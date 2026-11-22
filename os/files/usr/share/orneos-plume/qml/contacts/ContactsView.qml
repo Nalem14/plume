@@ -19,6 +19,7 @@ Rectangle {
     property var card: { people.revision; return currentId ? people.details(currentId) : ({}) }
     readonly property bool many: selected.length > 1
     color: c.bg
+    Connections { target: plume; function onContactRequested(id) { view.select(id) } }
 
     function newContact() { editor.openNew(null) }
     function editCurrent() { if (currentId) editor.openEdit(card) }

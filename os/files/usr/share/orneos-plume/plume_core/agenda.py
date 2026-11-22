@@ -220,6 +220,69 @@ class Agenda(QObject):
         if not system.launch("tasks", "--show=" + uid):
             self._plume.toast.emit(self._plume.t["app_missing"])
 
+    @Slot(result="QVariantList")
+    def openTasks(self):
+        """Open tasks from Tâches for the Time-Blocking sidebar: [{uid, title, listName, color, due, priority, url}]."""
+        path = system.DATA / "tasks.db"
+        if not path.exists():
+            return []
+        try:
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+            db.row_factory = sqlite3.Row
+            try:
+                rows = db.execute("SELECT t.uid, t.href, t.data, l.name, l.color FROM tasks t "
+                                  "LEFT JOIN lists l ON l.href = t.list WHERE t.deleted = 0 ORDER BY t.rowid DESC LIMIT 200").fetchall()
+            finally:
+                db.close()
+        except sqlite3.Error:
+            return []
+        server = (self._plume.account() or ("",))[0]
+        tz = ical.local_zone()
+        out = []
+        for row in rows:
+            try:
+                data = json.loads(row["data"] or "{}")
+            except ValueError:
+                continue
+            if data.get("done") or data.get("cancelled"):
+                continue
+            title = str(data.get("title") or "").strip()
+            if not title:
+                continue
+            due = data.get("due_ts")
+            due_label = ""
+            if due:
+                dt = datetime.fromtimestamp(due, tz)
+                due_label = dt.strftime("%d/%m") if data.get("all_day") else dt.strftime("%d/%m %H:%M")
+            import links as _links
+            out.append({
+                "uid": row["uid"],
+                "title": title,
+                "listName": row["name"] or "",
+                "color": row["color"] if row["color"] and len(row["color"]) >= 7 else "#002FA7",
+                "due": due_label,
+                "dueTs": int(due or 0),
+                "priority": int(data.get("priority") or 0),
+                "url": _links.task_url(server, row["href"], row["uid"]),
+            })
+        out.sort(key=lambda t: (-t["priority"], t["dueTs"] or 9999999999, t["title"].lower()))
+        return out[:40]
+
+    @Slot(str, str, str, str, result=int)
+    def scheduleTask(self, title, start_iso, end_iso, task_url=""):
+        """Time-block a task on the default calendar; returns the new eventId (or 0 on failure)."""
+        target = self._collection(self.defaultCalendar)
+        if target is None or target["readonly"]:
+            return 0
+        fields = {"title": title.strip() or self._plume.t["untitled"], "allDay": False,
+                  "start": start_iso, "end": end_iso, "notes": task_url}
+        uid, ics = ical.new_event(fields, self._me())
+        href = target["href"] + uid + ".ics"
+        if not self._sync.save_event(target["id"], href, ics, ""):
+            return 0
+        row = self._by_uid(uid)
+        return int(row["id"]) if row is not None else 0
+
     @Slot(str, result="QVariantList")
     def search(self, text):
         """Events whose title, place, notes or guests hold every word: a year back, two years ahead, the next

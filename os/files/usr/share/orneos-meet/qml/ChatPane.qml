@@ -52,6 +52,16 @@ Rectangle {
     property int repliesRequest: -1
     property bool waitingReplies: false     // « Suggérer des réponses » asked: Ornis shows it works, above the field
     property var dismissed: ({})
+    property bool callEndedOffer: false
+    property bool _wasInCall: false
+    Connections {
+        target: calls
+        function onChanged() {
+            if (calls.active) pane._wasInCall = true
+            else if (pane._wasInCall) { pane._wasInCall = false; pane.callEndedOffer = true }
+        }
+    }
+    Connections { target: meet; function onRoomChanged() { pane.callEndedOffer = false } }
     function askOrnis(kind, extra) {
         ornisKind = kind
         ornisText = ""
@@ -412,6 +422,29 @@ Rectangle {
             }
         }
 
+        // post-call minutes offer: 1-click Ornis minutes + tasks
+        Surface {
+            visible: pane.callEndedOffer && !ornisCard.visible
+            Layout.fillWidth: true
+            Layout.leftMargin: pane.compact ? 8 : 16; Layout.rightMargin: pane.compact ? 8 : 16; Layout.topMargin: 10
+            implicitHeight: 50
+            radius: 10
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0; color: Qt.tint(pane.c.card, Qt.alpha(pane.c.accent, theme.dark ? 0.2 : 0.1)) }
+                GradientStop { position: 1; color: pane.c.card }
+            }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 14; anchors.rightMargin: 8
+                spacing: 10
+                Icon { name: "ornis"; size: 18; color: pane.c.accent }
+                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: app.t.call_ended_minutes; font.pixelSize: 13; color: pane.c.text; elide: Text.ElideRight }
+                OButton { kind: "accent"; iconName: "ornis"; text: app.t.minutes_title; onClicked: { pane.callEndedOffer = false; pane.askOrnis("minutes") } }
+                OButton { kind: "quiet"; iconName: "close"; tip: app.t.close; onClicked: pane.callEndedOffer = false }
+            }
+        }
+
         // what was missed: Ornis offers to sum it up
         Surface {
             visible: meet.missed >= 5 && !pane.dismissed[meet.current] && !ornisCard.visible
@@ -458,6 +491,9 @@ Rectangle {
                         text: ({ summary: app.t.summary_title, minutes: app.t.minutes_title, tasks: app.t.tasks_title, ask: app.t.ask_title })[pane.ornisKind] || ""
                         font.pixelSize: 13; font.weight: Font.DemiBold; color: pane.c.text
                     }
+                    OButton { kind: "quiet"; iconName: "checklist"; height_: 30; text: app.t.minutes_and_tasks
+                              visible: pane.ornisText.trim() !== "" && pane.ornisKind === "minutes"
+                              onClicked: { pane.sendToNotes(); pane.askOrnis("tasks") } }
                     OButton { kind: "quiet"; iconName: "note"; height_: 30; tip: app.t.to_notes
                               visible: pane.ornisText.trim() !== "" && pane.ornisKind !== "tasks"
                               onClicked: pane.sendToNotes() }

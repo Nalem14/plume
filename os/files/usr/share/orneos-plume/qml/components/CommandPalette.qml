@@ -7,6 +7,7 @@ import QtQuick.Layouts
 
 Popup {
     id: cmd
+    objectName: "commandPalette"
     readonly property var c: theme.c
     signal action(string id)
 
@@ -14,6 +15,7 @@ Popup {
         { id: "new_message", icon: "mail", text: plume.t.new_message, keys: "Ctrl N" },
         { id: "new_event", icon: "calendar", text: plume.t.new_event, keys: "" },
         { id: "new_contact", icon: "contacts", text: plume.t.new_contact, keys: "" },
+        { id: "morning_brief", icon: "ornis", text: plume.t.morning_brief, keys: "" },
         { id: "go_mail", icon: "inbox", text: plume.t.go_mail, keys: "Ctrl 1" },
         { id: "go_calendar", icon: "calendar", text: plume.t.go_calendar, keys: "Ctrl 2" },
         { id: "go_contacts", icon: "contacts", text: plume.t.go_contacts, keys: "Ctrl 3" },
@@ -43,8 +45,27 @@ Popup {
         const q = field.text.trim().toLowerCase()
         // Ornis's own lines: in its module, or once something is typed (the list stays short otherwise)
         const found = actions.filter(a => q ? a.text.toLowerCase().indexOf(q) !== -1 : !a.typed || plume.module === "ornis")
-            .concat(suite.ornisPanel ? suite.ornisFind(q).map(r => ({ id: "orn:--session=" + r.id, icon: "chat", text: r.label,
-                                                                      sub: plume.t.pal_ornis_chat + " · " + r.when, keys: "" })) : [])
+        if (q.length >= 2) {
+            const items = plume.searchAll(q)
+            for (let i = 0; i < items.length; i++) {
+                const it = items[i]
+                found.push({
+                    id: "item", kind: it.kind, ref: it.ref, url: it.url || "",
+                    icon: it.icon || "search",
+                    text: it.title || plume.t.untitled,
+                    sub: (it.kindLabel ? it.kindLabel : "") + (it.sub ? " · " + it.sub : ""),
+                    keys: ""
+                })
+            }
+        }
+        if (suite && suite.ornisPanel) {
+            const chats = suite.ornisFind(q)
+            for (let i = 0; i < chats.length; i++) {
+                const r = chats[i]
+                found.push({ id: "orn:--session=" + r.id, icon: "chat", text: r.label,
+                             sub: plume.t.pal_ornis_chat + " · " + r.when, keys: "" })
+            }
+        }
         if (q)
             found.push({ id: "ornis", icon: "ornis", text: plume.t.ask_ornis + " « " + field.text.trim() + " »", keys: "" })
         return found
@@ -57,6 +78,8 @@ Popup {
             return
         if (item.id === "ornis")
             plume.askOrnis(field.text)
+        else if (item.id === "item")
+            plume.openItem(item.kind, item.ref, item.url)
         else
             cmd.action(item.id)
         close()
@@ -105,6 +128,7 @@ Popup {
             Icon { name: "search"; size: 20; color: cmd.c.muted }
             TextField {
                 id: field
+                objectName: "paletteField"
                 Layout.fillWidth: true
                 placeholderText: plume.t.search
                 placeholderTextColor: cmd.c.muted
@@ -121,19 +145,27 @@ Popup {
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: cmd.c.hairline }
         Text {
             Layout.leftMargin: 18; Layout.topMargin: 12; Layout.bottomMargin: 4
-            text: plume.t.palette_actions
+            text: field.text.trim().length >= 2 ? plume.t.palette_results : plume.t.palette_actions
             font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold; font.letterSpacing: 0.8
             color: cmd.c.muted
         }
-        Repeater {
+        ListView {
+            id: list
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(400, contentHeight)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            currentIndex: cmd.current
             model: cmd.results
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
             delegate: AbstractButton {
                 id: row
                 required property var modelData
                 required property int index
-                Layout.fillWidth: true
-                Layout.leftMargin: 8; Layout.rightMargin: 8
-                implicitHeight: 40
+                width: list.width - 16
+                x: 8
+                implicitHeight: 42
                 hoverEnabled: true
                 onHoveredChanged: if (hovered) cmd.current = index
                 onClicked: cmd.run(index)
@@ -155,8 +187,10 @@ Popup {
                         color: cmd.current === row.index ? cmd.c.tintText : cmd.c.text
                         elide: Text.ElideRight
                     }
-                    Text {                  // its keys, or what it is (« Conversation avec Ornis · hier »)
+                    Text {                  // its keys, or what it is (« Courrier · Alice », « Conversation avec Ornis · hier »)
                         Layout.rightMargin: 10
+                        Layout.maximumWidth: 240
+                        elide: Text.ElideRight
                         visible: text !== ""
                         text: row.modelData.keys || row.modelData.sub || ""
                         font.family: row.modelData.keys ? "JetBrains Mono" : "Schibsted Grotesk"; font.pixelSize: 12
@@ -166,7 +200,7 @@ Popup {
             }
         }
         Text {
-            visible: cmd.results.length === 0
+            visible: !cmd.results || cmd.results.length === 0
             Layout.leftMargin: 18; Layout.topMargin: 6
             text: plume.t.palette_none
             font.family: "Schibsted Grotesk"; font.pixelSize: 14

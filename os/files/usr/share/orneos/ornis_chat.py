@@ -59,8 +59,8 @@ REGION = "/ocs/v2.php/apps/orneos/api/v1/ornis/region"
 READ = "/ocs/v2.php/apps/orneos/api/v1/ornis"      # unread / read: the same on every device (orneos app, OrnisRead)
 ASSISTANT = "/ocs/v2.php/apps/assistant/api/v1"
 
-# What Ornis reads in a message (the cloud: integration_openai, the relay, OnlyOffice for Office files)
-MAX_ATTACHMENTS = 10                   # integration_openai's limit
+# What Ornis reads in a message (the cloud: OrnisModel of the orneos app, the relay, OnlyOffice for Office files)
+MAX_ATTACHMENTS = 10                   # the cloud's limit (OrnisFiles, as integration_openai before it)
 MAX_BYTES = 50 * 1024 * 1024           # Mistral's limit for a document
 IMAGE_TYPES = ("png", "jpg", "jpeg", "webp", "gif")
 DOCUMENT_TYPES = ("pdf", "docx", "doc", "odt", "rtf", "xlsx", "xls", "ods", "pptx", "ppt", "odp")
@@ -898,7 +898,7 @@ class Chat:
     def quota(self) -> dict | None:
         """Ornis's limits (orneos app, /ornis/limits, OrnisQuota): its windows (session, week…) with each one's share and
         when it renews, `blocked` when one is full, `percent` of the one that will stop Ornis first (the ring).
-        ornis_limits.view() turns it into text. A cloud without the windows answers as before (rolling 24 h)."""
+        ornis_limits.view() turns it into text. None when unknown or unlimited."""
         status, body = self._ocs(f"{LIMITS}?format=json")
         data = _data(body) if _ok(status) else None
         if isinstance(data, dict) and isinstance(data.get("windows"), list):
@@ -906,15 +906,7 @@ class Chat:
                 return None
             data["percent"] = 100 if data.get("blocked") else int((data.get("next") or {}).get("percent") or 0)
             return data
-        status, body = rest(self.server, self.user, self.password, "/index.php/apps/integration_openai/quota-info")
-        if not _ok(status) or not isinstance(body, dict):
-            return None
-        usage = body.get("quota_usage")
-        slot = usage[0] if isinstance(usage, list) and usage else (usage or {}).get("0") if isinstance(usage, dict) else None
-        if not isinstance(slot, dict) or int(slot.get("limit") or 0) <= 0:
-            return None
-        used, limit = max(0, int(slot.get("used") or 0)), int(slot["limit"])
-        return {"used": used, "limit": limit, "percent": min(100, round(100 * used / limit))}
+        return None
 
     def notify_back(self, on: bool = True) -> bool:
         """« Me prévenir »: a notification « Ornis est de retour » when the full window renews."""

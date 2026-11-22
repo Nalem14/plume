@@ -23,6 +23,7 @@ class Voice(QObject):
     changed = Signal()
     tick = Signal()
     recorded = Signal(str)          # the file of a finished recording, to send
+    recordedVideo = Signal(str)     # async video capsule file, to attach
     failed = Signal(str)
     _fetched = Signal(str, str)     # key, local path ("" = failed)
 
@@ -31,11 +32,13 @@ class Voice(QObject):
         self.library = library
         self._fetched.connect(self._play_file, Qt.ConnectionType.QueuedConnection)
         self._recording = False
+        self._recording_video = False
         self._started = 0.0
         self._send_after = False
         self._playing = ""          # the key of the message playing
         self._loading = ""
-        self._recorder = self._session = self._input = None
+        self._recorder = self._session = self._input = self._camera = self._screen = None
+        self._recording_mode = ""
         self._player = self._output = None
         self._path = None
         try:
@@ -45,11 +48,45 @@ class Voice(QObject):
             self._available = False
         self._timer = QTimer(self)
         self._timer.setInterval(200)
-        self._timer.timeout.connect(self.tick)
+        self._timer.timeout.connect(self._on_tick)
+
+    def _on_tick(self):
+        self.tick.emit()
+        if self._recording_video and time.time() - self._started >= 120:
+            self.stop_video(True)
 
     @Property(bool, constant=True)
     def available(self):
         return self._available
+
+    @Property(bool, constant=True)
+    def videoAvailable(self):
+        if not self._available:
+            return False
+        try:
+            from PySide6.QtMultimedia import QMediaDevices
+            return len(QMediaDevices.videoInputs()) > 0
+        except Exception:
+            return False
+
+    @Property(bool, constant=True)
+    def screenAvailable(self):
+        if not self._available:
+            return False
+        try:
+            from PySide6 import QtMultimedia
+            from PySide6.QtGui import QGuiApplication
+            return hasattr(QtMultimedia, "QScreenCapture") and QGuiApplication.primaryScreen() is not None
+        except Exception:
+            return False
+
+    @Property(bool, notify=changed)
+    def recordingVideo(self):
+        return self._recording_video
+
+    @Property(str, notify=changed)
+    def recordingMode(self):
+        return self._recording_mode
 
     @Property(bool, notify=changed)
     def recording(self):
@@ -239,3 +276,86 @@ class Voice(QObject):
         self._playing = ""
         self._timer.stop()
         self.changed.emit()
+
+    # ---- async video & screen capsules (up to 2 min) ------------------------------------------------------
+    def _start_video_session(self, mode, setup_fn):
+        if not self._available or self._recording or self._recording_video:
+            return
+        from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaDevices, QMediaFormat, QMediaRecorder
+        DIR.mkdir(parents=True, exist_ok=True)
+        self._path = DIR / f"capsule-{mode}-{int(time.time() * 1000)}.mp4"
+        self._session = QMediaCaptureSession(self)
+        setup_fn(self._session)
+        if not QMediaDevices.defaultAudioInput().isNull():
+            self._input = QAudioInput(QMediaDevices.defaultAudioInput(), self)
+            self._session.setAudioInput(self._input)
+        self._recorder = QMediaRecorder(self)
+        self._recorder.setMediaFormat(QMediaFormat(QMediaFormat.FileFormat.MPEG4))
+        self._recorder.setOutputLocation(QUrl.fromLocalFile(str(self._path)))
+        self._session.setRecorder(self._recorder)
+        self._recorder.record()
+        self._recording_video = True
+        self._recording_mode = mode
+        self._started = time.time()
+        self._timer.start()
+        self.changed.emit()
+
+    @Slot()
+    def recordVideo(self):
+        from PySide6.QtMultimedia import QCamera, QMediaDevices
+        cams = QMediaDevices.videoInputs()
+        if not cams:
+            self.failed.emit(self.library.app.t["video_no_cam"])
+            return
+        def setup(session):
+            self._camera = QCamera(cams[0], self)
+            session.setCamera(self._camera)
+            self._camera.start()
+        self._start_video_session("camera", setup)
+
+    @Slot()
+    def recordScreen(self):
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtMultimedia import QScreenCapture
+        screen = QGuiApplication.primaryScreen()
+        if not hasattr(QScreenCapture, "setScreen") or screen is None:
+            return
+        def setup(session):
+            self._screen = QScreenCapture(self)
+            self._screen.setScreen(screen)
+            session.setScreenCapture(self._screen)
+            self._screen.setActive(True)
+        self._start_video_session("screen", setup)
+
+    @Slot(bool)
+    def stop_video(self, send=True):
+        if not self._recording_video:
+            return
+        self._recording_video = False
+        self._recording_mode = ""
+        self._timer.stop()
+        if self._recorder is not None:
+            self._recorder.stop()
+            self._recorder.deleteLater()
+            self._recorder = None
+        if self._input is not None:
+            self._input.deleteLater()
+            self._input = None
+        if self._session is not None:
+            self._session.deleteLater()
+            self._session = None
+        if self._camera is not None:
+            self._camera.stop()
+            self._camera.deleteLater()
+            self._camera = None
+        if self._screen is not None:
+            self._screen.setActive(False)
+            self._screen.deleteLater()
+            self._screen = None
+        path = self._path
+        self._path = None
+        self.changed.emit()
+        if send and path and path.is_file() and path.stat().st_size > 0:
+            self.recordedVideo.emit(str(path))
+        elif path:
+            path.unlink(missing_ok=True)

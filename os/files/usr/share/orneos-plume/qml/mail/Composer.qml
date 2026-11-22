@@ -207,7 +207,28 @@ Window {
 
     DropArea {
         anchors.fill: parent
-        onDropped: drop => { if (drop.hasUrls) composer.attach(drop.urls) }
+        keys: ["application/x-orneos-link", "text/uri-list"]
+        onDropped: drop => {
+            if (drop.formats.indexOf("application/x-orneos-link") >= 0) {
+                let items = []
+                try { items = JSON.parse(drop.getDataAsString("application/x-orneos-link")) } catch (e) {}
+                if (items.length) {
+                    if (!subject.text.trim() && items[0].title)
+                        subject.text = items[0].title
+                    const html = items.map(it => {
+                        const t = composer.htmlOf(it.title || it.url)
+                        return it.url && it.url.indexOf("http") === 0
+                            ? "<a href=\"" + it.url.replace(/"/g, "&quot;") + "\">" + t + "</a>"
+                            : t + (it.url ? " (" + composer.htmlOf(it.url) + ")" : "")
+                    }).join("<br>")
+                    editor.area.insert(editor.area.cursorPosition, html + "<br>")
+                    editor.area.forceActiveFocus()
+                    drop.acceptProposedAction()
+                    return
+                }
+            }
+            if (drop.hasUrls) composer.attach(drop.urls)
+        }
     }
 
     ColumnLayout {

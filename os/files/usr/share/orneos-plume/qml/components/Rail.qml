@@ -12,6 +12,7 @@ Rectangle {
     color: c.chrome
     signal appsRequested()
     signal ornisRequested()             // Ornis beside the module (Ctrl+J)
+    signal linkDropped(string targetModule, var items)
     property bool ornisOpen: false
     readonly property var families: ({ mail: c.famCommunicate, contacts: c.famCommunicate, calendar: c.famOrganize,
                                         tasks: c.famOrganize, notes: c.famDocs, passwords: c.famTools, ornis: c.famCommunicate,
@@ -37,7 +38,9 @@ Rectangle {
         onClicked: plume.setModule(module)
         background: Rectangle {
             radius: 9
-            color: rb.active ? rail.c.card : rb.hovered ? rail.c.hover : "transparent"
+            color: rbDrop.containsDrag ? rail.c.tint : rb.active ? rail.c.card : rb.hovered ? rail.c.hover : "transparent"
+            border.width: rbDrop.containsDrag ? 1.5 : 0
+            border.color: rb.tint
             Behavior on color { ColorAnimation { duration: 120 } }
             Band {
                 visible: rb.active
@@ -45,6 +48,21 @@ Rectangle {
                 anchors { top: parent.top; bottom: parent.bottom; topMargin: 12; bottomMargin: 12 }
                 radius: 1.5
                 color: rb.tint
+            }
+        }
+        DropArea {
+            id: rbDrop
+            anchors.fill: parent
+            keys: ["application/x-orneos-link"]
+            enabled: ["mail", "calendar", "tasks", "notes", "meet"].indexOf(rb.module) >= 0
+            onDropped: drop => {
+                if (drop.formats.indexOf("application/x-orneos-link") < 0) return
+                let items = []
+                try { items = JSON.parse(drop.getDataAsString("application/x-orneos-link")) } catch (e) {}
+                if (items.length) {
+                    drop.acceptProposedAction()
+                    rail.linkDropped(rb.module, items)
+                }
             }
         }
         contentItem: Item {

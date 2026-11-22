@@ -34,6 +34,21 @@ Rectangle {
     color: c.bg
 
     function ornisRun(kind) { ornisPanel.run(kind) }
+    // Zero-cost local action detection on the opened message (meeting/date, request/task, invoice/summary)
+    readonly property var suggestedActions: {
+        if (!m.messageId || m.loading || m.role === "drafts") return []
+        const subj = (m.subject || "").toLowerCase()
+        const body = (m.text || m.threadText || "").slice(0, 3000).toLowerCase()
+        const combined = subj + " " + body
+        const out = []
+        if (!m.calendar && /\b(\d{1,2}\s*[h:]\s*\d{0,2}|rendez-vous|réunion|meeting|termin|déjeuner|dîner)\b/i.test(combined))
+            out.push({ id: "event", icon: "calendar", text: plume.t.ornis_find_event })
+        if (/\b(merci de|pourriez-vous|peux-tu|pouvez-vous|please|could you|bitte|à faire|confirmer|envoyer)\b/i.test(combined) || combined.indexOf("?") >= 0)
+            out.push({ id: "task", icon: "checklist", text: plume.t.action_create_task })
+        if (/\b(facture|invoice|rechnung|devis|reçu|receipt|rib)\b/i.test(combined))
+            out.push({ id: "summary", icon: "sparkle", text: plume.t.ornis_summarize })
+        return out.slice(0, 3)
+    }
     // what is shown (the message or the whole conversation) as a PDF, opened by the computer to print it
     function printMessage() {
         if (!m.messageId || m.loading || !bodyLoader.item)
@@ -462,6 +477,44 @@ Rectangle {
                     }
                     OButton { height_: 28; text: plume.t.show_images; onClicked: mail.showImages(false) }
                     OButton { height_: 28; kind: "quiet"; text: reader.thread ? plume.t.always_thread : plume.t.always_sender; onClicked: mail.showImages(true) }
+                }
+            }
+
+            // Contextual smart action pills (instant local detection, zero AI tokens until clicked)
+            Flow {
+                visible: reader.suggestedActions.length > 0 && ornisPanel.mode === ""
+                Layout.fillWidth: true
+                spacing: 8
+                Repeater {
+                    model: reader.suggestedActions
+                    delegate: AbstractButton {
+                        id: pill
+                        required property var modelData
+                        implicitWidth: pillRow.implicitWidth + 20
+                        implicitHeight: 30
+                        hoverEnabled: true
+                        onClicked: {
+                            if (modelData.id === "event") ornisPanel.run("mailEvent")
+                            else if (modelData.id === "summary") ornisPanel.run("summary")
+                            else if (modelData.id === "task") plume.addTaskFromLink(reader.m.subject || "", "orneos://mail/" + encodeURIComponent(String(reader.m.mid || "").replace(/^<|>$/g, "")))
+                        }
+                        background: Rectangle {
+                            radius: 15
+                            color: pill.hovered ? reader.c.accentLine : reader.c.tint
+                        }
+                        contentItem: Row {
+                            id: pillRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Icon { anchors.verticalCenter: parent.verticalCenter; name: pill.modelData.icon; size: 14; color: reader.c.accent }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: pill.modelData.text
+                                font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
+                                color: reader.c.accent
+                            }
+                        }
+                    }
                 }
             }
 

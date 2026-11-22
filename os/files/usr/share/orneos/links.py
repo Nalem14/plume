@@ -236,6 +236,44 @@ def search(query, server="", kinds=KINDS, limit=8):
     return out
 
 
+def search_all(query, server="", limit=4):
+    """Unified fast search across all local app caches for Ctrl+K: mails, notes, tasks, events, contacts,
+    Meet rooms, and password entry titles (never secrets). [{kind, ref, url, title, sub}]."""
+    words = [w for w in str(query or "").lower().split() if w]
+    if not words:
+        return []
+    like = "%" + "%".join(words) + "%"
+    out = []
+    # Events (upcoming first, then recent)
+    now_ts = int(__import__("time").time())
+    for r in _rows(CACHE / "plume.db",
+                   "SELECT id, title, start_ts FROM events WHERE lower(title) LIKE ? "
+                   "ORDER BY CASE WHEN start_ts >= ? THEN 0 ELSE 1 END, ABS(start_ts - ?) ASC LIMIT ?",
+                   (like, now_ts - 3600, now_ts, limit)):
+        from datetime import datetime
+        dt = datetime.fromtimestamp(r["start_ts"]).strftime("%d/%m %H:%M") if r["start_ts"] else ""
+        start_iso = datetime.fromtimestamp(r["start_ts"]).strftime("%Y-%m-%dT%H:%M") if r["start_ts"] else ""
+        out.append({"kind": "event", "ref": f"{r['id']}|{start_iso}", "url": "", "title": r["title"] or "", "sub": dt})
+    # Contacts
+    for r in _rows(CACHE / "plume.db",
+                   "SELECT id, name, emails, org FROM contacts WHERE lower(name || ' ' || emails || ' ' || org) LIKE ? "
+                   "ORDER BY sort_key ASC LIMIT ?", (like, limit)):
+        email = next((e.strip() for e in (r["emails"] or "").split(",") if "@" in e), "")
+        out.append({"kind": "contact", "ref": str(r["id"]), "url": "",
+                    "title": r["name"] or email, "sub": email or r["org"] or ""})
+    # Mails, Notes, Tasks, Meet via existing search()
+    for item in search(query, server, kinds=("mail", "note", "task", "meet"), limit=limit):
+        kind = item["kind"]
+        ref = parse(item["url"])[1]
+        out.append({"kind": kind, "ref": ref, "url": item["url"], "title": item["title"], "sub": item["sub"]})
+    # Passwords (names & urls only — never secrets)
+    for r in _rows(DATA / "passwords.db",
+                   "SELECT id, label, url FROM passwords WHERE deleted = 0 AND lower(label || ' ' || url) LIKE ? "
+                   "ORDER BY label ASC LIMIT ?", (like, limit)):
+        out.append({"kind": "password", "ref": str(r["id"]), "url": "", "title": r["label"] or r["url"] or "", "sub": r["url"] or ""})
+    return out
+
+
 # ---- dragging and copying ------------------------------------------------------------------------------------
 def encode(items):
     """The MIME payload of links being dragged or copied: [{url, title, kind}]."""

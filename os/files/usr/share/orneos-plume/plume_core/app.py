@@ -61,6 +61,7 @@ class Plume(QObject):
     filesToSend = Signal("QVariantList")
     composeRequested = Signal(str)
     messageRequested = Signal(str)             # a Message-ID to open (a task of Tâches made from a mail)
+    contactRequested = Signal(int)             # a contact id to select (Ctrl+K)
     importRequested = Signal(str)
     actionRequested = Signal(str)              # new_message, new_event, new_contact
     connectionChanged = Signal()
@@ -448,6 +449,117 @@ class Plume(QObject):
     def openAccount(self):
         slug = {"fr": "tableau-de-bord/compte", "en": "dashboard/account", "de": "dashboard/konto"}[self._lang]
         cloud.open_url(f"https://orneos.eu/{self._lang}/{slug}")
+
+    @Slot(str, result="QVariantList")
+    def searchAll(self, query):
+        """Ctrl+K: unified search across mails, events, contacts, notes, tasks, Meet, and password titles."""
+        server = self._account[0] if self._account else ""
+        items = links.search_all(query, server, limit=4)
+        icons = {"mail": "mail", "event": "calendar", "contact": "contacts", "note": "note",
+                 "task": "checklist", "meet": "video", "password": "key"}
+        labels = {k: self._t.get(f"palette_kind_{k}", k) for k in icons}
+        for it in items:
+            it["icon"] = icons.get(it["kind"], "search")
+            it["kindLabel"] = labels.get(it["kind"], "")
+        return items
+
+    @Slot(str, str, str)
+    def openItem(self, kind, ref, url=""):
+        """Ctrl+K: open a search result directly in its module or app."""
+        if kind == "mail" and ref:
+            self.handle_args(["--mail", f"--message-id={ref}"])
+        elif kind == "event" and ref:
+            self.handle_args(["--calendar", f"--event={ref}"])
+        elif kind == "contact" and ref.isdigit():
+            if "contacts" in self._modules:
+                self.setModule("contacts")
+                self.contactRequested.emit(int(ref))
+            else:
+                system.launch("contacts")
+        elif kind == "password" and ref:
+            system.launch("passwords", f"--show={ref}")
+        elif url:
+            links.open_link(url)
+
+    @Slot(str, result="QVariantList")
+    def parseLinks(self, payload):
+        """Parse an application/x-orneos-link JSON or plain URL into [{url, title, kind}]."""
+        return links.decode(payload)
+
+    @Slot(str, str, result=bool)
+    def addTaskFromLink(self, title, url):
+        """Create a task in Tâches from a dragged mail/note/event."""
+        item = {"title": (title or self._t["untitled"]).strip(), "notes": url or ""}
+        ok = system.launch("tasks", "--add-json", json.dumps([item]))
+        if ok:
+            self.toast.emit(self._t.get("task_added", self._t["tasks"]))
+        return ok
+
+    @Slot(result="QVariantMap")
+    def morningBriefData(self):
+        """Gather today's events, top unread inbox mails, and priority open tasks in <20 ms from local caches."""
+        from datetime import datetime
+        import sqlite3
+        now = datetime.now()
+        day_start = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        day_end = day_start + 86400
+        events, mails, tasks_out = [], [], []
+        db_path = system.CACHE / "plume.db"
+        if db_path.exists():
+            try:
+                db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1)
+                db.row_factory = sqlite3.Row
+                try:
+                    for r in db.execute("SELECT id, title, start_ts FROM events WHERE start_ts >= ? AND start_ts < ? "
+                                        "ORDER BY start_ts ASC LIMIT 8", (day_start, day_end)):
+                        dt = datetime.fromtimestamp(r["start_ts"]).strftime("%H:%M")
+                        iso = datetime.fromtimestamp(r["start_ts"]).strftime("%Y-%m-%dT%H:%M")
+                        events.append({"id": r["id"], "ref": f"{r['id']}|{iso}", "title": r["title"] or self._t["untitled"], "time": dt})
+                    for r in db.execute("SELECT m.message_id, m.subject, m.from_name, m.from_email FROM messages m "
+                                        "JOIN mail_folders f ON f.id = m.folder_id "
+                                        "WHERE f.role = 'inbox' AND m.seen = 0 ORDER BY m.date_ts DESC LIMIT 5"):
+                        mails.append({"ref": r["message_id"], "title": r["subject"] or self._t["subject_empty"],
+                                      "from": r["from_name"] or r["from_email"] or ""})
+                finally:
+                    db.close()
+            except sqlite3.Error:
+                pass
+        t_path = system.DATA / "tasks.db"
+        if t_path.exists():
+            try:
+                tdb = sqlite3.connect(f"file:{t_path}?mode=ro", uri=True, timeout=1)
+                tdb.row_factory = sqlite3.Row
+                try:
+                    for r in tdb.execute("SELECT uid, data FROM tasks WHERE deleted = 0 ORDER BY rowid DESC LIMIT 60"):
+                        try:
+                            d = json.loads(r["data"] or "{}")
+                        except ValueError:
+                            continue
+                        if d.get("done") or d.get("cancelled") or not d.get("title"):
+                            continue
+                        due = d.get("due_ts") or 0
+                        if due and due > day_end and not d.get("priority"):
+                            continue
+                        tasks_out.append({"uid": r["uid"], "title": str(d["title"]), "priority": int(d.get("priority") or 0)})
+                        if len(tasks_out) >= 5:
+                            break
+                finally:
+                    tdb.close()
+            except sqlite3.Error:
+                pass
+        intro = {
+            "fr": f"Fais-moi un brief clair et motivant de ma journée ({now.strftime('%d/%m/%Y')}) :",
+            "en": f"Give me a clear, motivating brief for my day ({now.strftime('%Y-%m-%d')}):",
+            "de": f"Gib mir ein klares, motivierendes Briefing für meinen Tag ({now.strftime('%d.%m.%Y')}):",
+        }[self._lang]
+        prompt_parts = [intro]
+        if events:
+            prompt_parts.append(self._t["brief_events"] + " : " + "; ".join(f"{e['time']} {e['title']}" for e in events))
+        if mails:
+            prompt_parts.append(self._t["brief_mails"] + " : " + "; ".join(f"{m['title']} ({m['from']})" for m in mails))
+        if tasks_out:
+            prompt_parts.append(self._t["brief_tasks"] + " : " + "; ".join(t["title"] for t in tasks_out))
+        return {"events": events, "mails": mails, "tasks": tasks_out, "prompt": "\n".join(prompt_parts)}
 
     @Slot(str)
     def askOrnis(self, question):

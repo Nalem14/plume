@@ -20,6 +20,7 @@ Rectangle {
     signal rangeSelected(date from, date to)
     signal dayClicked(date day)
     signal moveRequested(var occ, date from, date to)
+    signal externalDropped(var links, date from, date to)
 
     readonly property var c: theme.c
     readonly property var loc: Qt.locale(plume.locale)
@@ -364,10 +365,48 @@ Rectangle {
                         x: 8; y: 4
                         width: parent.width - 12
                         elide: Text.ElideRight
-                        text: (parent.g.occ ? (parent.g.occ.title || plume.t.untitled) + "\n" : "")
+                        text: ((parent.g.occ ? parent.g.occ.title : parent.g.title) || (parent.g.occ || parent.g.title ? plume.t.untitled : ""))
+                              + ((parent.g.occ || parent.g.title) ? "\n" : "")
                               + D.hm(grid.at(0, Math.min(parent.g.from, parent.g.to))) + " – " + D.hm(grid.at(0, Math.max(parent.g.from, parent.g.to)))
                         font.family: "JetBrains Mono"; font.pixelSize: 11; font.weight: Font.Medium
                         color: grid.c.text
+                    }
+                }
+
+                // External drag-and-drop (tasks, mails, notes) for instant Time-Blocking
+                DropArea {
+                    anchors.fill: parent
+                    anchors.leftMargin: grid.gutter
+                    keys: ["application/x-orneos-link", "text/plain"]
+                    function parseDrop(drop) {
+                        if (drop.formats.indexOf("application/x-orneos-link") >= 0) {
+                            try {
+                                const arr = JSON.parse(drop.getDataAsString("application/x-orneos-link"))
+                                if (Array.isArray(arr) && arr.length) return arr
+                            } catch (e) {}
+                        }
+                        if (drop.hasText) {
+                            const items = plume.parseLinks(drop.text)
+                            if (items && items.length) return items
+                        }
+                        return []
+                    }
+                    onPositionChanged: drag => {
+                        const items = parseDrop(drag)
+                        if (!items.length) return
+                        const col = grid.colAt(drag.x + grid.gutter)
+                        const f = Math.max(0, Math.min(23 * 60, Math.floor(drag.y / grid.hourH * 60 / grid.snap) * grid.snap))
+                        grid.ghost = { kind: "drop", col: col, from: f, to: Math.min(24 * 60, f + 60), title: items[0].title || "" }
+                    }
+                    onExited: if (grid.ghost && grid.ghost.kind === "drop") grid.ghost = null
+                    onDropped: drop => {
+                        const items = parseDrop(drop)
+                        if (grid.ghost && grid.ghost.kind === "drop") grid.ghost = null
+                        if (!items.length) return
+                        const col = grid.colAt(drop.x + grid.gutter)
+                        const f = Math.max(0, Math.min(23 * 60, Math.floor(drop.y / grid.hourH * 60 / grid.snap) * grid.snap))
+                        drop.acceptProposedAction()
+                        grid.externalDropped(items, grid.at(col, f), grid.at(col, Math.min(24 * 60, f + 60)))
                     }
                 }
             }
