@@ -490,8 +490,8 @@ Rectangle {
                     delegate: AbstractButton {
                         id: pill
                         required property var modelData
-                        implicitWidth: pillRow.implicitWidth + 20
-                        implicitHeight: 30
+                        implicitWidth: pillRow.implicitWidth + 24
+                        implicitHeight: 32
                         hoverEnabled: true
                         onClicked: {
                             if (modelData.id === "event") ornisPanel.run("mailEvent")
@@ -499,19 +499,21 @@ Rectangle {
                             else if (modelData.id === "task") plume.addTaskFromLink(reader.m.subject || "", "orneos://mail/" + encodeURIComponent(String(reader.m.mid || "").replace(/^<|>$/g, "")))
                         }
                         background: Rectangle {
-                            radius: 15
+                            radius: 16
                             color: pill.hovered ? reader.c.accentLine : reader.c.tint
                         }
-                        contentItem: Row {
-                            id: pillRow
-                            anchors.centerIn: parent
-                            spacing: 6
-                            Icon { anchors.verticalCenter: parent.verticalCenter; name: pill.modelData.icon; size: 14; color: reader.c.accent }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: pill.modelData.text
-                                font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
-                                color: reader.c.accent
+                        contentItem: Item {
+                            Row {
+                                id: pillRow
+                                anchors.centerIn: parent
+                                spacing: 7
+                                Icon { anchors.verticalCenter: parent.verticalCenter; name: pill.modelData.icon; size: 14; color: reader.c.accent }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: pill.modelData.text
+                                    font.family: "Schibsted Grotesk"; font.pixelSize: 12; font.weight: Font.DemiBold
+                                    color: reader.c.accent
+                                }
                             }
                         }
                     }
