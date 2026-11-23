@@ -286,17 +286,23 @@ Rectangle {
                                 radius: 8
                                 color: taskDrag.containsMouse ? view.c.hover : view.c.card
                                 border.width: 1; border.color: view.c.hairline
-                                Drag.active: taskDrag.drag.active
-                                Drag.dragType: Drag.Automatic
-                                Drag.mimeData: ({
-                                    "application/x-orneos-link": JSON.stringify([{ url: modelData.url, title: modelData.title, kind: "task" }]),
-                                    "text/plain": modelData.url
-                                })
+                                opacity: taskDrag.drag.active ? 0.55 : 1
+                                Item {
+                                    id: taskDragProxy
+                                    width: taskCard.width; height: taskCard.height
+                                    Drag.active: taskDrag.drag.active
+                                    Drag.dragType: Drag.Automatic
+                                    Drag.hotSpot.x: width / 2; Drag.hotSpot.y: height / 2
+                                    Drag.mimeData: ({
+                                        "application/x-orneos-link": JSON.stringify([{ url: modelData.url, title: modelData.title, kind: "task" }]),
+                                        "text/plain": modelData.url
+                                    })
+                                }
                                 MouseArea {
                                     id: taskDrag
                                     anchors.fill: parent
                                     hoverEnabled: true
-                                    drag.target: taskCard
+                                    drag.target: taskDragProxy
                                     cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
                                     onClicked: agenda.openTask(taskCard.modelData.uid)
                                 }
